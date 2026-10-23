@@ -26,6 +26,7 @@ struct ReaderView: View {
     @State private var showChapters = false
     @State private var sliderValue = 0.0
     @State private var scrollTarget: Int?
+    @State private var bookmarks: [Int] = []
 
     @State private var zoom: CGFloat = 1
     @State private var pinch: CGFloat = 1
@@ -43,16 +44,16 @@ struct ReaderView: View {
                 if failed {
                     Text("无法打开这本书")
                         .foregroundColor(.white)
-                } else if scanning {
-                    scanningView
+                } else if refs.isEmpty {
+                    ProgressView().tint(.white)
                 } else {
                     readerBody(size: geo.size)
                 }
 
                 VStack(spacing: 0) {
-                    if showUI && !failed && !scanning { topBar }
+                    if showUI && !failed { topBar }
                     Spacer(minLength: 0)
-                    if showUI && !failed && !scanning { bottomBar }
+                    if showUI && !failed { bottomBar }
                 }
             }
             .onAppear { viewSize = geo.size }
@@ -60,6 +61,12 @@ struct ReaderView: View {
         }
         .statusBarHidden(!showUI)
         .onAppear(perform: open)
+        .onAppear {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3.8) {
+                guard showUI, !showSettings, !showChapters else { return }
+                withAnimation(.easeInOut(duration: 0.2)) { showUI = false }
+            }
+        }
         .onDisappear(perform: saveProgress)
         .onChange(of: store.prefs.splitWidePages) { _ in rebuildRefs() }
         .onChange(of: store.prefs.readingMode) { _ in
@@ -73,6 +80,13 @@ struct ReaderView: View {
         .onChange(of: index) { value in
             guard !scanning else { return }
             sliderValue = Double(value)
+        }
+        .onChange(of: showUI) { visible in
+            guard visible else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3.8) {
+                guard showUI, !showSettings, !showChapters else { return }
+                withAnimation(.easeInOut(duration: 0.2)) { showUI = false }
+            }
         }
         .sheet(isPresented: $showSettings) {
             ReaderSettingsView(prefs: $store.prefs, enhance: $store.enhance)
@@ -418,6 +432,20 @@ struct ReaderView: View {
 
             Spacer(minLength: 0)
 
+            Button {
+                let page = currentSourcePage
+                if bookmarks.contains(page) {
+                    bookmarks.removeAll { $0 == page }
+                } else {
+                    bookmarks.append(page)
+                }
+            } label: {
+                Image(systemName: isBookmarked ? "bookmark.fill" : "bookmark")
+                    .font(.system(size: 15))
+                    .foregroundColor(isBookmarked ? Color(red: 1, green: 0.76, blue: 0.29) : .white)
+                    .frame(width: 38, height: 38)
+            }
+
             if session?.hasChapters == true {
                 Button { showChapters = true } label: {
                     Image(systemName: "list.bullet")
@@ -426,21 +454,22 @@ struct ReaderView: View {
                         .frame(width: 38, height: 38)
                 }
             }
-            Button { showSettings = true } label: {
-                Image(systemName: "slider.horizontal.3")
-                    .font(.system(size: 15))
-                    .foregroundColor(.white)
-                    .frame(width: 38, height: 38)
-            }
         }
         .padding(.horizontal, 4)
-        .padding(.top, 4)
-        .padding(.bottom, 4)
-        .background(Color.black.opacity(0.78).ignoresSafeArea(edges: .top))
+        .padding(.top, 2)
+        .padding(.bottom, 2)
+        .background(Color(red: 0.06, green: 0.06, blue: 0.07).opacity(0.94).ignoresSafeArea(edges: .top))
     }
 
+    private var isBookmarked: Bool { bookmarks.contains(currentSourcePage) }
+
+    /// One row of actions under the slider, the way the classic comic readers lay it out.
     private var bottomBar: some View {
         VStack(spacing: 2) {
+            Text("\(min(index + 1, max(refs.count, 1))) / \(max(refs.count, 1))")
+                .font(.system(size: 11))
+                .foregroundColor(.white.opacity(0.6))
+
             Slider(
                 value: $sliderValue,
                 in: 0...Double(max(refs.count - 1, 1)),
@@ -449,29 +478,72 @@ struct ReaderView: View {
                 if !editing { jump(to: Int(sliderValue.rounded())) }
             }
             .tint(.white)
+            .padding(.horizontal, 8)
 
-            HStack {
-                Button { turn(forward: false) } label: {
-                    Image(systemName: "chevron.left.circle.fill")
-                        .font(.system(size: 22))
-                        .foregroundColor(.white)
+            HStack(spacing: 0) {
+                barAction("上一页", "chevron.left") { turn(forward: false) }
+                barAction("下一页", "chevron.right") { turn(forward: true) }
+                barAction(modeLabel, modeIcon) {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        store.prefs.readingMode = nextMode
+                    }
                 }
-                Spacer()
-                Text("\(index + 1) / \(max(refs.count, 1))")
-                    .font(.system(size: 12))
-                    .foregroundColor(.white.opacity(0.75))
-                Spacer()
-                Button { turn(forward: true) } label: {
-                    Image(systemName: "chevron.right.circle.fill")
-                        .font(.system(size: 22))
-                        .foregroundColor(.white)
+                barAction(isBookmarked ? "已书签" : "书签", isBookmarked ? "bookmark.fill" : "bookmark") {
+                    let page = currentSourcePage
+                    if bookmarks.contains(page) {
+                        bookmarks.removeAll { $0 == page }
+                    } else {
+                        bookmarks.append(page)
+                    }
                 }
+                barAction("设置", "slider.horizontal.3") { showSettings = true }
             }
-            .padding(.horizontal, 18)
+            .padding(.horizontal, 4)
+            .padding(.bottom, 2)
         }
-        .padding(.top, 8)
-        .padding(.bottom, 20)
-        .background(Color.black.opacity(0.78).ignoresSafeArea(edges: .bottom))
+        .padding(.top, 6)
+        .padding(.bottom, 10)
+        .background(Color(red: 0.06, green: 0.06, blue: 0.07).opacity(0.94).ignoresSafeArea(edges: .bottom))
+    }
+
+    private func barAction(_ label: String, _ icon: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 3) {
+                Image(systemName: icon)
+                    .font(.system(size: 17))
+                    .foregroundColor(.white)
+                Text(label)
+                    .font(.system(size: 9))
+                    .foregroundColor(.white.opacity(0.62))
+            }
+            .frame(maxWidth: .infinity)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var modeLabel: String {
+        switch store.prefs.readingMode {
+        case .paged: return "翻页"
+        case .vertical: return "竖向"
+        case .horizontal: return "横向"
+        }
+    }
+
+    private var modeIcon: String {
+        switch store.prefs.readingMode {
+        case .paged: return "book"
+        case .vertical: return "rectangle.split.1x2"
+        case .horizontal: return "rectangle.split.2x1"
+        }
+    }
+
+    private var nextMode: ReadingMode {
+        switch store.prefs.readingMode {
+        case .paged: return .vertical
+        case .vertical: return .horizontal
+        case .horizontal: return .paged
+        }
     }
 
     private var chapterSheet: some View {
@@ -581,18 +653,23 @@ struct ReaderView: View {
             return
         }
         session = opened
+        bookmarks = book.bookmarks
+
+        // Show the first page straight away with the default page ratio. Measuring every
+        // page first is what used to keep the reader on a spinner for a long archive.
+        refs = buildPageRefs(aspects: opened.aspects, splitWidePages: store.prefs.splitWidePages)
+        index = refIndexOfSource(refs, book.lastPage)
+        sliderValue = Double(index)
+        scanning = true
+
         Task { @MainActor in
-            let aspects = await Task.detached(priority: .userInitiated) { () -> [CGFloat] in
-                opened.scanAspects { done, total in
-                    guard total > 0 else { return }
-                    Task { @MainActor in
-                        scanProgress = Double(done) / Double(total)
-                    }
-                }
+            let aspects = await Task.detached(priority: .utility) {
+                opened.scanAspects()
                 return opened.aspects
             }.value
+            let source = currentSourcePage
             refs = buildPageRefs(aspects: aspects, splitWidePages: store.prefs.splitWidePages)
-            index = refIndexOfSource(refs, book.lastPage)
+            index = refIndexOfSource(refs, source)
             sliderValue = Double(index)
             scanProgress = 1
             scanning = false
@@ -660,6 +737,7 @@ struct ReaderView: View {
         guard session != nil else { return }
         var updated = book
         updated.lastPage = currentSourcePage
+        updated.bookmarks = bookmarks
         store.update(updated)
     }
 }

@@ -1,7 +1,7 @@
 # 画质漫画 iOS
 
 本地漫画阅读器（iPhone / iPad），和安卓版「画质漫画」是同一套设计。
-本地导入 ZIP / CBZ / PDF / 图片文件夹，无网络、无账号、无追踪。
+本地导入 ZIP / CBZ / RAR / CBR / 7Z / TAR / PDF / 图片文件夹，无网络、无账号、无追踪。
 
 当前版本 **0.2**：书库 + 三种阅读模式 + GPU 画质增强 + 自动切白边 + 章节。
 
@@ -63,6 +63,8 @@ EnhanceComic/
   App/EnhanceComicApp.swift      入口
   Model/Models.swift             书、阅读设置、增强参数、分页模型、章节
   Data/ZipReader.swift           极简 ZIP/CBZ 读取（中央目录 + raw deflate）
+  Data/Inflate.swift             自研 RFC1951 解压器（移植 zlib puff.c）
+  Data/LibArchive.swift          RAR / 7Z / TAR：dlopen 系统 libarchive
   Data/BookSession.swift         页数、长宽比扫描、单页解码（ImageIO / CGPDF）、章节切分
   Data/Enhancer.swift            Core Image 画质增强 + 白边检测
   Data/LibraryStore.swift        书库持久化 + 导入 + 封面生成
@@ -74,7 +76,8 @@ EnhanceComic/
 ## 已实现（0.2）
 
 - 书库首页：继续阅读卡片、封面网格（渲染第一页做真实封面）、进度条、长按删除
-- 导入：ZIP / CBZ / PDF 多选，或整个图片文件夹（复制进 App 沙盒，原文件不动）
+- 导入：ZIP / CBZ / RAR / CBR / 7Z / TAR / PDF 多选，或整个图片文件夹（复制进 App 沙盒，原文件不动）
+- 7Z / TAR 系列导入时解包成目录（solid block 没法按页随机读），RAR 按页流式读
 - 三种阅读模式：单页翻页 / 纵向连续滚动（条漫）/ 横向连续滚动
 - 画质增强（GPU / Core Image）：锐化、降噪平滑、S 曲线对比度、亮度、对比度、伽马
 - 自动裁掉白边（80px 缩略图做墨迹统计，裁掉四周空白）
@@ -85,7 +88,6 @@ EnhanceComic/
 
 ## 还没做
 
-- RAR / CBR（iOS 需要额外编译 unrar 源码，目前只有安卓版支持）
 - 书签 UI
 - 双页并排显示（现在只有宽页拆分）
 

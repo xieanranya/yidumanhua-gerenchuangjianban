@@ -3,8 +3,7 @@
 本地漫画阅读器（iPhone / iPad），和安卓版「画质漫画」是同一套设计。
 本地导入 ZIP / CBZ / PDF / 图片文件夹，无网络、无账号、无追踪。
 
-当前版本 **0.1**：书库界面 + 基础阅读页。
-下一步接 Metal 画质增强管线（锐化 / 降噪 / 对比度 / Lanczos3 重采样，和安卓版一致）。
+当前版本 **0.2**：书库 + 三种阅读模式 + GPU 画质增强 + 自动切白边 + 章节。
 
 ---
 
@@ -62,26 +61,39 @@ zip -qry EnhanceComic-unsigned.ipa Payload
 ```
 EnhanceComic/
   App/EnhanceComicApp.swift      入口
-  Model/Models.swift             书、阅读设置、增强参数、分页模型
+  Model/Models.swift             书、阅读设置、增强参数、分页模型、章节
   Data/ZipReader.swift           极简 ZIP/CBZ 读取（中央目录 + raw deflate）
-  Data/BookSession.swift         页数、单页解码（ImageIO / CGPDF）
-  Data/LibraryStore.swift        书库持久化 + 导入（复制进沙盒）
+  Data/BookSession.swift         页数、长宽比扫描、单页解码（ImageIO / CGPDF）、章节切分
+  Data/Enhancer.swift            Core Image 画质增强 + 白边检测
+  Data/LibraryStore.swift        书库持久化 + 导入 + 封面生成
   UI/LibraryView.swift           书库首页（导入 / 继续阅读 / 封面网格 / 长按删除）
-  UI/ReaderView.swift            基础阅读页（单页、点击/滑动翻页、进度条）
+  UI/ReaderView.swift            阅读页（翻页 / 纵向滚动 / 横向滚动、缩放、章节）
+  UI/ReaderSettingsView.swift    阅读设置面板
 ```
 
-## 已实现（0.1）
+## 已实现（0.2）
 
-- 书库首页：继续阅读卡片、封面网格、进度条、长按删除、导入进度提示
+- 书库首页：继续阅读卡片、封面网格（渲染第一页做真实封面）、进度条、长按删除
 - 导入：ZIP / CBZ / PDF 多选，或整个图片文件夹（复制进 App 沙盒，原文件不动）
-- 阅读：单页适配屏幕、点击左右翻页（跟随从右到左设置）、滑动翻页、进度条跳页、退出记住进度
+- 三种阅读模式：单页翻页 / 纵向连续滚动（条漫）/ 横向连续滚动
+- 画质增强（GPU / Core Image）：锐化、降噪平滑、S 曲线对比度、亮度、对比度、伽马
+- 自动裁掉白边（80px 缩略图做墨迹统计，裁掉四周空白）
+- 宽页自动拆成左右两半、从右到左阅读
+- 章节：压缩包里按子文件夹自动分章，顶栏可打开目录跳转
+- 点击左右翻页、滑动翻页、双指缩放、退出记住进度
 - 中文文件名兼容（ZIP 内 GBK 文件名会兜底解码）
 
 ## 还没做
 
-- Metal 画质增强（锐化 / Kuwahara 降噪 / 对比度 / 最近邻-双线性-双三次-Lanczos3）
-- 纵向 / 横向连续滚动、双页拆分、自动裁白边
-- 书签 UI、封面缩略图（现在用首字色块占位）
+- RAR / CBR（iOS 需要额外编译 unrar 源码，目前只有安卓版支持）
+- 书签 UI
+- 双页并排显示（现在只有宽页拆分）
+
+## 和安卓版的实现差别
+
+安卓用 GLES 3.1 的三个 compute shader 做增强（锐化 / Kuwahara 降噪 / 对比度），
+iOS 这边用 Core Image 的 `sharpenLuminance` / `noiseReduction` / `toneCurve`，
+同样跑在 GPU 上，效果接近但省掉了手写 Metal shader 的维护成本。
 
 ## 一个已知的编译风险
 

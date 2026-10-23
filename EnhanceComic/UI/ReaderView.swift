@@ -99,7 +99,7 @@ struct ReaderView: View {
                     Spacer(minLength: 0)
 
                     ReaderBottomChrome(
-                        pageLabel: "\(min(index + 1, max(refs.count, 1))) / \(max(refs.count, 1))",
+                        pageLabel: pageLabel,
                         sliderValue: $sliderValue,
                         total: refs.count,
                         light: store.prefs.chromeLight,
@@ -917,6 +917,8 @@ struct ReaderView: View {
         persistBookmarks()
         UIScreen.main.brightness = systemBrightness
         UIApplication.shared.isIdleTimerDisabled = false
+        // Hand rotation back to the system so the shelf is not stuck in the reader's lock.
+        OrientationLock.reset()
     }
 
     private func applyIdleTimer() {

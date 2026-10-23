@@ -985,7 +985,6 @@ struct ReaderMenuPanel: View {
         ZStack(alignment: .topTrailing) {
             Color.clear
                 .contentShape(Rectangle())
-                .ignoresSafeArea()
                 .onTapGesture { onDismiss() }
 
             VStack(spacing: 0) {
@@ -1021,6 +1020,9 @@ struct ReaderMenuPanel: View {
             .background(skin.menu)
             .padding(.top, 46)
         }
+        // The panel is dropped into the reader's full-screen ZStack; without this it would
+        // be sized to the slab and centred instead of hanging under the title bar.
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
     }
 }
 

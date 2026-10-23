@@ -51,9 +51,58 @@ struct Book: Identifiable, Codable, Equatable {
     var addedAt: Date = Date()
     var lastPage: Int = 0
     var bookmarks: [Int] = []
+    /// File name of the cached cover inside the book's folder, nil when not generated yet.
+    var coverName: String? = nil
 }
 
-struct EnhanceSettings: Codable, Equatable {
+/// A run of consecutive pages that live in the same folder inside an archive.
+struct Chapter: Identifiable, Hashable {
+    let title: String
+    let start: Int
+    let count: Int
+
+    var id: Int { start }
+    var endExclusive: Int { start + count }
+    func contains(_ page: Int) -> Bool { page >= start && page < endExclusive }
+
+    static func build(from names: [String]) -> [Chapter] {
+        guard !names.isEmpty else { return [] }
+        let dirs = names.map { ($0 as NSString).deletingLastPathComponent }
+        let distinct = Array(Set(dirs))
+        if distinct.count < 2 {
+            return [Chapter(title: singleTitle(dirs[0]), start: 0, count: names.count)]
+        }
+        var out: [Chapter] = []
+        var runStart = 0
+        for i in 1...names.count {
+            if i == names.count || dirs[i] != dirs[runStart] {
+                out.append(
+                    Chapter(
+                        title: dirTitle(dirs[runStart], fallback: out.count + 1),
+                        start: runStart,
+                        count: i - runStart
+                    )
+                )
+                runStart = i
+            }
+        }
+        if out.count < 2 {
+            return [Chapter(title: singleTitle(dirs[0]), start: 0, count: names.count)]
+        }
+        return out
+    }
+
+    private static func dirTitle(_ dir: String, fallback: Int) -> String {
+        let last = (dir as NSString).lastPathComponent
+        return last.isEmpty ? "第 \(fallback) 段" : last
+    }
+
+    private static func singleTitle(_ dir: String) -> String {
+        (dir as NSString).lastPathComponent
+    }
+}
+
+struct EnhanceSettings: Codable, Equatable, Hashable {
     var sharpen = false
     var sharpenAmount = 100.0
     var denoise = false
@@ -74,7 +123,7 @@ struct EnhanceSettings: Codable, Equatable {
     var gammaF: Float { Float(max(0.05, gamma / 100.0)) }
 }
 
-struct ReaderPrefs: Codable, Equatable {
+struct ReaderPrefs: Codable, Equatable, Hashable {
     var readingMode: ReadingMode = .paged
     var rightToLeft = true
     var splitWidePages = true
@@ -101,4 +150,9 @@ func buildPageRefs(aspects: [CGFloat], splitWidePages: Bool) -> [PageRef] {
         }
     }
     return out
+}
+
+/// Index of the first display page belonging to source page `sourceIndex`.
+func refIndexOfSource(_ refs: [PageRef], _ sourceIndex: Int) -> Int {
+    refs.firstIndex { $0.index == sourceIndex } ?? 0
 }

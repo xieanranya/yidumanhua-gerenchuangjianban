@@ -28,6 +28,19 @@ enum CoverPalette {
     }
 }
 
+/// Tiny in-memory cache so scrolling the shelf does not re-decode cover JPEGs.
+enum CoverCache {
+    private static var storage: [String: UIImage] = [:]
+
+    static func image(at url: URL?) -> UIImage? {
+        guard let url else { return nil }
+        if let hit = storage[url.path] { return hit }
+        guard let image = UIImage(contentsOfFile: url.path) else { return nil }
+        storage[url.path] = image
+        return image
+    }
+}
+
 struct LibraryView: View {
 
     @EnvironmentObject private var store: LibraryStore
@@ -70,6 +83,7 @@ struct LibraryView: View {
             .padding(.bottom, 30)
         }
         .background(Color(uiColor: .systemBackground))
+        .task { await store.backfillCovers() }
         .overlay(alignment: .bottom) {
             if let message {
                 Text(message)
@@ -206,14 +220,19 @@ struct LibraryView: View {
             openBook = book
         } label: {
             HStack(spacing: 12) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .fill(CoverPalette.color(for: book.id))
-                        .frame(width: 46, height: 62)
-                    Text(String(book.title.prefix(1)))
-                        .font(.system(size: 19, weight: .semibold))
-                        .foregroundColor(.white)
-                }
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .fill(CoverPalette.color(for: book.id))
+                    .frame(width: 46, height: 62)
+                    .overlay {
+                        if let cover = CoverCache.image(at: store.coverURL(for: book)) {
+                            Image(uiImage: cover).resizable().scaledToFill().clipped()
+                        } else {
+                            Text(String(book.title.prefix(1)))
+                                .font(.system(size: 19, weight: .semibold))
+                                .foregroundColor(.white)
+                        }
+                    }
+                    .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
                 VStack(alignment: .leading, spacing: 3) {
                     Text("继续阅读")
                         .font(.system(size: 11, weight: .semibold))
@@ -265,33 +284,33 @@ struct LibraryView: View {
             ? min(1, Double(book.lastPage) / Double(book.pageCount))
             : 0
         return VStack(alignment: .leading, spacing: 0) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(CoverPalette.color(for: book.id))
-                    .aspectRatio(0.72, contentMode: .fit)
-
-                Text(String(book.title.prefix(1)))
-                    .font(.system(size: 40, weight: .bold))
-                    .foregroundColor(.white.opacity(0.92))
-
-                VStack {
-                    Spacer()
-                    HStack {
-                        Spacer()
-                        Text(CoverPalette.typeLabel(book.type))
-                            .font(.system(size: 9, weight: .medium))
-                            .foregroundColor(.white)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color.black.opacity(0.28))
-                            .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
-                            .padding(7)
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(CoverPalette.color(for: book.id))
+                .aspectRatio(0.72, contentMode: .fit)
+                .overlay {
+                    ZStack {
+                        if let cover = CoverCache.image(at: store.coverURL(for: book)) {
+                            Image(uiImage: cover).resizable().scaledToFill()
+                        } else {
+                            Text(String(book.title.prefix(1)))
+                                .font(.system(size: 40, weight: .bold))
+                                .foregroundColor(.white.opacity(0.92))
+                        }
                     }
+                    .clipped()
                 }
-
-                if progress > 0 {
-                    VStack {
-                        Spacer()
+                .overlay(alignment: .bottomTrailing) {
+                    Text(CoverPalette.typeLabel(book.type))
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.black.opacity(0.32))
+                        .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                        .padding(7)
+                }
+                .overlay(alignment: .bottom) {
+                    if progress > 0 {
                         GeometryReader { geo in
                             ZStack(alignment: .leading) {
                                 Color.white.opacity(0.25)
@@ -301,8 +320,7 @@ struct LibraryView: View {
                         .frame(height: 3)
                     }
                 }
-            }
-            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
 
             Text(book.title)
                 .font(.system(size: 13, weight: .medium))

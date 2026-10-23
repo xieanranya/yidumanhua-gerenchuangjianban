@@ -1,6 +1,7 @@
 import Foundation
 import CoreGraphics
 import SwiftUI
+import UIKit
 
 @MainActor
 final class LibraryStore: ObservableObject {
@@ -35,6 +36,72 @@ final class LibraryStore: ObservableObject {
 
     func session(for book: Book) -> BookSession? {
         BookSession(book: book, libraryDir: libraryDir)
+    }
+
+    // MARK: - Covers
+
+    /// Folder that holds a book's copied files.
+    private func folder(for book: Book) -> URL {
+        if book.type == .folder {
+            return libraryDir.appendingPathComponent(book.relativePath, isDirectory: true)
+        }
+        return libraryDir.appendingPathComponent(book.relativePath).deletingLastPathComponent()
+    }
+
+    func coverURL(for book: Book) -> URL? {
+        guard let name = book.coverName else { return nil }
+        let url = folder(for: book).appendingPathComponent(name)
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+
+    /// Renders page 1 into a small JPEG so the shelf shows real artwork.
+    @discardableResult
+    private func generateCover(for book: Book) -> String? {
+        guard let session = session(for: book),
+              let page = session.image(at: 0, maxWidth: 480),
+              let data = UIImage(cgImage: page).jpegData(compressionQuality: 0.86)
+        else { return nil }
+        let name = "cover.jpg"
+        let url = folder(for: book).appendingPathComponent(name)
+        do {
+            try data.write(to: url, options: .atomic)
+            return name
+        } catch {
+            return nil
+        }
+    }
+
+    /// Fills in covers for books imported by an earlier build.
+    func backfillCovers() async {
+        let missing = books.filter { $0.coverName == nil }
+        guard !missing.isEmpty else { return }
+        let dir = libraryDir
+
+        let generated: [(UUID, String)] = await Task.detached(priority: .utility) {
+            var out: [(UUID, String)] = []
+            for book in missing {
+                guard let session = BookSession(book: book, libraryDir: dir),
+                      let page = session.image(at: 0, maxWidth: 480),
+                      let data = UIImage(cgImage: page).jpegData(compressionQuality: 0.7)
+                else { continue }
+                let target = book.type == .folder
+                    ? dir.appendingPathComponent(book.relativePath, isDirectory: true)
+                    : dir.appendingPathComponent(book.relativePath).deletingLastPathComponent()
+                let url = target.appendingPathComponent("cover.jpg")
+                if (try? data.write(to: url, options: .atomic)) != nil {
+                    out.append((book.id, "cover.jpg"))
+                }
+            }
+            return out
+        }.value
+
+        guard !generated.isEmpty else { return }
+        for (id, name) in generated {
+            if let index = books.firstIndex(where: { $0.id == id }) {
+                books[index].coverName = name
+            }
+        }
+        save()
     }
 
     // MARK: - Import
@@ -86,9 +153,11 @@ final class LibraryStore: ObservableObject {
                 relativePath: folderName,
                 pageCount: copied
             )
-            books.append(book)
+            var withCover = book
+            withCover.coverName = generateCover(for: book)
+            books.append(withCover)
             save()
-            return book
+            return withCover
         } catch {
             try? FileManager.default.removeItem(at: folder)
             return nil
@@ -116,12 +185,15 @@ final class LibraryStore: ObservableObject {
                 try? FileManager.default.removeItem(at: folder)
                 return nil
             }
-            return Book(
+            let book = Book(
                 title: (name as NSString).deletingPathExtension,
                 type: type,
                 relativePath: "\(folderName)/\(name)",
                 pageCount: count
             )
+            var withCover = book
+            withCover.coverName = generateCover(for: book)
+            return withCover
         } catch {
             try? FileManager.default.removeItem(at: folder)
             return nil

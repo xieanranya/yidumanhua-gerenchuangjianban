@@ -20,8 +20,11 @@ enum PageFiles {
     }
 }
 
-/// An opened book: page count, aspect ratios and page decoding.
-final class BookSession {
+/// An opened book: page count, aspect ratios, page decoding and chapter runs.
+///
+/// Every accessor is serialised by `lock` because the reader decodes on a background task
+/// while the aspect scan may still be running.
+final class BookSession: @unchecked Sendable {
 
     let book: Book
     private let url: URL
@@ -29,6 +32,12 @@ final class BookSession {
     private var zipEntries: [ZipEntry] = []
     private var imageURLs: [URL] = []
     private var pdf: CGPDFDocument?
+    private let lock = NSLock()
+
+    /// Consecutive same-folder runs; a single entry means "no chapter UI".
+    private(set) var chapters: [Chapter] = []
+
+    private(set) var aspects: [CGFloat] = []
 
     var pageCount: Int {
         if let pdf { return pdf.numberOfPages }
@@ -36,10 +45,15 @@ final class BookSession {
         return imageURLs.count
     }
 
+    var hasChapters: Bool { chapters.count > 1 }
+
     init?(book: Book, libraryDir: URL) {
         self.book = book
         let fileURL = libraryDir.appendingPathComponent(book.relativePath)
         self.url = fileURL
+
+        var resolvedChapters: [Chapter] = []
+        var count = 0
 
         switch book.type {
         case .zip:
@@ -50,12 +64,16 @@ final class BookSession {
             guard !pages.isEmpty else { return nil }
             self.zip = reader
             self.zipEntries = pages
+            count = pages.count
+            resolvedChapters = Chapter.build(from: pages.map { $0.name })
 
         case .pdf:
             guard let doc = CGPDFDocument(fileURL as CFURL), doc.numberOfPages > 0 else {
                 return nil
             }
             self.pdf = doc
+            count = doc.numberOfPages
+            resolvedChapters = [Chapter(title: "", start: 0, count: count)]
 
         case .folder:
             let contents = (try? FileManager.default.contentsOfDirectory(
@@ -67,17 +85,48 @@ final class BookSession {
                 .sorted { PageFiles.naturalLess($0.lastPathComponent, $1.lastPathComponent) }
             guard !pages.isEmpty else { return nil }
             self.imageURLs = pages
+            count = pages.count
+            resolvedChapters = [Chapter(title: "", start: 0, count: count)]
         }
+
+        self.chapters = resolvedChapters
+        self.aspects = [CGFloat](repeating: 0, count: count)
+    }
+
+    // MARK: - Aspects
+
+    /// Reads every page header so the scroll layouts are stable before drawing.
+    func scanAspects(onProgress: ((Int, Int) -> Void)? = nil) {
+        let total = pageCount
+        for i in 0..<total {
+            lock.lock()
+            if aspects[i] <= 0.01 {
+                aspects[i] = measureAspectLocked(i)
+            }
+            lock.unlock()
+            if (i + 1) % 8 == 0 { onProgress?(i + 1, total) }
+        }
+        onProgress?(total, total)
     }
 
     /// width / height of a source page, 0.7 when unknown.
     func aspect(at index: Int) -> CGFloat {
+        lock.lock()
+        defer { lock.unlock() }
+        guard index >= 0, index < aspects.count else { return 0.7 }
+        if aspects[index] > 0.01 { return aspects[index] }
+        let value = measureAspectLocked(index)
+        aspects[index] = value
+        return value
+    }
+
+    private func measureAspectLocked(_ index: Int) -> CGFloat {
         if let pdf {
             guard let page = pdf.page(at: index + 1) else { return 0.7 }
             let box = page.getBoxRect(.mediaBox)
             return box.height > 0 ? box.width / box.height : 0.7
         }
-        guard let source = imageSource(at: index),
+        guard let source = imageSourceLocked(at: index),
               let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as NSDictionary?
         else { return 0.7 }
         let w = (props[kCGImagePropertyPixelWidth] as? NSNumber)?.doubleValue ?? 0
@@ -86,9 +135,13 @@ final class BookSession {
         return CGFloat(w / h)
     }
 
+    // MARK: - Decoding
+
     func image(at index: Int, maxWidth: CGFloat) -> CGImage? {
-        if pdf != nil { return renderPDF(index: index, maxWidth: maxWidth) }
-        guard let source = imageSource(at: index) else { return nil }
+        lock.lock()
+        defer { lock.unlock() }
+        if pdf != nil { return renderPDFLocked(index: index, maxWidth: maxWidth) }
+        guard let source = imageSourceLocked(at: index) else { return nil }
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
@@ -98,9 +151,13 @@ final class BookSession {
         return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
     }
 
+    func chapter(at page: Int) -> Chapter? {
+        chapters.first { $0.contains(page) } ?? chapters.last
+    }
+
     // MARK: - Private
 
-    private func imageSource(at index: Int) -> CGImageSource? {
+    private func imageSourceLocked(at index: Int) -> CGImageSource? {
         if !zipEntries.isEmpty {
             guard index >= 0, index < zipEntries.count,
                   let data = zip?.data(for: zipEntries[index])
@@ -111,7 +168,7 @@ final class BookSession {
         return CGImageSourceCreateWithURL(imageURLs[index] as CFURL, nil)
     }
 
-    private func renderPDF(index: Int, maxWidth: CGFloat) -> CGImage? {
+    private func renderPDFLocked(index: Int, maxWidth: CGFloat) -> CGImage? {
         guard let pdf, let page = pdf.page(at: index + 1) else { return nil }
         let box = page.getBoxRect(.mediaBox)
         guard box.width > 0, box.height > 0 else { return nil }

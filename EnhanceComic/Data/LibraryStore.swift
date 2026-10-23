@@ -125,7 +125,10 @@ final class LibraryStore: ObservableObject {
     /// The copy / count / cover pass runs on a detached task. It used to run inline on the
     /// main actor, so a few-hundred-MB zip blocked the UI for seconds and the "importing"
     /// card never even got a chance to draw — which reads exactly like "点了没反应".
-    func importAny(_ urls: [URL]) async -> ImportResult {
+    ///
+    /// - Parameter removeSource: 删掉导入成功的源文件。只有扫描 App 自己的 Documents 目录时
+    ///   才开，否则用户拖进来的包会被原地删掉。
+    func importAny(_ urls: [URL], removeSource: Bool = false) async -> ImportResult {
         var scoped: [URL] = []
         for url in urls where url.startAccessingSecurityScopedResource() {
             scoped.append(url)
@@ -136,18 +139,30 @@ final class LibraryStore: ObservableObject {
 
         let dir = libraryDir
         let outcome = await Task.detached(priority: .userInitiated) {
-            () -> ([Book], [String]) in
+            () -> ([Book], [String], [URL]) in
             var made: [Book] = []
             var problems: [String] = []
+            var consumed: [URL] = []
             for url in urls {
                 let result = LibraryStore.buildBook(from: url, libraryDir: dir)
                 if let book = result.book {
                     made.append(book)
+                    consumed.append(url)
                 } else {
                     problems.append(result.reason)
                 }
             }
-            return (made, problems)
+            // 文档选择器 `asCopy: true` 给的是临时副本，导入完不管成败都得清掉，
+            // 不然每导一次就在 tmp 里堆一份几百 MB 的压缩包。
+            for url in urls where LibraryStore.isTemporaryPick(url) {
+                try? FileManager.default.removeItem(at: url)
+            }
+            if removeSource {
+                for url in consumed where !LibraryStore.isTemporaryPick(url) {
+                    try? FileManager.default.removeItem(at: url)
+                }
+            }
+            return (made, problems, consumed)
         }.value
 
         if !outcome.0.isEmpty {
@@ -155,6 +170,35 @@ final class LibraryStore: ObservableObject {
             save()
         }
         return ImportResult(added: outcome.0.count, problems: outcome.1)
+    }
+
+    /// `true` when the URL lives in the app's temporary directory, i.e. it is a copy the
+    /// document picker made for us and the original file is still wherever the user keeps it.
+    nonisolated static func isTemporaryPick(_ url: URL) -> Bool {
+        let tmp = FileManager.default.temporaryDirectory.standardizedFileURL.path
+        return url.standardizedFileURL.path.hasPrefix(tmp)
+    }
+
+    /// 兜底入口：把压缩包直接放进 App 的文档目录（文件 App → 我的 iPhone → 画质漫画，
+    /// 或电脑上用访达 / iTunes 拖进去），启动时自动收进书库。
+    ///
+    /// 这条路径完全不经过文件选择器，所以不会受选择器那堆毛病影响。
+    func sweepDocumentsFolder() async {
+        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        guard let items = try? FileManager.default.contentsOfDirectory(
+            at: documents,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles, .skipsSubdirectoryDescendants]
+        ) else { return }
+
+        let candidates = items.filter { url in
+            let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
+            guard !isDir else { return false }
+            return ["zip", "cbz", "pdf", "rar"].contains(url.pathExtension.lowercased())
+        }
+        guard !candidates.isEmpty else { return }
+
+        _ = await importAny(candidates, removeSource: true)
     }
 
     private struct BuildResult {
@@ -190,14 +234,11 @@ final class LibraryStore: ObservableObject {
         let folder = libraryDir.appendingPathComponent(folderName, isDirectory: true)
         do {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-            let contents = try FileManager.default.contentsOfDirectory(
-                at: url,
-                includingPropertiesForKeys: nil
-            )
+            let contents = try coordinatedContents(of: url)
             var copied = 0
             for file in contents where PageFiles.isImage(file.lastPathComponent) {
                 let destination = folder.appendingPathComponent(file.lastPathComponent)
-                if (try? FileManager.default.copyItem(at: file, to: destination)) != nil {
+                if (try? coordinatedCopy(from: file, to: destination)) != nil {
                     copied += 1
                 }
             }
@@ -256,12 +297,18 @@ final class LibraryStore: ObservableObject {
         do {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             let destination = folder.appendingPathComponent(name)
-            try FileManager.default.copyItem(at: url, to: destination)
+            // 文档选择器给的临时副本直接拷；外部 URL（文件夹模式、分享进来）走协调器，
+            // 否则 iCloud 占位文件会抛 "no such file"。
+            if isTemporaryPick(url) {
+                try FileManager.default.copyItem(at: url, to: destination)
+            } else {
+                try coordinatedCopy(from: url, to: destination)
+            }
             let count = pageCount(type: type, url: destination)
             guard count > 0 else {
                 try? FileManager.default.removeItem(at: folder)
                 let hint = type == .zip
-                    ? "压缩包里没有找到图片（支持 jpg / png / webp / gif / bmp / tiff）"
+                    ? "压缩包里没有找到图片（支持 jpg / png / webp / gif / bmp / tiff）。如果它还在 iCloud 里，先在「文件」App 里下载到本机再试"
                     : "这个 PDF 打不开，可能加密或已损坏"
                 return BuildResult(book: nil, reason: "「\(name)」\(hint)")
             }
@@ -277,9 +324,59 @@ final class LibraryStore: ObservableObject {
             try? FileManager.default.removeItem(at: folder)
             return BuildResult(
                 book: nil,
-                reason: "「\(name)」复制失败：\(error.localizedDescription)"
+                reason: "「\(name)」复制失败：\(error.localizedDescription)。如果它在 iCloud 云盘，先长按下载到本机再导入"
             )
         }
+    }
+
+    // MARK: - Coordinated file access
+
+    /// `NSFileCoordinator` 是访问文件提供商 / iCloud 内容的正规方式：它会先把占位文件
+    /// 下载下来再回调，直接 `copyItem` 则会因为文件还没落到本地而失败。
+    nonisolated private static func coordinatedCopy(from source: URL, to destination: URL) throws {
+        var coordinationError: NSError?
+        var thrown: Error?
+        let coordinator = NSFileCoordinator(filePresenter: nil)
+        coordinator.coordinate(
+            readingItemAt: source,
+            options: .withoutChanges,
+            error: &coordinationError
+        ) { readURL in
+            do {
+                if FileManager.default.fileExists(atPath: destination.path) {
+                    try FileManager.default.removeItem(at: destination)
+                }
+                try FileManager.default.copyItem(at: readURL, to: destination)
+            } catch {
+                thrown = error
+            }
+        }
+        if let thrown { throw thrown }
+        if let coordinationError { throw coordinationError }
+    }
+
+    nonisolated private static func coordinatedContents(of folder: URL) throws -> [URL] {
+        var coordinationError: NSError?
+        var thrown: Error?
+        var result: [URL] = []
+        let coordinator = NSFileCoordinator(filePresenter: nil)
+        coordinator.coordinate(
+            readingItemAt: folder,
+            options: .withoutChanges,
+            error: &coordinationError
+        ) { readURL in
+            do {
+                result = try FileManager.default.contentsOfDirectory(
+                    at: readURL,
+                    includingPropertiesForKeys: nil
+                )
+            } catch {
+                thrown = error
+            }
+        }
+        if let thrown { throw thrown }
+        if let coordinationError { throw coordinationError }
+        return result
     }
 
     /// Reads the first bytes, so a mislabelled file still opens and RAR gets an actual

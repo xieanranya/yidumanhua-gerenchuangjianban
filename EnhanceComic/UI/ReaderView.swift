@@ -394,12 +394,14 @@ struct ReaderView: View {
                 settings: store.enhance,
                 crop: store.prefs.autoCropWhiteBorders,
                 maxWidth: (vertical ? size.width : size.height * aspect) * displayScale * 1.1,
-                rightToLeft: store.prefs.rightToLeft
+                rightToLeft: store.prefs.rightToLeft,
+                fill: true
             )
             .frame(
                 width: vertical ? size.width : size.height * aspect,
                 height: vertical ? size.width / aspect : size.height
             )
+            .clipped()
             .id(ref.id)
             .onAppear { if !scanning { index = position } }
         }
@@ -751,6 +753,9 @@ private struct PageContent: View {
     let crop: Bool
     let maxWidth: CGFloat
     let rightToLeft: Bool
+    /// Scroll modes must cover the whole cell, otherwise a mismatched aspect
+    /// leaves a black band between pages.
+    var fill = false
 
     @State private var image: CGImage?
 
@@ -764,7 +769,7 @@ private struct PageContent: View {
                 Image(decorative: image, scale: 1)
                     .resizable()
                     .interpolation(.high)
-                    .aspectRatio(contentMode: .fit)
+                    .aspectRatio(contentMode: fill ? .fill : .fit)
             } else {
                 ProgressView().tint(.white.opacity(0.5))
             }

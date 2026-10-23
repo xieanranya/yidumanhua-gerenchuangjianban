@@ -2,12 +2,12 @@
 
 | 平台 | 文件 | 大小 | 要求 |
 |---|---|---|---|
-| Android | `EnhanceComic-Android-v1.7.apk` | 13.7 MB | Android 8.0 (API 26) 及以上，直接覆盖安装 |
+| Android | `EnhanceComic-Android-v1.8.apk` | 13.7 MB | Android 8.0 (API 26) 及以上，直接覆盖安装 |
 | iOS | `EnhanceComic-iOS-v1.8.ipa` | 466 KB | iOS 16.0 及以上，**未签名**，需 Sideloadly / AltStore 签名 |
 
-版本：iOS `1.8 (build 10)`；Android **仍是 `1.7 (versionCode 9)`，本版没动它**，你手机上那个不用重装。装完在书架标题下能看到版本号。
+版本：**两端统一 `1.8 (10)`**。Android 本版只改了版本号对齐，功能与 1.7 完全一致；iOS 本版修了导入。装完在书架标题下能看到版本号。
 
-## v1.8（iOS）：导入点了没反应，已修
+## v1.8：iOS 修「导入点了没反应」+ 两端版本号对齐
 
 **根因一：两个文件选择器抢同一个弹窗**
 
@@ -44,7 +44,7 @@
 - **iOS 二进制 2.0 MB**（IPA 里压缩后 460 KB 左右）。SwiftUI、UIKit、Core Image、ImageIO 这些全部在系统里，App 只带自己的代码。工程里没有第三方库、没有图片素材（唯一新增的是图标），所以就这么大。
 - **Android APK 13.7 MB**。Compose 运行时、Kotlin 标准库、AndroidX 资源、junrar 解压库，这些都得打进 APK 里一起走，光是这些就有 10 MB 以上。
 
-判断标准不是体积，是打开书架看版本号：**iOS 显示 `v1.8 (10)`、Android 显示 `v1.7 (9)`**。这一版只修了 iOS 的导入，Android 的导入本来就是好的，所以没跟着升。
+判断标准不是体积，是打开书架看版本号：**两端都显示 `v1.8 (10)`**，就是同一版。Android 这一版只动了版本号，功能没改；iOS 修的是导入。
 
 ## v1.7（iOS）：阅读界面和 Android 对齐
 

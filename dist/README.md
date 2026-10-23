@@ -2,24 +2,30 @@
 
 | 平台 | 文件 | 大小 | 要求 |
 |---|---|---|---|
-| Android | `EnhanceComic-Android-v1.3.apk` | 约 13.7 MB | Android 8.0 (API 26) 及以上，直接覆盖安装 |
-| iOS | `EnhanceComic-iOS-v1.3.ipa` | 约 280 KB | iOS 16.0 及以上，**未签名**，需 Sideloadly / AltStore 签名 |
+| Android | `EnhanceComic-Android-v1.4.apk` | 13.7 MB | Android 8.0 (API 26) 及以上，直接覆盖安装 |
+| iOS | `EnhanceComic-iOS-v1.4.ipa` | 272 KB | iOS 16.0 及以上，**未签名**，需 Sideloadly / AltStore 签名 |
 
-版本号：Android `1.3 (versionCode 5)`，iOS `1.3 (build 5)`。两端已统一，方便对照。
+版本号：Android `1.4 (versionCode 6)`，iOS `1.4 (build 6)`。两端已统一。
+装完在书架标题下面能看到 `v1.4 (6)`，可以拿这个确认到底装上了没有。
 
-## v1.3：终于可以直接覆盖安装
+## v1.4：竖向阅读页间无缝
+
+竖向连续滚动以前在每页之间留了 6dp 的间隔，碰到深色背景就是一条条黑边。现在竖向模式的页间距是 0，页面首尾严格相接，读条漫和跨页长图是一个整条；横向模式仍保留细缝便于辨认翻页。
+
+另外 iOS 滚动模式的页面改成填满格子（`.fill` + `clipped`），不再因为宽高比误差在上下留黑边。
+
+## v1.4：可以直接覆盖安装，不用卸载
 
 之前每次更新都要先卸载，原因是两处：
 
-1. **`versionName` 曾经回退**（v0.3 是 `1.2`，v0.4 写成了 `0.4`）。国产 ROM 的安装器在覆盖安装时会比较版本名，看到变小就判定为「版本不匹配」，要求先卸载。
-2. **签名密钥没有固定在项目里**，只依赖本机 `~/.android/debug.keystore`。换了构建环境，密钥会重新生成，签名就不一致了。
+1. **`versionName` 曾经回退**（v0.3 是 `1.2`，v0.4 写成了 `0.4`）。国产 ROM 的安装器覆盖安装时会比较版本名，看到变小就判定「版本不匹配」，要求先卸载。
+2. **签名密钥没有固定进项目**，只依赖本机 `~/.android/debug.keystore`。换了构建环境密钥会重新生成，签名就不一致了。
 
-现在的做法：
+现在：
 
-- 签名密钥固定为项目内的 `key/enhancecomic.jks`，指纹 `SHA-256 D5:08:4C:AF:…:9F:A4:2D`，与 v0.1 起的所有历史版本**完全一致**，所以这次也不需要卸载，直接装就行，书库和进度都在。
-- 版本号只增不减：`versionCode` 从 5 起，之后 6、7、8……；`versionName` 从 `1.3` 起，之后 `1.4`、`1.5`……
-- 书架标题下会显示 `v1.3 (5)`，装完一眼能确认是不是新版。
-- 打包改成 release 构建（不再是 debug 包），体积从 20.3 MB 降到 13.7 MB，也不再有 debug 包的额外校验。
+- 签名密钥固定为项目内的 `key/enhancecomic.jks`，指纹 `SHA-256 D5:08:4C:AF:…:9F:A4:2D`，与 v0.1 起所有历史版本**完全一致**，这次也不用卸载，直接装，书库和进度都在。
+- 版本号只增不减：`versionCode` 5 → 6 → 7……；`versionName` 1.3 → 1.4 → 1.5……
+- 打包改成 release 构建，体积从 20.3 MB 降到 13.7 MB。
 
 ## 已实现
 
@@ -32,8 +38,8 @@
 
 **阅读**
 
-- 三种模式：单页翻页 / 竖向连续滚动（无缝拼接）/ 横向连续滚动
-- 双页并排（横屏时自动启用），从右到左时早的一页在右边
+- 三种模式：单页翻页 / 竖向连续滚动（无缝）/ 横向连续滚动
+- 双页并排（横屏自动启用），从右到左时早的一页在右边
 - 宽页自动拆成两页
 - 自动切白边
 - 跟手翻页：拖动时当前页跟着手指走、下一页同步滑入，超过 28% 或快速甩动即翻过
@@ -46,7 +52,7 @@
 
 - Android：CPU 版 USM 锐化 / 盒式降噪 / 曲线对比度 / 伽马，解码时一次算完
 - iOS：Core Image（`sharpenLuminance` / `noiseReduction` / `toneCurve` / `gammaAdjust`）
-- 都可以单独关掉，关掉等于纯解码
+- 都可单独关掉，关掉等于纯解码
 
 ## 安装
 
@@ -54,7 +60,7 @@
 
 **iOS**：
 1. Windows 装 [Sideloadly](https://sideloadly.io/)，iPhone 用数据线连电脑
-2. 把 `EnhanceComic-iOS-v1.3.ipa` 拖进 Sideloadly，填自己的 Apple ID
+2. 把 `EnhanceComic-iOS-v1.4.ipa` 拖进 Sideloadly，填自己的 Apple ID
 3. 点 Start，按提示在 iPhone「设置 → 通用 → VPN与设备管理」里信任开发者证书
 4. 免费 Apple ID 签 7 天，到期重新签一次即可
 

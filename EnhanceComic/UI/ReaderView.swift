@@ -1,11 +1,12 @@
 import SwiftUI
 import CoreGraphics
+import UIKit
 
 /// Reader with paged, vertical-scroll and horizontal-scroll modes.
 ///
-/// Paged mode follows the finger: the current page slides with the drag while the
-/// neighbouring page comes in from the side, and it snaps forward past a distance or
-/// velocity threshold, otherwise it springs back.
+/// The layout follows the reference reader: a title row with an overflow menu, a strip of
+/// thin line icons that each open a panel in place, and a bottom scrubber. All three tap
+/// zones are configurable from ⋮ → 页面按钮设置.
 struct ReaderView: View {
 
     let book: Book
@@ -19,14 +20,23 @@ struct ReaderView: View {
     @State private var index = 0
     @State private var failed = false
     @State private var scanning = true
-    @State private var scanProgress = 0.0
 
-    @State private var showUI = true
-    @State private var showSettings = false
+    @State private var showChrome = true
+    @State private var panel: ReaderPanel = .none
+    @State private var showMenu = false
     @State private var showChapters = false
-    @State private var sliderValue = 0.0
-    @State private var scrollTarget: Int?
+    @State private var showBookmarkList = false
+    @State private var showAddBookmark = false
+    @State private var showOrientation = false
+    @State private var showHardwareKeys = false
+    @State private var showTapZones = false
+    @State private var addName = ""
+    @State private var orientationMask: UIInterfaceOrientationMask?
+    @State private var toast: String?
+
     @State private var bookmarks: [Int] = []
+    @State private var bookmarkNames: [Int: String] = [:]
+    @State private var sliderValue = 0.0
 
     @State private var zoom: CGFloat = 1
     @State private var pinch: CGFloat = 1
@@ -35,87 +45,166 @@ struct ReaderView: View {
     @State private var dragX: CGFloat = 0
     @State private var turning = false
     @State private var viewSize: CGSize = .zero
+    @State private var scrollTarget: Int?
+
+    @State private var progressTask: Task<Void, Never>?
+    @State private var chromeTask: Task<Void, Never>?
+    @State private var systemBrightness: CGFloat = 0.5
+
+    private var chromeVisible: Bool { showChrome && !failed }
+    private var skin: Skin { skinFor(store.prefs.chromeLight) }
 
     var body: some View {
         GeometryReader { geo in
             ZStack {
-                Color.black.ignoresSafeArea()
+                backgroundColor.ignoresSafeArea()
 
                 if failed {
-                    Text("无法打开这本书")
-                        .foregroundColor(.white)
+                    failureBody
                 } else if refs.isEmpty {
                     ProgressView().tint(.white)
                 } else {
-                    readerBody(size: geo.size)
+                    pageStack(size: geo.size)
+                }
+
+                if store.prefs.blueLight {
+                    Color(red: 1.0, green: 0.84, blue: 0.58)
+                        .opacity(0.18)
+                        .blendMode(.multiply)
+                        .allowsHitTesting(false)
+                        .ignoresSafeArea()
                 }
 
                 VStack(spacing: 0) {
-                    if showUI && !failed { topBar }
+                    ReaderTopChrome(
+                        title: book.title,
+                        pageLabel: pageLabel,
+                        prefs: $store.prefs,
+                        enhance: $store.enhance,
+                        panel: $panel,
+                        marked: isBookmarked,
+                        hasChapters: session?.hasChapters == true,
+                        onBack: dismissReader,
+                        onMenu: { showMenu = true },
+                        onChapters: { showChapters = true },
+                        onAddBookmark: {
+                            addName = ""
+                            showAddBookmark = true
+                        },
+                        onShowBookmarks: { showBookmarkList = true }
+                    )
+                    .opacity(chromeVisible ? 1 : 0)
+                    .allowsHitTesting(chromeVisible)
+
                     Spacer(minLength: 0)
-                    if showUI && !failed { bottomBar }
+
+                    ReaderBottomChrome(
+                        pageLabel: "\(min(index + 1, max(refs.count, 1))) / \(max(refs.count, 1))",
+                        sliderValue: $sliderValue,
+                        total: refs.count,
+                        light: store.prefs.chromeLight,
+                        onSeek: { jump(to: $0) },
+                        onPrev: { turn(forward: false) },
+                        onNext: { turn(forward: true) }
+                    )
+                    .opacity(chromeVisible ? 1 : 0)
+                    .allowsHitTesting(chromeVisible)
+                }
+                .animation(.easeInOut(duration: 0.18), value: chromeVisible)
+
+                if showMenu {
+                    ReaderMenuPanel(entries: menuEntries, light: store.prefs.chromeLight) {
+                        showMenu = false
+                        scheduleChromeHide()
+                    }
+                }
+
+                dialogs
+
+                if let toast {
+                    VStack {
+                        Spacer(minLength: 0)
+                        Text(toast)
+                            .font(.system(size: 12))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                            .background(Color.black.opacity(0.82))
+                            .clipShape(Capsule())
+                            .padding(.bottom, 90)
+                    }
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
                 }
             }
             .onAppear { viewSize = geo.size }
             .onChange(of: geo.size) { viewSize = $0 }
         }
-        .statusBarHidden(!showUI)
-        .onAppear(perform: open)
-        .onAppear {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3.8) {
-                guard showUI, !showSettings, !showChapters else { return }
-                withAnimation(.easeInOut(duration: 0.2)) { showUI = false }
-            }
-        }
-        .onDisappear(perform: saveProgress)
+        .statusBarHidden(!showChrome)
+        .onAppear(perform: appeared)
+        .onDisappear(perform: leave)
         .onChange(of: store.prefs.splitWidePages) { _ in rebuildRefs() }
         .onChange(of: store.prefs.readingMode) { _ in
-            dragX = 0
-            pan = .zero
-            dragPan = .zero
-            zoom = 1
-            pinch = 1
+            resetZoom()
             if store.prefs.readingMode != .paged { scrollTarget = currentRef?.id }
         }
         .onChange(of: index) { value in
-            guard !scanning else { return }
             sliderValue = Double(value)
+            scheduleProgressSave()
         }
-        .onChange(of: showUI) { visible in
-            guard visible else { return }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3.8) {
-                guard showUI, !showSettings, !showChapters else { return }
-                withAnimation(.easeInOut(duration: 0.2)) { showUI = false }
-            }
+        .onChange(of: showChrome) { visible in
+            if visible { scheduleChromeHide() }
         }
-        .sheet(isPresented: $showSettings) {
-            ReaderSettingsView(prefs: $store.prefs, enhance: $store.enhance)
+        .onChange(of: panel) { _ in scheduleChromeHide() }
+        .onChange(of: showMenu) { open in
+            if !open { scheduleChromeHide() }
         }
-        .sheet(isPresented: $showChapters) {
-            chapterSheet
-        }
+        .onChange(of: bookmarks) { _ in persistBookmarks() }
+        .onChange(of: bookmarkNames) { _ in persistBookmarks() }
+        .onChange(of: store.prefs.keepScreenOn) { _ in applyIdleTimer() }
+        .onChange(of: store.prefs.autoBrightness) { _ in applyBrightness() }
+        .onChange(of: store.prefs.brightness) { _ in applyBrightness() }
     }
 
     // MARK: - Bodies
 
-    private var scanningView: some View {
-        VStack(spacing: 14) {
-            ProgressView().tint(.white)
-            Text(scanProgress > 0.01
-                ? "正在解析页面 \(Int(scanProgress * 100))%"
-                : "正在打开…")
-                .font(.system(size: 13))
-                .foregroundColor(.white.opacity(0.85))
+    @ViewBuilder
+    private func pageStack(size: CGSize) -> some View {
+        Group {
+            switch store.prefs.readingMode {
+            case .paged:
+                paged(size: size)
+            case .vertical, .horizontal:
+                scrolling(size: size)
+            }
+        }
+        .grayscale(store.prefs.grayscale ? 1 : 0)
+        .modifier(InvertFilter(active: store.prefs.invert))
+    }
+
+    private var failureBody: some View {
+        VStack(spacing: 8) {
+            Text("这本书打不开")
+                .font(.system(size: 14))
+                .foregroundColor(skin.fg)
+            Text("文件可能已损坏，或压缩包里没有可识别的图片。")
+                .font(.system(size: 11))
+                .foregroundColor(skin.dim)
+            Button { dismissReader() } label: {
+                Text("返回书架")
+                    .font(.system(size: 13))
+                    .foregroundColor(skin.accent)
+                    .padding(.top, 10)
+            }
+            .buttonStyle(.plain)
         }
     }
 
-    @ViewBuilder
-    private func readerBody(size: CGSize) -> some View {
-        switch store.prefs.readingMode {
-        case .paged:
-            paged(size: size)
-        case .vertical, .horizontal:
-            scrolling(size: size)
+    private var backgroundColor: Color {
+        switch store.prefs.background {
+        case 1: return Color(red: 0.086, green: 0.086, blue: 0.102)
+        case 2: return Color(red: 0.929, green: 0.929, blue: 0.902)
+        default: return .black
         }
     }
 
@@ -124,7 +213,7 @@ struct ReaderView: View {
     private func paged(size: CGSize) -> some View {
         let span = spreadSpan(size: size)
         let rtl = store.prefs.rightToLeft
-        // The page that a forward turn brings in sits on the side the finger drags from.
+        // The page a forward turn brings in sits on the side the finger drags from.
         let nextOffset: CGFloat = rtl ? -size.width : size.width
         let prevOffset: CGFloat = rtl ? size.width : -size.width
 
@@ -155,7 +244,7 @@ struct ReaderView: View {
                     handleDoubleTap(at: value.location, size: size)
                 },
                 SpatialTapGesture(count: 1).onEnded { value in
-                    handleSingleTap(at: value.location, size: size, span: span)
+                    handleSingleTap(at: value.location, size: size)
                 }
             )
         )
@@ -169,43 +258,48 @@ struct ReaderView: View {
             let left = store.prefs.rightToLeft ? refs[start + 1] : refs[start]
             let right = store.prefs.rightToLeft ? refs[start] : refs[start + 1]
             HStack(spacing: 0) {
-                pageCell(left, session: session, size: size, width: size.width / 2)
-                pageCell(right, session: session, size: size, width: size.width / 2)
+                pageCell(left, session: session, viewport: size, cellWidth: size.width / 2)
+                pageCell(right, session: session, viewport: size, cellWidth: size.width / 2)
             }
             .frame(width: size.width, height: size.height)
+            .clipped()
         } else if refs.indices.contains(start) {
-            pageCell(refs[start], session: session, size: size, width: size.width)
+            pageCell(refs[start], session: session, viewport: size, cellWidth: size.width)
         }
     }
 
     private func pageCell(
         _ ref: PageRef,
         session: BookSession,
-        size: CGSize,
-        width: CGFloat
+        viewport: CGSize,
+        cellWidth: CGFloat
     ) -> some View {
-        PageContent(
+        let target = pageTarget(ref: ref, viewport: viewport, cellWidth: cellWidth)
+        return PageContent(
             session: session,
             ref: ref,
             settings: store.enhance,
             crop: store.prefs.autoCropWhiteBorders,
-            maxWidth: width * displayScale * 1.1,
-            rightToLeft: store.prefs.rightToLeft
+            maxWidth: max(target.width, cellWidth) * displayScale * 1.05,
+            rightToLeft: store.prefs.rightToLeft,
+            fill: true
         )
-        .frame(width: width, height: size.height)
+        .frame(width: target.width, height: target.height)
+        .frame(width: cellWidth, height: viewport.height)
+        .clipped()
     }
 
     private func dragGesture(size: CGSize, span: Int) -> some Gesture {
         DragGesture(minimumDistance: 6)
             .onChanged { value in
-                if zoom * pinch > 1.02 {
+                if panIntent(translation: value.translation, size: size) {
                     dragPan = value.translation
                 } else if !turning {
                     dragX = value.translation.width
                 }
             }
             .onEnded { value in
-                if zoom * pinch > 1.02 {
+                if panIntent(translation: value.translation, size: size) {
                     let merged = CGSize(
                         width: pan.width + value.translation.width,
                         height: pan.height + value.translation.height
@@ -223,6 +317,16 @@ struct ReaderView: View {
                     size: size
                 )
             }
+    }
+
+    /// A drag pans only along an axis that actually overflows; otherwise it turns the page.
+    private func panIntent(translation: CGSize, size: CGSize) -> Bool {
+        if zoom * pinch > 1.02 { return true }
+        let bounds = maxPan(size: size, zoom: 1)
+        if abs(translation.height) > abs(translation.width) {
+            return bounds.height > 0.5
+        }
+        return bounds.width > 0.5
     }
 
     private func pinchGesture(size: CGSize) -> some Gesture {
@@ -271,7 +375,7 @@ struct ReaderView: View {
         }
     }
 
-    /// Turns without a preceding drag: edge taps and the bottom bar.
+    /// Turns without a preceding drag: taps and the bottom bar.
     private func step(forward: Bool, span: Int, size: CGSize) {
         guard !turning else { return }
         let neighbour = index + (forward ? span : -span)
@@ -300,21 +404,24 @@ struct ReaderView: View {
         turning = false
     }
 
-    private func handleSingleTap(at point: CGPoint, size: CGSize, span: Int) {
+    private func handleSingleTap(at point: CGPoint, size: CGSize) {
         if zoom * pinch > 1.02 {
-            withAnimation(.easeInOut(duration: 0.15)) { showUI.toggle() }
+            toggleChrome()
             return
         }
-        if point.x < size.width * 0.25 {
-            step(forward: false, span: span, size: size)
-        } else if point.x > size.width * 0.75 {
-            step(forward: true, span: span, size: size)
+        let zone: Int
+        if point.x < size.width * 0.28 {
+            zone = 0
+        } else if point.x > size.width * 0.72 {
+            zone = 2
         } else {
-            withAnimation(.easeInOut(duration: 0.15)) { showUI.toggle() }
+            zone = 1
         }
+        runTap(zone: zone)
     }
 
     private func handleDoubleTap(at point: CGPoint, size: CGSize) {
+        guard store.prefs.doubleTapZoom else { return }
         if zoom > 1.05 {
             withAnimation(.easeOut(duration: 0.22)) {
                 zoom = 1
@@ -342,17 +449,17 @@ struct ReaderView: View {
 
     private func scrolling(size: CGSize) -> some View {
         let vertical = store.prefs.readingMode == .vertical
-        let spacing: CGFloat = vertical ? 0 : 8
+        let gap = CGFloat(store.prefs.pageGapPercent) / 100 * size.height
         return ScrollViewReader { proxy in
             ScrollView(vertical ? .vertical : .horizontal, showsIndicators: false) {
                 if vertical {
-                    LazyVStack(spacing: spacing) {
+                    LazyVStack(spacing: gap) {
                         ForEach(Array(refs.enumerated()), id: \.element.id) { position, ref in
                             cell(ref: ref, position: position, size: size, vertical: true)
                         }
                     }
                 } else {
-                    LazyHStack(spacing: spacing) {
+                    LazyHStack(spacing: gap) {
                         ForEach(Array(refs.enumerated()), id: \.element.id) { position, ref in
                             cell(ref: ref, position: position, size: size, vertical: false)
                         }
@@ -368,17 +475,15 @@ struct ReaderView: View {
             }
             .simultaneousGesture(
                 SpatialTapGesture().onEnded { value in
-                    if value.location.x < size.width * 0.22, index > 0 {
-                        withAnimation(.easeOut(duration: 0.2)) {
-                            proxy.scrollTo(refs[index - 1].id, anchor: vertical ? .top : .leading)
-                        }
-                    } else if value.location.x > size.width * 0.78, index + 1 < refs.count {
-                        withAnimation(.easeOut(duration: 0.2)) {
-                            proxy.scrollTo(refs[index + 1].id, anchor: vertical ? .top : .leading)
-                        }
+                    let zone: Int
+                    if value.location.x < size.width * 0.28 {
+                        zone = 0
+                    } else if value.location.x > size.width * 0.72 {
+                        zone = 2
                     } else {
-                        withAnimation(.easeInOut(duration: 0.15)) { showUI.toggle() }
+                        zone = 1
                     }
+                    runTap(zone: zone)
                 }
             )
         }
@@ -407,177 +512,245 @@ struct ReaderView: View {
         }
     }
 
-    // MARK: - Chrome
+    // MARK: - Chrome actions
 
-    private var topBar: some View {
-        HStack(spacing: 6) {
-            Button {
-                saveProgress()
-                dismiss()
-            } label: {
-                Image(systemName: "chevron.left")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundColor(.white)
-                    .frame(width: 38, height: 38)
+    private func toggleChrome() {
+        withAnimation(.easeInOut(duration: 0.18)) {
+            showChrome.toggle()
+            if !showChrome { panel = .none }
+        }
+    }
+
+    private func scheduleChromeHide() {
+        chromeTask?.cancel()
+        guard showChrome, panel == .none, !showMenu, !failed else { return }
+        chromeTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeInOut(duration: 0.2)) { showChrome = false }
+        }
+    }
+
+    private func runTap(zone: Int) {
+        let action: TapAction
+        switch zone {
+        case 0: action = store.prefs.tapLeftAction
+        case 2: action = store.prefs.tapRightAction
+        default: action = store.prefs.tapCenterAction
+        }
+        switch action {
+        case .prevPage:
+            turn(forward: false)
+        case .nextPage:
+            turn(forward: true)
+        case .prevChapter:
+            jumpChapter(-1)
+        case .nextChapter:
+            jumpChapter(1)
+        case .toggleChrome:
+            toggleChrome()
+        case .openMenu:
+            withAnimation(.easeInOut(duration: 0.18)) { showChrome = true }
+            showMenu = true
+        case .disabled:
+            break
+        }
+    }
+
+    private var menuEntries: [MenuEntry] {
+        var entries: [MenuEntry] = []
+        entries.append(MenuEntry(label: "屏幕方向") { showOrientation = true })
+        entries.append(MenuEntry(label: "手机硬件按钮") { showHardwareKeys = true })
+        entries.append(MenuEntry(label: "页面按钮设置") { showTapZones = true })
+        entries.append(
+            MenuEntry(label: "双击缩放", checked: store.prefs.doubleTapZoom) {
+                store.prefs.doubleTapZoom.toggle()
             }
-
-            VStack(alignment: .leading, spacing: 1) {
-                Text(book.title)
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundColor(.white)
-                    .lineLimit(1)
-                Text(subtitle)
-                    .font(.system(size: 11))
-                    .foregroundColor(.white.opacity(0.65))
-                    .lineLimit(1)
+        )
+        entries.append(
+            MenuEntry(label: "滤镜") {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    showChrome = true
+                    panel = .filter
+                }
             }
+        )
+        entries.append(
+            MenuEntry(label: "添加书签") {
+                addName = ""
+                showAddBookmark = true
+            }
+        )
+        entries.append(MenuEntry(label: "书签列表") { showBookmarkList = true })
+        if session?.hasChapters == true {
+            entries.append(MenuEntry(label: "目录") { showChapters = true })
+        }
+        entries.append(MenuEntry(label: "设置漫画封面") { setCoverFromPage() })
+        return entries
+    }
 
-            Spacer(minLength: 0)
+    // MARK: - Dialogs
 
-            Button {
-                let page = currentSourcePage
-                if bookmarks.contains(page) {
-                    bookmarks.removeAll { $0 == page }
+    @ViewBuilder
+    private var dialogs: some View {
+        if showOrientation {
+            SkinDialog(title: "屏幕方向", skin: skin, onDismiss: { showOrientation = false }) {
+                orientationRow("跟随系统", nil)
+                orientationRow("竖屏", .portrait)
+                orientationRow("横屏", .landscape)
+            }
+        }
+
+        if showHardwareKeys {
+            SkinDialog(title: "手机硬件按钮", skin: skin, onDismiss: { showHardwareKeys = false }) {
+                Text("iOS 没有把音量键开放给第三方 App，所以这里没有音量键翻页。可以改用：")
+                    .font(.system(size: 10.5))
+                    .foregroundColor(skin.dim)
+                    .fixedSize(horizontal: false, vertical: true)
+                Color.clear.frame(height: 6)
+                Text("· 页面按钮设置：把左 / 右区域设成上一页、下一页\n· 双击屏幕放大，再拖动查看细节\n· 底部滑杆直接跳页")
+                    .font(.system(size: 10.5))
+                    .foregroundColor(skin.dim)
+                    .fixedSize(horizontal: false, vertical: true)
+                Color.clear.frame(height: 8)
+                SkinKeyRow(
+                    label: "双击缩放",
+                    checked: store.prefs.doubleTapZoom,
+                    skin: skin
+                ) { store.prefs.doubleTapZoom = $0 }
+                SkinKeyRow(
+                    label: "阅读时常亮",
+                    checked: store.prefs.keepScreenOn,
+                    skin: skin
+                ) { store.prefs.keepScreenOn = $0 }
+            }
+        }
+
+        if showTapZones {
+            SkinDialog(title: "页面按钮设置", skin: skin, onDismiss: { showTapZones = false }) {
+                TapZoneTable(prefs: $store.prefs, skin: skin)
+            }
+        }
+
+        if showAddBookmark {
+            SkinDialog(title: "添加书签", skin: skin, onDismiss: { showAddBookmark = false }) {
+                Text("第 \(currentSourcePage + 1) 页 / 共 \(max(session?.pageCount ?? 0, 1)) 页")
+                    .font(.system(size: 10.5))
+                    .foregroundColor(skin.dim)
+                Color.clear.frame(height: 8)
+                SkinTextField(value: $addName, skin: skin, placeholder: "书签名称（可留空）")
+                Color.clear.frame(height: 10)
+                HStack(spacing: 8) {
+                    Spacer(minLength: 0)
+                    SkinTextButton(label: "取消", skin: skin) { showAddBookmark = false }
+                    SkinTextButton(label: "保存", skin: skin) { saveBookmark() }
+                }
+            }
+        }
+
+        if showBookmarkList {
+            SkinDialog(title: "书签列表", skin: skin, onDismiss: { showBookmarkList = false }) {
+                if bookmarks.isEmpty {
+                    Text("还没有书签。")
+                        .font(.system(size: 12))
+                        .foregroundColor(skin.dim)
                 } else {
-                    bookmarks.append(page)
+                    ScrollView {
+                        VStack(spacing: 0) {
+                            ForEach(bookmarks.sorted(), id: \.self) { page in
+                                bookmarkRow(page)
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 320)
                 }
+            }
+        }
+
+        if showChapters {
+            SkinDialog(title: "目录", skin: skin, onDismiss: { showChapters = false }) {
+                let chapters = session?.chapters ?? []
+                if chapters.count <= 1 {
+                    Text("这个压缩包里没有分文件夹，所以没有章节。")
+                        .font(.system(size: 11))
+                        .foregroundColor(skin.dim)
+                } else {
+                    ScrollView {
+                        VStack(spacing: 0) {
+                            ForEach(chapters) { chapter in
+                                chapterRow(chapter)
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 380)
+                }
+            }
+        }
+    }
+
+    private func orientationRow(_ label: String, _ mask: UIInterfaceOrientationMask?) -> some View {
+        SkinRadioRow(label: label, selected: orientationMask == mask, skin: skin) {
+            orientationMask = mask
+            OrientationLock.apply(mask ?? .all)
+            showOrientation = false
+        }
+    }
+
+    private func bookmarkRow(_ page: Int) -> some View {
+        HStack(spacing: 8) {
+            Button {
+                showBookmarkList = false
+                jumpToSource(page)
             } label: {
-                Image(systemName: isBookmarked ? "bookmark.fill" : "bookmark")
-                    .font(.system(size: 15))
-                    .foregroundColor(isBookmarked ? Color(red: 1, green: 0.76, blue: 0.29) : .white)
-                    .frame(width: 38, height: 38)
-            }
-
-            if session?.hasChapters == true {
-                Button { showChapters = true } label: {
-                    Image(systemName: "list.bullet")
-                        .font(.system(size: 15))
-                        .foregroundColor(.white)
-                        .frame(width: 38, height: 38)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(bookmarkNames[page] ?? "第 \(page + 1) 页")
+                        .font(.system(size: 12.5))
+                        .foregroundColor(skin.fg)
+                        .lineLimit(1)
+                    Text("\(page + 1) / \(max(session?.pageCount ?? 0, 1))")
+                        .font(.system(size: 10))
+                        .foregroundColor(skin.dim)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+
+            Button {
+                bookmarks.removeAll { $0 == page }
+                bookmarkNames.removeValue(forKey: page)
+            } label: {
+                Text("删除")
+                    .font(.system(size: 10.5))
+                    .foregroundColor(skin.dim)
+                    .frame(width: 36, height: 30)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
         }
-        .padding(.horizontal, 4)
-        .padding(.top, 2)
-        .padding(.bottom, 2)
-        .background(Color(red: 0.06, green: 0.06, blue: 0.07).opacity(0.94).ignoresSafeArea(edges: .top))
+        .padding(.vertical, 6)
     }
 
-    private var isBookmarked: Bool { bookmarks.contains(currentSourcePage) }
-
-    /// One row of actions under the slider, the way the classic comic readers lay it out.
-    private var bottomBar: some View {
-        VStack(spacing: 2) {
-            Text("\(min(index + 1, max(refs.count, 1))) / \(max(refs.count, 1))")
-                .font(.system(size: 11))
-                .foregroundColor(.white.opacity(0.6))
-
-            Slider(
-                value: $sliderValue,
-                in: 0...Double(max(refs.count - 1, 1)),
-                step: 1
-            ) { editing in
-                if !editing { jump(to: Int(sliderValue.rounded())) }
+    private func chapterRow(_ chapter: Chapter) -> some View {
+        let active = chapter.contains(currentSourcePage)
+        return Button {
+            showChapters = false
+            jumpToSource(chapter.start)
+        } label: {
+            HStack(spacing: 8) {
+                Text(chapter.title.isEmpty ? "第 \(chapter.start + 1) 页起" : chapter.title)
+                    .font(.system(size: 12.5, weight: active ? .medium : .regular))
+                    .foregroundColor(active ? skin.accent : skin.fg)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                Text("\(chapter.count) 页")
+                    .font(.system(size: 10.5))
+                    .foregroundColor(skin.dim)
             }
-            .tint(.white)
-            .padding(.horizontal, 8)
-
-            HStack(spacing: 0) {
-                barAction("上一页", "chevron.left") { turn(forward: false) }
-                barAction("下一页", "chevron.right") { turn(forward: true) }
-                barAction(modeLabel, modeIcon) {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        store.prefs.readingMode = nextMode
-                    }
-                }
-                barAction(isBookmarked ? "已书签" : "书签", isBookmarked ? "bookmark.fill" : "bookmark") {
-                    let page = currentSourcePage
-                    if bookmarks.contains(page) {
-                        bookmarks.removeAll { $0 == page }
-                    } else {
-                        bookmarks.append(page)
-                    }
-                }
-                barAction("设置", "slider.horizontal.3") { showSettings = true }
-            }
-            .padding(.horizontal, 4)
-            .padding(.bottom, 2)
-        }
-        .padding(.top, 6)
-        .padding(.bottom, 10)
-        .background(Color(red: 0.06, green: 0.06, blue: 0.07).opacity(0.94).ignoresSafeArea(edges: .bottom))
-    }
-
-    private func barAction(_ label: String, _ icon: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            VStack(spacing: 3) {
-                Image(systemName: icon)
-                    .font(.system(size: 17))
-                    .foregroundColor(.white)
-                Text(label)
-                    .font(.system(size: 9))
-                    .foregroundColor(.white.opacity(0.62))
-            }
-            .frame(maxWidth: .infinity)
+            .padding(.vertical, 10)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-    }
-
-    private var modeLabel: String {
-        switch store.prefs.readingMode {
-        case .paged: return "翻页"
-        case .vertical: return "竖向"
-        case .horizontal: return "横向"
-        }
-    }
-
-    private var modeIcon: String {
-        switch store.prefs.readingMode {
-        case .paged: return "book"
-        case .vertical: return "rectangle.split.1x2"
-        case .horizontal: return "rectangle.split.2x1"
-        }
-    }
-
-    private var nextMode: ReadingMode {
-        switch store.prefs.readingMode {
-        case .paged: return .vertical
-        case .vertical: return .horizontal
-        case .horizontal: return .paged
-        }
-    }
-
-    private var chapterSheet: some View {
-        NavigationStack {
-            List {
-                ForEach(Array((session?.chapters ?? []).enumerated()), id: \.offset) { _, chapter in
-                    let active = chapter.contains(currentSourcePage)
-                    Button {
-                        showChapters = false
-                        jumpToSource(chapter.start)
-                    } label: {
-                        HStack {
-                            Text(chapter.title.isEmpty ? "从第 \(chapter.start + 1) 页开始" : chapter.title)
-                                .font(.system(size: 14, weight: active ? .semibold : .regular))
-                                .foregroundColor(active ? CoverPalette.colors[0] : .primary)
-                                .lineLimit(1)
-                            Spacer()
-                            Text("\(chapter.count) 页")
-                                .font(.system(size: 12))
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                }
-            }
-            .navigationTitle("目录")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("完成") { showChapters = false }
-                }
-            }
-        }
     }
 
     // MARK: - Layout helpers
@@ -588,18 +761,18 @@ struct ReaderView: View {
 
     private var currentSourcePage: Int { currentRef?.index ?? 0 }
 
-    private var subtitle: String {
-        var parts: [String] = []
+    private var isBookmarked: Bool { bookmarks.contains(currentSourcePage) }
+
+    private var pageLabel: String {
+        var text = ""
         if session?.hasChapters == true,
            let chapter = session?.chapter(at: currentSourcePage),
            !chapter.title.isEmpty {
-            parts.append(chapter.title)
+            text += chapter.title + "  ·  "
         }
-        parts.append("第 \(currentSourcePage + 1) / \(max(sourceCount, 1)) 页")
-        return parts.joined(separator: " · ")
+        text += "\(currentSourcePage + 1) / \(max(session?.pageCount ?? 0, 1))"
+        return text
     }
-
-    private var sourceCount: Int { session?.pageCount ?? 0 }
 
     private func displayAspect(_ ref: PageRef) -> CGFloat {
         guard let session else { return 0.7 }
@@ -608,9 +781,11 @@ struct ReaderView: View {
         return min(max(value, 0.1), 10)
     }
 
-    /// Two when the screen is wide and both neighbours are ordinary pages.
+    /// Two pages when 双页 is on and the screen is wide (or 强制并排 is on).
     private func spreadSpan(size: CGSize) -> Int {
-        guard store.prefs.doublePage, size.width > size.height else { return 1 }
+        let wantsSpread = store.prefs.doublePage
+            && (size.width > size.height || store.prefs.forceSpread)
+        guard wantsSpread else { return 1 }
         guard refs.indices.contains(index) else { return 1 }
         let a = refs[index]
         guard !a.isSplit, refs.indices.contains(index + 1) else { return 1 }
@@ -627,13 +802,41 @@ struct ReaderView: View {
         return CGSize(width: size.height * aspect, height: size.height)
     }
 
+    private func pageTarget(ref: PageRef, viewport: CGSize, cellWidth: CGFloat) -> CGSize {
+        let aspect = displayAspect(ref)
+        let cell = CGSize(width: max(cellWidth, 1), height: max(viewport.height, 1))
+        switch store.prefs.scaleMode {
+        case .fit:
+            return fittedSize(aspect: aspect, size: cell)
+        case .width:
+            return CGSize(width: cell.width, height: cell.width / aspect)
+        case .height:
+            return CGSize(width: cell.height * aspect, height: cell.height)
+        case .original:
+            let native = nativeWidth(ref: ref)
+            guard native > 1 else { return fittedSize(aspect: aspect, size: cell) }
+            return CGSize(width: native, height: native / aspect)
+        }
+    }
+
+    /// 1 source pixel == 1 physical pixel, so "original" does not depend on screen density.
+    private func nativeWidth(ref: PageRef) -> CGFloat {
+        guard let session else { return 0 }
+        let pixels = session.pixelWidth(at: ref.index)
+        guard pixels > 0 else { return 0 }
+        let points = CGFloat(pixels) / max(displayScale, 1)
+        return ref.isSplit ? points * 0.5 : points
+    }
+
     private func maxPan(size: CGSize, zoom level: CGFloat) -> CGSize {
         guard let ref = currentRef else { return .zero }
-        if spreadSpan(size: size) > 1 { return .zero }
-        let fitted = fittedSize(aspect: displayAspect(ref), size: size)
+        let span = spreadSpan(size: size)
+        let cellWidth = span == 2 ? size.width / 2 : size.width
+        let target = pageTarget(ref: ref, viewport: size, cellWidth: cellWidth)
+        let contentWidth = span == 2 ? target.width * 2 : target.width
         return CGSize(
-            width: max(0, (fitted.width * level - size.width) / 2),
-            height: max(0, (fitted.height * level - size.height) / 2)
+            width: max(0, (contentWidth * level - size.width) / 2),
+            height: max(0, (target.height * level - size.height) / 2)
         )
     }
 
@@ -645,7 +848,23 @@ struct ReaderView: View {
         )
     }
 
-    // MARK: - Actions
+    private func resetZoom() {
+        dragX = 0
+        pan = .zero
+        dragPan = .zero
+        zoom = 1
+        pinch = 1
+    }
+
+    // MARK: - Lifecycle
+
+    private func appeared() {
+        open()
+        systemBrightness = UIScreen.main.brightness
+        applyIdleTimer()
+        applyBrightness()
+        scheduleChromeHide()
+    }
 
     private func open() {
         guard session == nil else { return }
@@ -656,6 +875,7 @@ struct ReaderView: View {
         }
         session = opened
         bookmarks = book.bookmarks
+        bookmarkNames = book.bookmarkNames
 
         // Show the first page straight away with the default page ratio. Measuring every
         // page first is what used to keep the reader on a spinner for a long archive.
@@ -673,7 +893,6 @@ struct ReaderView: View {
             refs = buildPageRefs(aspects: aspects, splitWidePages: store.prefs.splitWidePages)
             index = refIndexOfSource(refs, source)
             sliderValue = Double(index)
-            scanProgress = 1
             scanning = false
         }
     }
@@ -686,15 +905,66 @@ struct ReaderView: View {
         sliderValue = Double(index)
     }
 
+    private func dismissReader() {
+        leave()
+        dismiss()
+    }
+
+    private func leave() {
+        progressTask?.cancel()
+        chromeTask?.cancel()
+        persistProgress()
+        persistBookmarks()
+        UIScreen.main.brightness = systemBrightness
+        UIApplication.shared.isIdleTimerDisabled = false
+    }
+
+    private func applyIdleTimer() {
+        UIApplication.shared.isIdleTimerDisabled = store.prefs.keepScreenOn
+    }
+
+    private func applyBrightness() {
+        if store.prefs.autoBrightness {
+            UIScreen.main.brightness = systemBrightness
+        } else {
+            UIScreen.main.brightness = CGFloat(min(max(store.prefs.brightness / 100, 0.05), 1))
+        }
+    }
+
+    private func showToast(_ text: String) {
+        withAnimation { toast = text }
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_600_000_000)
+            withAnimation { toast = nil }
+        }
+    }
+
+    // MARK: - Navigation
+
     private func turn(forward: Bool) {
         if store.prefs.readingMode == .paged {
-            let size = viewSize == .zero
-                ? CGSize(width: 390, height: 844)
-                : viewSize
+            let size = viewSize == .zero ? CGSize(width: 390, height: 844) : viewSize
             step(forward: forward, span: spreadSpan(size: size), size: size)
         } else {
             jump(to: index + (forward ? 1 : -1))
         }
+    }
+
+    private func jumpChapter(_ delta: Int) {
+        let chapters = session?.chapters ?? []
+        guard chapters.count > 1,
+              let here = session?.chapter(at: currentSourcePage),
+              let position = chapters.firstIndex(where: { $0.start == here.start })
+        else {
+            turn(forward: delta > 0)
+            return
+        }
+        let target = position + delta
+        guard chapters.indices.contains(target) else {
+            showToast(delta > 0 ? "已经是最后一话了" : "已经是第一话了")
+            return
+        }
+        jumpToSource(chapters[target].start)
     }
 
     private func jump(to target: Int) {
@@ -735,12 +1005,57 @@ struct ReaderView: View {
         }
     }
 
-    private func saveProgress() {
-        guard session != nil else { return }
-        var updated = book
-        updated.lastPage = currentSourcePage
+    // MARK: - Persistence
+
+    private func saveBookmark() {
+        let page = currentSourcePage
+        if !bookmarks.contains(page) { bookmarks.append(page) }
+        bookmarkNames[page] = addName.isEmpty ? "第 \(page + 1) 页" : addName
+        showAddBookmark = false
+    }
+
+    private func persistBookmarks() {
+        guard var updated = store.books.first(where: { $0.id == book.id }) else { return }
         updated.bookmarks = bookmarks
+        updated.bookmarkNames = bookmarkNames
         store.update(updated)
+    }
+
+    private func scheduleProgressSave() {
+        progressTask?.cancel()
+        progressTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            guard !Task.isCancelled else { return }
+            persistProgress()
+        }
+    }
+
+    private func persistProgress() {
+        guard session != nil else { return }
+        guard var updated = store.books.first(where: { $0.id == book.id }) else { return }
+        let page = currentSourcePage
+        guard updated.lastPage != page else { return }
+        updated.lastPage = page
+        store.update(updated)
+    }
+
+    private func setCoverFromPage() {
+        let ok = store.setCover(book, page: currentSourcePage)
+        showToast(ok ? "封面已更新" : "这张页面无法用作封面")
+    }
+}
+
+/// Inverts the page content only, so the black surround stays black.
+private struct InvertFilter: ViewModifier {
+    let active: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if active {
+            content.colorInvert()
+        } else {
+            content
+        }
     }
 }
 
@@ -753,8 +1068,8 @@ private struct PageContent: View {
     let crop: Bool
     let maxWidth: CGFloat
     let rightToLeft: Bool
-    /// Scroll modes must cover the whole cell, otherwise a mismatched aspect
-    /// leaves a black band between pages.
+    /// Paged cells are already sized to the page ratio, so they must cover the frame
+    /// exactly; otherwise a rounding difference leaves a hairline of background.
     var fill = false
 
     @State private var image: CGImage?

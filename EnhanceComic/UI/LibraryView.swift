@@ -39,6 +39,10 @@ enum CoverCache {
         storage[url.path] = image
         return image
     }
+
+    static func invalidate(_ url: URL) {
+        storage.removeValue(forKey: url.path)
+    }
 }
 
 struct LibraryView: View {
@@ -154,13 +158,23 @@ struct LibraryView: View {
                 .font(.system(size: 28, weight: .bold))
             Text(
                 store.books.isEmpty
-                    ? "本地书本 · GPU 画质增强"
-                    : "本地书库 · 共 \(store.books.count) 本 · GPU 画质增强"
+                    ? "本地书本 · 画质增强"
+                    : "本地书库 · 共 \(store.books.count) 本 · 画质增强"
             )
             .font(.system(size: 12))
             .foregroundColor(.secondary)
+            Text(versionText)
+                .font(.system(size: 10.5))
+                .foregroundColor(.secondary.opacity(0.7))
         }
         .padding(.top, 4)
+    }
+
+    private var versionText: String {
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String ?? "?"
+        let build = info?["CFBundleVersion"] as? String ?? "?"
+        return "v\(version) (\(build))"
     }
 
     private var actions: some View {

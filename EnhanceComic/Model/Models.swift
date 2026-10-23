@@ -23,6 +23,50 @@ enum ReadingMode: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+/// How a paged image is scaled into the viewport before the finger's own zoom applies.
+enum ScaleMode: String, Codable, CaseIterable, Identifiable {
+    case fit
+    case width
+    case height
+    case original
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .fit: return "适应屏幕"
+        case .width: return "适应宽度"
+        case .height: return "适应高度"
+        case .original: return "原始尺寸"
+        }
+    }
+}
+
+/// What a tap in one of the three screen zones does.
+enum TapAction: String, Codable, CaseIterable, Identifiable {
+    case prevPage
+    case nextPage
+    case prevChapter
+    case nextChapter
+    case toggleChrome
+    case openMenu
+    case disabled
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .prevPage: return "上一页"
+        case .nextPage: return "下一页"
+        case .prevChapter: return "上一话"
+        case .nextChapter: return "下一话"
+        case .toggleChrome: return "显示 / 隐藏栏"
+        case .openMenu: return "打开菜单"
+        case .disabled: return "无"
+        }
+    }
+}
+
 enum ScaleFilter: Int, Codable, CaseIterable, Identifiable {
     case nearest = 0
     case bilinear
@@ -51,8 +95,68 @@ struct Book: Identifiable, Codable, Equatable {
     var addedAt: Date = Date()
     var lastPage: Int = 0
     var bookmarks: [Int] = []
+    /// Optional user-given name per bookmarked source page index.
+    var bookmarkNames: [Int: String] = [:]
     /// File name of the cached cover inside the book's folder, nil when not generated yet.
     var coverName: String? = nil
+
+    init(
+        id: UUID = UUID(),
+        title: String,
+        type: BookType,
+        relativePath: String,
+        pageCount: Int,
+        addedAt: Date = Date(),
+        lastPage: Int = 0,
+        bookmarks: [Int] = [],
+        bookmarkNames: [Int: String] = [:],
+        coverName: String? = nil
+    ) {
+        self.id = id
+        self.title = title
+        self.type = type
+        self.relativePath = relativePath
+        self.pageCount = pageCount
+        self.addedAt = addedAt
+        self.lastPage = lastPage
+        self.bookmarks = bookmarks
+        self.bookmarkNames = bookmarkNames
+        self.coverName = coverName
+    }
+
+    // Hand-written coding so libraries saved by earlier builds (which had neither
+    // bookmarkNames nor a few of the newer fields) still decode instead of being lost.
+    enum CodingKeys: String, CodingKey {
+        case id, title, type, relativePath, pageCount, addedAt, lastPage, bookmarks, bookmarkNames, coverName
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = (try? c.decode(UUID.self, forKey: .id)) ?? UUID()
+        title = (try? c.decode(String.self, forKey: .title)) ?? ""
+        type = (try? c.decode(BookType.self, forKey: .type)) ?? .zip
+        relativePath = (try? c.decode(String.self, forKey: .relativePath)) ?? ""
+        pageCount = (try? c.decode(Int.self, forKey: .pageCount)) ?? 0
+        addedAt = (try? c.decode(Date.self, forKey: .addedAt)) ?? Date()
+        lastPage = (try? c.decode(Int.self, forKey: .lastPage)) ?? 0
+        bookmarks = (try? c.decode([Int].self, forKey: .bookmarks)) ?? []
+        bookmarkNames = (try? c.decode([Int: String].self, forKey: .bookmarkNames)) ?? [:]
+        coverName = try? c.decodeIfPresent(String.self, forKey: .coverName)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(title, forKey: .title)
+        try c.encode(type, forKey: .type)
+        try c.encode(relativePath, forKey: .relativePath)
+        try c.encode(pageCount, forKey: .pageCount)
+        try c.encode(addedAt, forKey: .addedAt)
+        try c.encode(lastPage, forKey: .lastPage)
+        try c.encode(bookmarks, forKey: .bookmarks)
+        try c.encode(bookmarkNames, forKey: .bookmarkNames)
+        try c.encodeIfPresent(coverName, forKey: .coverName)
+    }
 }
 
 /// A run of consecutive pages that live in the same folder inside an archive.
@@ -130,6 +234,64 @@ struct ReaderPrefs: Codable, Equatable, Hashable {
     var autoCropWhiteBorders = false
     /// Shows two pages side by side in paged mode when the screen is landscape.
     var doublePage = false
+    /// Two pages even in portrait (页面布局 → 强制并排).
+    var forceSpread = false
+    /// Gap between pages in the scroll modes, percent of the viewport.
+    var pageGapPercent = 0
+
+    // ---- 滤镜 / 显示
+    var grayscale = false
+    var autoContrast = false
+    var invert = false
+    var blueLight = false
+
+    // ---- 设置
+    var keepScreenOn = true
+    var autoBrightness = true
+    var brightness = 50.0
+    /// 0 = 纯黑, 1 = 深灰, 2 = 米白
+    var background = 0
+    var doubleTapZoom = true
+    /// 浅色栏体（原版的白色工具栏）；false 为深色。
+    var chromeLight = false
+    var scaleMode: ScaleMode = .fit
+    var tapLeftAction: TapAction = .prevPage
+    var tapCenterAction: TapAction = .toggleChrome
+    var tapRightAction: TapAction = .nextPage
+
+    init() {}
+
+    enum CodingKeys: String, CodingKey {
+        case readingMode, rightToLeft, splitWidePages, autoCropWhiteBorders, doublePage, forceSpread
+        case pageGapPercent, grayscale, autoContrast, invert, blueLight
+        case keepScreenOn, autoBrightness, brightness, background, doubleTapZoom, chromeLight
+        case scaleMode, tapLeftAction, tapCenterAction, tapRightAction
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        readingMode = (try? c.decode(ReadingMode.self, forKey: .readingMode)) ?? .paged
+        rightToLeft = (try? c.decode(Bool.self, forKey: .rightToLeft)) ?? true
+        splitWidePages = (try? c.decode(Bool.self, forKey: .splitWidePages)) ?? true
+        autoCropWhiteBorders = (try? c.decode(Bool.self, forKey: .autoCropWhiteBorders)) ?? false
+        doublePage = (try? c.decode(Bool.self, forKey: .doublePage)) ?? false
+        forceSpread = (try? c.decode(Bool.self, forKey: .forceSpread)) ?? false
+        pageGapPercent = (try? c.decode(Int.self, forKey: .pageGapPercent)) ?? 0
+        grayscale = (try? c.decode(Bool.self, forKey: .grayscale)) ?? false
+        autoContrast = (try? c.decode(Bool.self, forKey: .autoContrast)) ?? false
+        invert = (try? c.decode(Bool.self, forKey: .invert)) ?? false
+        blueLight = (try? c.decode(Bool.self, forKey: .blueLight)) ?? false
+        keepScreenOn = (try? c.decode(Bool.self, forKey: .keepScreenOn)) ?? true
+        autoBrightness = (try? c.decode(Bool.self, forKey: .autoBrightness)) ?? true
+        brightness = (try? c.decode(Double.self, forKey: .brightness)) ?? 50
+        background = (try? c.decode(Int.self, forKey: .background)) ?? 0
+        doubleTapZoom = (try? c.decode(Bool.self, forKey: .doubleTapZoom)) ?? true
+        chromeLight = (try? c.decode(Bool.self, forKey: .chromeLight)) ?? false
+        scaleMode = (try? c.decode(ScaleMode.self, forKey: .scaleMode)) ?? .fit
+        tapLeftAction = (try? c.decode(TapAction.self, forKey: .tapLeftAction)) ?? .prevPage
+        tapCenterAction = (try? c.decode(TapAction.self, forKey: .tapCenterAction)) ?? .toggleChrome
+        tapRightAction = (try? c.decode(TapAction.self, forKey: .tapRightAction)) ?? .nextPage
+    }
 }
 
 struct PageRef: Hashable, Identifiable {

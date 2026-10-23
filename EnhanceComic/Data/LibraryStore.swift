@@ -72,8 +72,7 @@ final class LibraryStore: ObservableObject {
     }
 
     /// Fills in covers for books imported by an earlier build.
-    func backfillCovers() async {
-        let missing = books.filter { $0.coverName == nil }
+    func backfillCovers() async {        let missing = books.filter { $0.coverName == nil }
         guard !missing.isEmpty else { return }
         let dir = libraryDir
 
@@ -102,6 +101,26 @@ final class LibraryStore: ObservableObject {
             }
         }
         save()
+    }
+
+    /// Replaces the shelf cover with an arbitrary page of the book.
+    @discardableResult
+    func setCover(_ book: Book, page: Int) -> Bool {
+        guard let session = session(for: book),
+              page >= 0,
+              page < session.pageCount,
+              let image = session.image(at: page, maxWidth: 600),
+              let data = UIImage(cgImage: image).jpegData(compressionQuality: 0.86)
+        else { return false }
+
+        let name = "cover-page.jpg"
+        let url = folder(for: book).appendingPathComponent(name)
+        guard (try? data.write(to: url, options: .atomic)) != nil else { return false }
+        CoverCache.invalidate(url)
+        guard var updated = books.first(where: { $0.id == book.id }) else { return false }
+        updated.coverName = name
+        update(updated)
+        return true
     }
 
     // MARK: - Import

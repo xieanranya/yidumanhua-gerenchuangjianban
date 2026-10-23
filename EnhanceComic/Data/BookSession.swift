@@ -39,6 +39,9 @@ final class BookSession: @unchecked Sendable {
 
     private(set) var aspects: [CGFloat] = []
 
+    /// Source pixel width per page, used by the 原始尺寸 scale mode.
+    private(set) var pixelWidths: [Int] = []
+
     var pageCount: Int {
         if let pdf { return pdf.numberOfPages }
         if !zipEntries.isEmpty { return zipEntries.count }
@@ -91,6 +94,7 @@ final class BookSession: @unchecked Sendable {
 
         self.chapters = resolvedChapters
         self.aspects = [CGFloat](repeating: 0, count: count)
+        self.pixelWidths = [Int](repeating: 0, count: count)
     }
 
     // MARK: - Aspects
@@ -100,8 +104,10 @@ final class BookSession: @unchecked Sendable {
         let total = pageCount
         for i in 0..<total {
             lock.lock()
-            if aspects[i] <= 0.01 {
-                aspects[i] = measureAspectLocked(i)
+            if aspects[i] <= 0.01 || pixelWidths[i] == 0 {
+                let measured = measureLocked(i)
+                if aspects[i] <= 0.01 { aspects[i] = measured.aspect }
+                if pixelWidths[i] == 0 { pixelWidths[i] = measured.width }
             }
             lock.unlock()
             if (i + 1) % 8 == 0 { onProgress?(i + 1, total) }
@@ -115,24 +121,40 @@ final class BookSession: @unchecked Sendable {
         defer { lock.unlock() }
         guard index >= 0, index < aspects.count else { return 0.7 }
         if aspects[index] > 0.01 { return aspects[index] }
-        let value = measureAspectLocked(index)
-        aspects[index] = value
-        return value
+        let measured = measureLocked(index)
+        aspects[index] = measured.aspect
+        if pixelWidths.indices.contains(index) {
+            pixelWidths[index] = measured.width
+        }
+        return measured.aspect
     }
 
-    private func measureAspectLocked(_ index: Int) -> CGFloat {
+    /// Native pixel width of a source page; 0 when it cannot be read.
+    func pixelWidth(at index: Int) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        guard index >= 0, index < pixelWidths.count else { return 0 }
+        if pixelWidths[index] > 0 { return pixelWidths[index] }
+        let measured = measureLocked(index)
+        if aspects.indices.contains(index) { aspects[index] = measured.aspect }
+        pixelWidths[index] = measured.width
+        return measured.width
+    }
+
+    private func measureLocked(_ index: Int) -> (aspect: CGFloat, width: Int) {
         if let pdf {
-            guard let page = pdf.page(at: index + 1) else { return 0.7 }
+            guard let page = pdf.page(at: index + 1) else { return (0.7, 0) }
             let box = page.getBoxRect(.mediaBox)
-            return box.height > 0 ? box.width / box.height : 0.7
+            guard box.height > 0 else { return (0.7, 0) }
+            return (box.width / box.height, Int(box.width))
         }
         guard let source = imageSourceLocked(at: index),
               let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as NSDictionary?
-        else { return 0.7 }
+        else { return (0.7, 0) }
         let w = (props[kCGImagePropertyPixelWidth] as? NSNumber)?.doubleValue ?? 0
         let h = (props[kCGImagePropertyPixelHeight] as? NSNumber)?.doubleValue ?? 0
-        guard w > 1, h > 1 else { return 0.7 }
-        return CGFloat(w / h)
+        guard w > 1, h > 1 else { return (0.7, 0) }
+        return (CGFloat(w / h), Int(w))
     }
 
     // MARK: - Decoding

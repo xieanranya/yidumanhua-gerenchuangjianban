@@ -172,7 +172,8 @@ final class BookSession: @unchecked Sendable {
 
     /// Pixel size from an image header alone, so a partially inflated page still measures.
     static func pixelSize(_ data: Data) -> (width: Double, height: Double)? {
-        guard !data.isEmpty, let source = CGImageSourceCreateIncremental(nil) else { return nil }
+        guard !data.isEmpty else { return nil }
+        let source = CGImageSourceCreateIncremental(nil)
         CGImageSourceUpdateData(source, data as CFData, false)
         guard let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as NSDictionary?,
               let w = (props[kCGImagePropertyPixelWidth] as? NSNumber)?.doubleValue,

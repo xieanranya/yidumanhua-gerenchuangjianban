@@ -25,6 +25,46 @@ jobs:
           echo "--- archive / lzma / bz2 / xz stubs ---"
           ls "$SDK/usr/lib" 2>/dev/null | grep -iE "archive|lzma|bz2|xz" || echo "(none in SDK usr/lib)"
 
+      # 真跑一遍 LibArchive：在 runner 的 macOS 上 dlopen 系统 libarchive，用工程里同一份
+      # Swift 代码解 tar / tar.gz。跑通了说明 dlsym 的名字、函数签名、解包流程都对；
+      # 只验证 iOS 侧编译是看不出来这些的。失败不影响出包，日志里能看到。
+      - name: Archive reader self-test
+        continue-on-error: true
+        run: |
+          mkdir -p /tmp/arc/src/chap
+          for i in 1 2 3; do printf '0123456789AB' > /tmp/arc/src/chap/$i.jpg; done
+          printf 'not an image' > /tmp/arc/src/notes.txt
+          (cd /tmp/arc && tar cf comic.tar src && tar czf comic.tar.gz src)
+          cat > /tmp/arc/main.swift <<'SWIFT'
+          import Foundation
+
+          let archive = LibArchive.shared
+          print("libarchive available:", archive.isAvailable)
+          for path in CommandLine.arguments.dropFirst() {
+              let url = URL(fileURLWithPath: path)
+              let entries = archive.list(url)
+              let images = entries.filter { PageFiles.isImage($0.name) }
+              print(url.lastPathComponent, "entries:", entries.count, "images:", images.count)
+              print("  names:", entries.map { $0.name })
+              if let first = images.first {
+                  let data = archive.readEntry(url, named: first.name)
+                  print("  first page bytes:", data?.count ?? -1, "(expect 12)")
+              }
+              let out = URL(fileURLWithPath: "/tmp/arc/out_" + url.lastPathComponent)
+              try? FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+              let extracted = archive.extractImages(url, to: out)
+              print("  extracted:", extracted, "(expect 3)")
+          }
+          SWIFT
+          swiftc -O -o /tmp/arc/selftest \
+            EnhanceComic/Model/Models.swift \
+            EnhanceComic/Data/BookSession.swift \
+            EnhanceComic/Data/ZipReader.swift \
+            EnhanceComic/Data/Inflate.swift \
+            EnhanceComic/Data/LibArchive.swift \
+            /tmp/arc/main.swift 2>&1 | tail -25
+          /tmp/arc/selftest /tmp/arc/comic.tar /tmp/arc/comic.tar.gz
+
       - name: Build unsigned device binary
         run: |
           set -o pipefail

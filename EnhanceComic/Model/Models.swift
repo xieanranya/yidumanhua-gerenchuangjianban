@@ -128,6 +128,8 @@ struct ReaderPrefs: Codable, Equatable, Hashable {
     var rightToLeft = true
     var splitWidePages = true
     var autoCropWhiteBorders = false
+    /// Shows two pages side by side in paged mode when the screen is landscape.
+    var doublePage = false
 }
 
 struct PageRef: Hashable, Identifiable {

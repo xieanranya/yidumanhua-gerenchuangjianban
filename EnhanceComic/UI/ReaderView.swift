@@ -2,13 +2,17 @@ import SwiftUI
 import CoreGraphics
 
 /// Reader with paged, vertical-scroll and horizontal-scroll modes.
-/// Every page is decoded off the main thread and run through `ImageEnhancer`.
+///
+/// Paged mode follows the finger: the current page slides with the drag while the
+/// neighbouring page comes in from the side, and it snaps forward past a distance or
+/// velocity threshold, otherwise it springs back.
 struct ReaderView: View {
 
     let book: Book
 
     @EnvironmentObject private var store: LibraryStore
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.displayScale) private var displayScale
 
     @State private var session: BookSession?
     @State private var refs: [PageRef] = []
@@ -26,7 +30,10 @@ struct ReaderView: View {
     @State private var zoom: CGFloat = 1
     @State private var pinch: CGFloat = 1
     @State private var pan: CGSize = .zero
-    @State private var dragTranslation: CGSize = .zero
+    @State private var dragPan: CGSize = .zero
+    @State private var dragX: CGFloat = 0
+    @State private var turning = false
+    @State private var viewSize: CGSize = .zero
 
     var body: some View {
         GeometryReader { geo in
@@ -48,14 +55,19 @@ struct ReaderView: View {
                     if showUI && !failed && !scanning { bottomBar }
                 }
             }
+            .onAppear { viewSize = geo.size }
+            .onChange(of: geo.size) { viewSize = $0 }
         }
         .statusBarHidden(!showUI)
         .onAppear(perform: open)
         .onDisappear(perform: saveProgress)
         .onChange(of: store.prefs.splitWidePages) { _ in rebuildRefs() }
         .onChange(of: store.prefs.readingMode) { _ in
+            dragX = 0
             pan = .zero
+            dragPan = .zero
             zoom = 1
+            pinch = 1
             if store.prefs.readingMode != .paged { scrollTarget = currentRef?.id }
         }
         .onChange(of: index) { value in
@@ -93,83 +105,240 @@ struct ReaderView: View {
         }
     }
 
+    // MARK: - Paged
+
     private func paged(size: CGSize) -> some View {
-        ZStack {
-            if let session, let ref = currentRef {
-                PageContent(
-                    session: session,
-                    ref: ref,
-                    settings: store.enhance,
-                    crop: store.prefs.autoCropWhiteBorders,
-                    maxWidth: size.width * 2,
-                    rightToLeft: store.prefs.rightToLeft
-                )
-                .scaleEffect(zoom * pinch)
-                .offset(x: pan.width + dragTranslation.width,
-                        y: pan.height + dragTranslation.height)
+        let span = spreadSpan(size: size)
+        let rtl = store.prefs.rightToLeft
+        // The page that a forward turn brings in sits on the side the finger drags from.
+        let nextOffset: CGFloat = rtl ? -size.width : size.width
+        let prevOffset: CGFloat = rtl ? size.width : -size.width
+
+        return ZStack {
+            if let session {
+                if refs.indices.contains(index - span) {
+                    unitView(start: index - span, span: span, session: session, size: size)
+                        .offset(x: prevOffset)
+                }
+                if refs.indices.contains(index) {
+                    unitView(start: index, span: span, session: session, size: size)
+                }
+                if refs.indices.contains(index + span) {
+                    unitView(start: index + span, span: span, session: session, size: size)
+                        .offset(x: nextOffset)
+                }
             }
         }
+        .offset(x: dragX)
+        .scaleEffect(zoom * pinch, anchor: .center)
+        .offset(x: pan.width + dragPan.width, y: pan.height + dragPan.height)
         .frame(width: size.width, height: size.height)
+        .clipped()
         .contentShape(Rectangle())
         .gesture(
-            DragGesture(minimumDistance: 12)
-                .onChanged { value in
-                    if zoom * pinch > 1.02 {
-                        dragTranslation = value.translation
-                    } else {
-                        dragTranslation = CGSize(width: value.translation.width * 0.25, height: 0)
-                    }
+            ExclusiveGesture(
+                SpatialTapGesture(count: 2).onEnded { value in
+                    handleDoubleTap(at: value.location, size: size)
+                },
+                SpatialTapGesture(count: 1).onEnded { value in
+                    handleSingleTap(at: value.location, size: size, span: span)
                 }
-                .onEnded { value in
-                    let dx = value.translation.width
-                    dragTranslation = .zero
-                    if zoom * pinch > 1.02 {
-                        pan = CGSize(
-                            width: pan.width + dx,
-                            height: pan.height + value.translation.height
-                        )
-                        return
-                    }
-                    guard abs(dx) > size.width * 0.16 else { return }
-                    turn(forward: store.prefs.rightToLeft ? dx > 0 : dx < 0)
-                }
+            )
         )
-        .simultaneousGesture(
-            MagnificationGesture()
-                .onChanged { value in pinch = value }
-                .onEnded { value in
-                    zoom = min(max(zoom * value, 1), 8)
-                    pinch = 1
-                    if zoom <= 1.001 { pan = .zero }
-                }
+        .simultaneousGesture(dragGesture(size: size, span: span))
+        .simultaneousGesture(pinchGesture(size: size))
+    }
+
+    @ViewBuilder
+    private func unitView(start: Int, span: Int, session: BookSession, size: CGSize) -> some View {
+        if span == 2, refs.indices.contains(start), refs.indices.contains(start + 1) {
+            let left = store.prefs.rightToLeft ? refs[start + 1] : refs[start]
+            let right = store.prefs.rightToLeft ? refs[start] : refs[start + 1]
+            HStack(spacing: 0) {
+                pageCell(left, session: session, size: size, width: size.width / 2)
+                pageCell(right, session: session, size: size, width: size.width / 2)
+            }
+            .frame(width: size.width, height: size.height)
+        } else if refs.indices.contains(start) {
+            pageCell(refs[start], session: session, size: size, width: size.width)
+        }
+    }
+
+    private func pageCell(
+        _ ref: PageRef,
+        session: BookSession,
+        size: CGSize,
+        width: CGFloat
+    ) -> some View {
+        PageContent(
+            session: session,
+            ref: ref,
+            settings: store.enhance,
+            crop: store.prefs.autoCropWhiteBorders,
+            maxWidth: width * displayScale * 1.1,
+            rightToLeft: store.prefs.rightToLeft
         )
-        .simultaneousGesture(
-            SpatialTapGesture().onEnded { value in
-                guard zoom * pinch <= 1.02 else { return }
-                let width = size.width
-                if value.location.x < width * 0.3 {
-                    turn(forward: store.prefs.rightToLeft)
-                } else if value.location.x > width * 0.7 {
-                    turn(forward: !store.prefs.rightToLeft)
-                } else {
-                    withAnimation(.easeInOut(duration: 0.15)) { showUI.toggle() }
+        .frame(width: width, height: size.height)
+    }
+
+    private func dragGesture(size: CGSize, span: Int) -> some Gesture {
+        DragGesture(minimumDistance: 6)
+            .onChanged { value in
+                if zoom * pinch > 1.02 {
+                    dragPan = value.translation
+                } else if !turning {
+                    dragX = value.translation.width
                 }
             }
-        )
+            .onEnded { value in
+                if zoom * pinch > 1.02 {
+                    let merged = CGSize(
+                        width: pan.width + value.translation.width,
+                        height: pan.height + value.translation.height
+                    )
+                    dragPan = .zero
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        pan = clampedPan(merged, size: size)
+                    }
+                    return
+                }
+                endTurn(
+                    dx: value.translation.width,
+                    predicted: value.predictedEndTranslation.width,
+                    span: span,
+                    size: size
+                )
+            }
     }
+
+    private func pinchGesture(size: CGSize) -> some Gesture {
+        MagnificationGesture()
+            .onChanged { value in pinch = value }
+            .onEnded { value in
+                let next = min(max(zoom * value, 1), 6)
+                pinch = 1
+                if next <= 1.001 {
+                    withAnimation(.easeOut(duration: 0.18)) {
+                        zoom = 1
+                        pan = .zero
+                    }
+                } else {
+                    zoom = next
+                    withAnimation(.easeOut(duration: 0.18)) {
+                        pan = clampedPan(pan, size: size)
+                    }
+                }
+            }
+    }
+
+    private func endTurn(dx: CGFloat, predicted: CGFloat, span: Int, size: CGSize) {
+        guard !turning else { return }
+        guard abs(dx) > 0.5 else {
+            withAnimation(.easeOut(duration: 0.16)) { dragX = 0 }
+            return
+        }
+        let forward = store.prefs.rightToLeft ? dx > 0 : dx < 0
+        let neighbour = index + (forward ? span : -span)
+        let canTurn = refs.indices.contains(neighbour)
+        let flickMatches = (predicted > 0) == (dx > 0)
+        let commit = canTurn && (
+            abs(dx) > size.width * 0.28 ||
+                (flickMatches && abs(predicted) > size.width * 0.55)
+        )
+        let sign: CGFloat = dx >= 0 ? 1 : -1
+        if commit {
+            turning = true
+            withAnimation(.easeOut(duration: 0.2)) { dragX = sign * size.width }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                commitTurn(to: neighbour)
+            }
+        } else {
+            withAnimation(.easeOut(duration: 0.18)) { dragX = 0 }
+        }
+    }
+
+    /// Turns without a preceding drag: edge taps and the bottom bar.
+    private func step(forward: Bool, span: Int, size: CGSize) {
+        guard !turning else { return }
+        let neighbour = index + (forward ? span : -span)
+        guard refs.indices.contains(neighbour) else { return }
+        let rtl = store.prefs.rightToLeft
+        let sign: CGFloat = forward ? (rtl ? 1 : -1) : (rtl ? -1 : 1)
+        turning = true
+        withAnimation(.easeOut(duration: 0.22)) { dragX = sign * size.width }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.22) {
+            commitTurn(to: neighbour)
+        }
+    }
+
+    private func commitTurn(to target: Int) {
+        var tx = Transaction()
+        tx.disablesAnimations = true
+        withTransaction(tx) {
+            index = target
+            dragX = 0
+            sliderValue = Double(target)
+            zoom = 1
+            pinch = 1
+            pan = .zero
+            dragPan = .zero
+        }
+        turning = false
+    }
+
+    private func handleSingleTap(at point: CGPoint, size: CGSize, span: Int) {
+        if zoom * pinch > 1.02 {
+            withAnimation(.easeInOut(duration: 0.15)) { showUI.toggle() }
+            return
+        }
+        if point.x < size.width * 0.25 {
+            step(forward: false, span: span, size: size)
+        } else if point.x > size.width * 0.75 {
+            step(forward: true, span: span, size: size)
+        } else {
+            withAnimation(.easeInOut(duration: 0.15)) { showUI.toggle() }
+        }
+    }
+
+    private func handleDoubleTap(at point: CGPoint, size: CGSize) {
+        if zoom > 1.05 {
+            withAnimation(.easeOut(duration: 0.22)) {
+                zoom = 1
+                pinch = 1
+                pan = .zero
+            }
+            return
+        }
+        let target: CGFloat = 2.6
+        let cx = size.width / 2
+        let cy = size.height / 2
+        let wx = (point.x - cx - pan.width) / zoom
+        let wy = (point.y - cy - pan.height) / zoom
+        let bounds = maxPan(size: size, zoom: target)
+        let nx = min(max(point.x - cx - wx * target, -bounds.width), bounds.width)
+        let ny = min(max(point.y - cy - wy * target, -bounds.height), bounds.height)
+        withAnimation(.easeOut(duration: 0.22)) {
+            zoom = target
+            pinch = 1
+            pan = CGSize(width: nx, height: ny)
+        }
+    }
+
+    // MARK: - Scroll modes
 
     private func scrolling(size: CGSize) -> some View {
         let vertical = store.prefs.readingMode == .vertical
+        let spacing: CGFloat = vertical ? 0 : 8
         return ScrollViewReader { proxy in
             ScrollView(vertical ? .vertical : .horizontal, showsIndicators: false) {
                 if vertical {
-                    LazyVStack(spacing: 8) {
+                    LazyVStack(spacing: spacing) {
                         ForEach(Array(refs.enumerated()), id: \.element.id) { position, ref in
                             cell(ref: ref, position: position, size: size, vertical: true)
                         }
                     }
                 } else {
-                    LazyHStack(spacing: 8) {
+                    LazyHStack(spacing: spacing) {
                         ForEach(Array(refs.enumerated()), id: \.element.id) { position, ref in
                             cell(ref: ref, position: position, size: size, vertical: false)
                         }
@@ -184,8 +353,18 @@ struct ReaderView: View {
                 scrollTarget = nil
             }
             .simultaneousGesture(
-                SpatialTapGesture().onEnded { _ in
-                    withAnimation(.easeInOut(duration: 0.15)) { showUI.toggle() }
+                SpatialTapGesture().onEnded { value in
+                    if value.location.x < size.width * 0.22, index > 0 {
+                        withAnimation(.easeOut(duration: 0.2)) {
+                            proxy.scrollTo(refs[index - 1].id, anchor: vertical ? .top : .leading)
+                        }
+                    } else if value.location.x > size.width * 0.78, index + 1 < refs.count {
+                        withAnimation(.easeOut(duration: 0.2)) {
+                            proxy.scrollTo(refs[index + 1].id, anchor: vertical ? .top : .leading)
+                        }
+                    } else {
+                        withAnimation(.easeInOut(duration: 0.15)) { showUI.toggle() }
+                    }
                 }
             )
         }
@@ -200,7 +379,7 @@ struct ReaderView: View {
                 ref: ref,
                 settings: store.enhance,
                 crop: store.prefs.autoCropWhiteBorders,
-                maxWidth: vertical ? size.width * 1.4 : size.height * aspect * 1.4,
+                maxWidth: (vertical ? size.width : size.height * aspect) * displayScale * 1.1,
                 rightToLeft: store.prefs.rightToLeft
             )
             .frame(
@@ -327,7 +506,7 @@ struct ReaderView: View {
         }
     }
 
-    // MARK: - State helpers
+    // MARK: - Layout helpers
 
     private var currentRef: PageRef? {
         refs.indices.contains(index) ? refs[index] : refs.first
@@ -353,6 +532,43 @@ struct ReaderView: View {
         let base = session.aspect(at: ref.index)
         let value = ref.isSplit ? base * 0.5 : base
         return min(max(value, 0.1), 10)
+    }
+
+    /// Two when the screen is wide and both neighbours are ordinary pages.
+    private func spreadSpan(size: CGSize) -> Int {
+        guard store.prefs.doublePage, size.width > size.height else { return 1 }
+        guard refs.indices.contains(index) else { return 1 }
+        let a = refs[index]
+        guard !a.isSplit, refs.indices.contains(index + 1) else { return 1 }
+        let b = refs[index + 1]
+        guard !b.isSplit, b.index != a.index else { return 1 }
+        return 2
+    }
+
+    private func fittedSize(aspect: CGFloat, size: CGSize) -> CGSize {
+        let viewAspect = size.width / max(size.height, 1)
+        if aspect > viewAspect {
+            return CGSize(width: size.width, height: size.width / aspect)
+        }
+        return CGSize(width: size.height * aspect, height: size.height)
+    }
+
+    private func maxPan(size: CGSize, zoom level: CGFloat) -> CGSize {
+        guard let ref = currentRef else { return .zero }
+        if spreadSpan(size: size) > 1 { return .zero }
+        let fitted = fittedSize(aspect: displayAspect(ref), size: size)
+        return CGSize(
+            width: max(0, (fitted.width * level - size.width) / 2),
+            height: max(0, (fitted.height * level - size.height) / 2)
+        )
+    }
+
+    private func clampedPan(_ value: CGSize, size: CGSize) -> CGSize {
+        let bounds = maxPan(size: size, zoom: zoom * pinch)
+        return CGSize(
+            width: min(max(value.width, -bounds.width), bounds.width),
+            height: min(max(value.height, -bounds.height), bounds.height)
+        )
     }
 
     // MARK: - Actions
@@ -392,17 +608,31 @@ struct ReaderView: View {
     }
 
     private func turn(forward: Bool) {
-        jump(to: index + (forward ? 1 : -1))
+        if store.prefs.readingMode == .paged {
+            let size = viewSize == .zero
+                ? CGSize(width: 390, height: 844)
+                : viewSize
+            step(forward: forward, span: spreadSpan(size: size), size: size)
+        } else {
+            jump(to: index + (forward ? 1 : -1))
+        }
     }
 
     private func jump(to target: Int) {
         guard !refs.isEmpty else { return }
         let next = min(max(target, 0), refs.count - 1)
         guard next != index else { return }
-        index = next
+        var tx = Transaction()
+        tx.disablesAnimations = true
+        withTransaction(tx) {
+            index = next
+            dragX = 0
+        }
         sliderValue = Double(next)
         pan = .zero
+        dragPan = .zero
         zoom = 1
+        pinch = 1
         if store.prefs.readingMode != .paged {
             scrollTarget = refs[next].id
         }
@@ -410,10 +640,17 @@ struct ReaderView: View {
 
     private func jumpToSource(_ sourcePage: Int) {
         let target = refIndexOfSource(refs, sourcePage)
-        index = target
+        var tx = Transaction()
+        tx.disablesAnimations = true
+        withTransaction(tx) {
+            index = target
+            dragX = 0
+        }
         sliderValue = Double(target)
         pan = .zero
+        dragPan = .zero
         zoom = 1
+        pinch = 1
         if store.prefs.readingMode != .paged {
             scrollTarget = refs.indices.contains(target) ? refs[target].id : nil
         }

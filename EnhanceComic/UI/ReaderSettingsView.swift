@@ -19,6 +19,7 @@ struct ReaderSettingsView: View {
                     .pickerStyle(.segmented)
                     Toggle("从右向左（日漫）", isOn: $prefs.rightToLeft)
                     Toggle("宽页自动拆分双页", isOn: $prefs.splitWidePages)
+                    Toggle("双页并排（横屏）", isOn: $prefs.doublePage)
                     Toggle("自动裁掉白边", isOn: $prefs.autoCropWhiteBorders)
                 }
 

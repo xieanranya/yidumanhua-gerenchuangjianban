@@ -14,6 +14,17 @@ jobs:
       - name: Xcode version
         run: xcodebuild -version
 
+      # 判断 iOS 上能不能直接用系统自带的 libarchive（支持 rar / 7z / tar / xz / bz2）。
+      # 只要能 dlopen 到，就不用把 unrar / 7zip 的源码塞进工程。
+      - name: Probe system archives
+        run: |
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          echo "SDK=$SDK"
+          echo "--- SDK usr/lib ---"
+          ls -la "$SDK/usr/lib" 2>/dev/null | head -60
+          echo "--- archive / lzma / bz2 / xz stubs ---"
+          ls "$SDK/usr/lib" 2>/dev/null | grep -iE "archive|lzma|bz2|xz" || echo "(none in SDK usr/lib)"
+
       - name: Build unsigned device binary
         run: |
           set -o pipefail

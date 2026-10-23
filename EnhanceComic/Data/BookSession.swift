@@ -148,6 +148,19 @@ final class BookSession: @unchecked Sendable {
             guard box.height > 0 else { return (0.7, 0) }
             return (box.width / box.height, Int(box.width))
         }
+        // ZIP pages: inflate only the first slice of the stream. An image header is always
+        // near the front, and measuring every page in full is what made opening a large
+        // archive feel like a frozen spinner.
+        if !zipEntries.isEmpty {
+            guard index >= 0, index < zipEntries.count, let reader = zip else { return (0.7, 0) }
+            if let head = reader.data(for: zipEntries[index], limit: 262_144),
+               let size = BookSession.pixelSize(head) {
+                return (CGFloat(size.width / size.height), Int(size.width))
+            }
+            guard let full = reader.data(for: zipEntries[index]),
+                  let size = BookSession.pixelSize(full) else { return (0.7, 0) }
+            return (CGFloat(size.width / size.height), Int(size.width))
+        }
         guard let source = imageSourceLocked(at: index),
               let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as NSDictionary?
         else { return (0.7, 0) }
@@ -155,6 +168,18 @@ final class BookSession: @unchecked Sendable {
         let h = (props[kCGImagePropertyPixelHeight] as? NSNumber)?.doubleValue ?? 0
         guard w > 1, h > 1 else { return (0.7, 0) }
         return (CGFloat(w / h), Int(w))
+    }
+
+    /// Pixel size from an image header alone, so a partially inflated page still measures.
+    static func pixelSize(_ data: Data) -> (width: Double, height: Double)? {
+        guard !data.isEmpty, let source = CGImageSourceCreateIncremental(nil) else { return nil }
+        CGImageSourceUpdateData(source, data as CFData, false)
+        guard let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as NSDictionary?,
+              let w = (props[kCGImagePropertyPixelWidth] as? NSNumber)?.doubleValue,
+              let h = (props[kCGImagePropertyPixelHeight] as? NSNumber)?.doubleValue,
+              w > 1, h > 1
+        else { return nil }
+        return (w, h)
     }
 
     // MARK: - Decoding

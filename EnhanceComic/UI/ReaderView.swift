@@ -1075,9 +1075,11 @@ private struct PageContent: View {
     var fill = false
 
     @State private var image: CGImage?
+    @State private var failed = false
+    @State private var attempt = 0
 
     private var cacheKey: String {
-        "\(ref.index)-\(ref.half)-\(settings.hashValue)-\(crop)-\(rightToLeft)-\(Int(maxWidth))"
+        "\(ref.index)-\(ref.half)-\(settings.hashValue)-\(crop)-\(rightToLeft)-\(Int(maxWidth))-\(attempt)"
     }
 
     var body: some View {
@@ -1087,12 +1089,26 @@ private struct PageContent: View {
                     .resizable()
                     .interpolation(.high)
                     .aspectRatio(contentMode: fill ? .fill : .fit)
+            } else if failed {
+                // Never spin forever: a page that cannot be decoded says so, and the reason
+                // is visible instead of looking like a stuck loader.
+                VStack(spacing: 10) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.system(size: 22, weight: .light))
+                    Text("第 \(ref.index + 1) 页无法解码")
+                        .font(.system(size: 13))
+                    Button("重试") { attempt += 1 }
+                        .font(.system(size: 13, weight: .medium))
+                }
+                .foregroundStyle(Color.white.opacity(0.7))
+                .padding(18)
             } else {
                 ProgressView().tint(.white.opacity(0.5))
             }
         }
         .task(id: cacheKey) {
             image = nil
+            failed = false
             let settings = self.settings
             let crop = self.crop
             let rightToLeft = self.rightToLeft
@@ -1113,6 +1129,7 @@ private struct PageContent: View {
                 )
             }.value
             image = result
+            failed = (result == nil)
         }
     }
 }

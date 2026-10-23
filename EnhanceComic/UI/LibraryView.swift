@@ -49,8 +49,7 @@ struct LibraryView: View {
 
     @EnvironmentObject private var store: LibraryStore
 
-    @State private var showFilePicker = false
-    @State private var showFolderPicker = false
+    @State private var showPicker = false
     @State private var importing = false
     @State private var openBook: Book?
     @State private var pendingDelete: Book?
@@ -93,10 +92,13 @@ struct LibraryView: View {
                 Text(message)
                     .font(.system(size: 13))
                     .foregroundColor(.white)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 10)
-                    .background(Color.black.opacity(0.82))
-                    .clipShape(Capsule())
+                    .multilineTextAlignment(.center)
+                    .lineLimit(4)
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 11)
+                    .background(Color.black.opacity(0.86))
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .padding(.horizontal, 24)
                     .padding(.bottom, 26)
                     .transition(.opacity)
             }
@@ -104,32 +106,20 @@ struct LibraryView: View {
         .fullScreenCover(item: $openBook) { book in
             ReaderView(book: book).environmentObject(store)
         }
+        // A single importer for every entry point. Two `.fileImporter` modifiers on the same
+        // view fight over the one presentation slot and the first one silently never opens,
+        // which is why "导入漫画" did nothing while the folder button worked.
         .fileImporter(
-            isPresented: $showFilePicker,
-            allowedContentTypes: [.zip, .pdf],
+            isPresented: $showPicker,
+            allowedContentTypes: [.item, .folder],
             allowsMultipleSelection: true
         ) { result in
-            guard case let .success(urls) = result, !urls.isEmpty else { return }
-            importing = true
-            Task { @MainActor in
-                let outcome = await store.importDocuments(urls)
-                importing = false
-                if outcome.failed > 0 {
-                    showMessage("有 \(outcome.failed) 个文件无法识别")
-                }
-            }
-        }
-        .fileImporter(
-            isPresented: $showFolderPicker,
-            allowedContentTypes: [.folder],
-            allowsMultipleSelection: false
-        ) { result in
-            guard case let .success(urls) = result, let url = urls.first else { return }
-            importing = true
-            Task { @MainActor in
-                let book = await store.importFolder(url)
-                importing = false
-                if book == nil { showMessage("这个文件夹里没有可用的图片") }
+            switch result {
+            case .success(let urls):
+                guard !urls.isEmpty else { return }
+                runImport(urls)
+            case .failure(let error):
+                showMessage("打开文件选择器失败：\(error.localizedDescription)")
             }
         }
         .confirmationDialog(
@@ -180,7 +170,7 @@ struct LibraryView: View {
     private var actions: some View {
         HStack(spacing: 10) {
             Button {
-                showFilePicker = true
+                showPicker = true
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "plus")
@@ -195,7 +185,7 @@ struct LibraryView: View {
             }
 
             Button {
-                showFolderPicker = true
+                showPicker = true
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "folder")
@@ -356,10 +346,25 @@ struct LibraryView: View {
         .onLongPressGesture { pendingDelete = book }
     }
 
+    /// Runs the import and always reports an outcome. Silence was the worst part of the old
+    /// behaviour: a file that got skipped just vanished from the run with no explanation.
+    private func runImport(_ urls: [URL]) {
+        importing = true
+        Task { @MainActor in
+            let outcome = await store.importAny(urls)
+            importing = false
+            if !outcome.problems.isEmpty {
+                showMessage(outcome.problems.prefix(2).joined(separator: "\n"))
+            } else if outcome.added > 0 {
+                showMessage("已导入 \(outcome.added) 本")
+            }
+        }
+    }
+
     private func showMessage(_ text: String) {
         withAnimation { message = text }
         Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 2_200_000_000)
+            try? await Task.sleep(nanoseconds: 3_600_000_000)
             withAnimation { message = nil }
         }
     }

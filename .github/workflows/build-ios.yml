@@ -29,6 +29,18 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             build | tee build.log
 
+      - name: Inject file sharing key
+        run: |
+          APP=build/Build/Products/Release-iphoneos/EnhanceComic.app
+          PLIST="$APP/Info.plist"
+          # Xcode 的 INFOPLIST_KEY_ 白名单里没有 UIFileSharingEnabled（pbxproj 里写了也会被丢掉），
+          # 而「文件」App 里要看到 App 的文件夹必须有这个键，所以在打包前直接补进去。
+          /usr/libexec/PlistBuddy -c "Delete :UIFileSharingEnabled" "$PLIST" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Add :UIFileSharingEnabled bool true" "$PLIST"
+          echo "--- verify ---"
+          /usr/libexec/PlistBuddy -c "Print :UIFileSharingEnabled" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Print :LSSupportsOpeningDocumentsInPlace" "$PLIST"
+
       - name: Package IPA
         run: |
           mkdir -p Payload

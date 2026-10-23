@@ -194,7 +194,10 @@ final class LibraryStore: ObservableObject {
         let candidates = items.filter { url in
             let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
             guard !isDir else { return false }
-            return ["zip", "cbz", "pdf", "rar"].contains(url.pathExtension.lowercased())
+            return [
+                "zip", "cbz", "rar", "cbr", "pdf", "7z", "cb7",
+                "tar", "cbt", "tgz", "gz", "tbz2", "bz2", "txz", "xz",
+            ].contains(url.pathExtension.lowercased())
         }
         guard !candidates.isEmpty else { return }
 
@@ -208,8 +211,13 @@ final class LibraryStore: ObservableObject {
 
     private enum Sniffed {
         case zip
-        case pdf
         case rar
+        case pdf
+        case sevenZip
+        case tar
+        case tarGzip
+        case tarBzip2
+        case tarXz
         case unknown
     }
 
@@ -269,27 +277,42 @@ final class LibraryStore: ObservableObject {
     nonisolated private static func buildFile(from url: URL, libraryDir: URL) -> BuildResult {
         let name = url.lastPathComponent
         let ext = (name as NSString).pathExtension.lowercased()
+        let sniffed = sniff(url)
+
+        // 7z / tar 系列：solid block 和流式格式都没法按页随机读，导入时整包解成目录。
+        if let label = unpackLabel(sniffed: sniffed, ext: ext) {
+            return unpack(from: url, name: name, libraryDir: libraryDir, label: label)
+        }
+
         let type: BookType
-        switch sniff(url) {
+        switch sniffed {
         case .zip:
             type = .zip
         case .pdf:
             type = .pdf
         case .rar:
-            return BuildResult(
-                book: nil,
-                reason: "「\(name)」是 RAR 压缩包，iOS 版还不支持，请先解压成 ZIP 或文件夹"
-            )
+            type = .rar
         case .unknown:
             // No usable header (or unreadable): fall back to the extension so an unusual
             // zip still imports, while unsupported types get a real reason.
             if ext == "zip" || ext == "cbz" {
                 type = .zip
+            } else if ext == "rar" || ext == "cbr" {
+                type = .rar
             } else if ext == "pdf" {
                 type = .pdf
             } else {
-                return BuildResult(book: nil, reason: "「\(name)」不是 ZIP / CBZ / PDF")
+                return BuildResult(book: nil, reason: "「\(name)」不是 ZIP / RAR / 7Z / TAR / PDF")
             }
+        default:
+            type = .zip
+        }
+
+        if type == .rar, !LibArchive.shared.isAvailable {
+            return BuildResult(
+                book: nil,
+                reason: "「\(name)」是 RAR，但这台设备上取不到系统解压组件（libarchive）"
+            )
         }
 
         let folderName = UUID().uuidString
@@ -307,9 +330,13 @@ final class LibraryStore: ObservableObject {
             let count = pageCount(type: type, url: destination)
             guard count > 0 else {
                 try? FileManager.default.removeItem(at: folder)
-                let hint = type == .zip
-                    ? "压缩包里没有找到图片（支持 jpg / png / webp / gif / bmp / tiff）。如果它还在 iCloud 里，先在「文件」App 里下载到本机再试"
-                    : "这个 PDF 打不开，可能加密或已损坏"
+                let hint: String
+                switch type {
+                case .zip, .rar:
+                    hint = "压缩包里没有找到图片（支持 jpg / png / webp / gif / bmp / tiff）。如果它还在 iCloud 里，先在「文件」App 里下载到本机再试"
+                default:
+                    hint = "这个 PDF 打不开，可能加密或已损坏"
+                }
                 return BuildResult(book: nil, reason: "「\(name)」\(hint)")
             }
             var book = Book(
@@ -327,6 +354,86 @@ final class LibraryStore: ObservableObject {
                 reason: "「\(name)」复制失败：\(error.localizedDescription)。如果它在 iCloud 云盘，先长按下载到本机再导入"
             )
         }
+    }
+
+    /// 7z / tar 系列的解包导入：先落到库目录，解出图片，原压缩包立即删掉，只留一份。
+    nonisolated private static func unpack(
+        from url: URL,
+        name: String,
+        libraryDir: URL,
+        label: String
+    ) -> BuildResult {
+        guard LibArchive.shared.isAvailable else {
+            return BuildResult(
+                book: nil,
+                reason: "「\(name)」需要系统解压组件（libarchive），这台设备上取不到"
+            )
+        }
+        let folderName = UUID().uuidString
+        let folder = libraryDir.appendingPathComponent(folderName, isDirectory: true)
+        let staging = libraryDir.appendingPathComponent(UUID().uuidString)
+        do {
+            if isTemporaryPick(url) {
+                try FileManager.default.copyItem(at: url, to: staging)
+            } else {
+                try coordinatedCopy(from: url, to: staging)
+            }
+            let count = LibArchive.shared.extractImages(staging, to: folder)
+            try? FileManager.default.removeItem(at: staging)
+            guard count > 0 else {
+                try? FileManager.default.removeItem(at: folder)
+                return BuildResult(
+                    book: nil,
+                    reason: "「\(name)」里没有找到图片（支持 jpg / png / webp / gif / bmp / tiff）"
+                )
+            }
+            var book = Book(
+                title: archiveTitle(name),
+                type: .folder,
+                relativePath: folderName,
+                pageCount: count
+            )
+            book.sourceLabel = label
+            book.coverName = cover(for: book, libraryDir: libraryDir)
+            return BuildResult(book: book, reason: "")
+        } catch {
+            try? FileManager.default.removeItem(at: staging)
+            try? FileManager.default.removeItem(at: folder)
+            return BuildResult(
+                book: nil,
+                reason: "「\(name)」解包失败：\(error.localizedDescription)"
+            )
+        }
+    }
+
+    /// 需要解包才能读的容器，返回书架徽标上显示的名字。
+    nonisolated private static func unpackLabel(sniffed: Sniffed, ext: String) -> String? {
+        switch sniffed {
+        case .sevenZip: return "7Z"
+        case .tarGzip: return "TAR.GZ"
+        case .tarBzip2: return "TAR.BZ2"
+        case .tarXz: return "TAR.XZ"
+        case .tar: return "TAR"
+        default: break
+        }
+        switch ext {
+        case "7z", "cb7": return "7Z"
+        case "tar", "cbt": return "TAR"
+        case "tgz", "gz": return "TAR.GZ"
+        case "tbz2", "tbz", "bz2": return "TAR.BZ2"
+        case "txz", "xz": return "TAR.XZ"
+        default: return nil
+        }
+    }
+
+    /// "xx.tar.gz" 只去掉真正的扩展名，别把名字削成 "xx.tar"。
+    nonisolated private static func archiveTitle(_ name: String) -> String {
+        let lower = name.lowercased()
+        for suffix in [".tar.gz", ".tar.bz2", ".tar.xz", ".tgz", ".tbz2", ".tbz", ".txz"]
+        where lower.hasSuffix(suffix) {
+            return String(name.dropLast(suffix.count))
+        }
+        return (name as NSString).deletingPathExtension
     }
 
     // MARK: - Coordinated file access
@@ -384,8 +491,18 @@ final class LibraryStore: ObservableObject {
     nonisolated private static func sniff(_ url: URL) -> Sniffed {
         guard let handle = try? FileHandle(forReadingFrom: url) else { return .unknown }
         defer { try? handle.close() }
-        guard let head = try? handle.read(upToCount: 8), head.count >= 4 else { return .unknown }
+        guard let head = try? handle.read(upToCount: 512), head.count >= 4 else { return .unknown }
         let bytes = [UInt8](head)
+        if bytes.count >= 6, bytes[0] == 0x37, bytes[1] == 0x7A, bytes[2] == 0xBC, bytes[3] == 0xAF,
+           bytes[4] == 0x27, bytes[5] == 0x1C {
+            return .sevenZip
+        }
+        if bytes.count >= 6, bytes[0] == 0xFD, bytes[1] == 0x37, bytes[2] == 0x7A, bytes[3] == 0x58,
+           bytes[4] == 0x5A, bytes[5] == 0x00 {
+            return .tarXz
+        }
+        if bytes[0] == 0x1F, bytes[1] == 0x8B { return .tarGzip }
+        if bytes.count >= 3, bytes[0] == 0x42, bytes[1] == 0x5A, bytes[2] == 0x68 { return .tarBzip2 }
         if bytes[0] == 0x50, bytes[1] == 0x4B, bytes[2] == 0x03 || bytes[2] == 0x05
             || bytes[2] == 0x07 {
             return .zip
@@ -395,6 +512,11 @@ final class LibraryStore: ObservableObject {
         }
         if bytes[0] == 0x52, bytes[1] == 0x61, bytes[2] == 0x72, bytes[3] == 0x21 {
             return .rar
+        }
+        // POSIX tar 在第 257 字节写 ustar。
+        if bytes.count >= 262 {
+            let magic = String(decoding: bytes[257..<262], as: UTF8.self)
+            if magic == "ustar" { return .tar }
         }
         return .unknown
     }
@@ -406,6 +528,9 @@ final class LibraryStore: ObservableObject {
         case .zip:
             guard let reader = try? ZipReader(url: url) else { return 0 }
             return reader.entries.filter { PageFiles.isImage($0.name) }.count
+        case .rar:
+            guard LibArchive.shared.isAvailable else { return 0 }
+            return LibArchive.shared.list(url).filter { PageFiles.isImage($0.name) }.count
         case .folder:
             return 0
         }

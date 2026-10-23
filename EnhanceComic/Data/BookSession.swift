@@ -30,6 +30,11 @@ final class BookSession: @unchecked Sendable {
     private let url: URL
     private var zip: ZipReader?
     private var zipEntries: [ZipEntry] = []
+    /// RAR / CBR：走系统 libarchive 流式读，按名字定位条目（见 LibArchive.readEntry）。
+    private var rarURL: URL?
+    private var rarEntries: [LibArchive.Entry] = []
+    private var rarCache: [Int: Data] = [:]
+    private var rarOrder: [Int] = []
     private var imageURLs: [URL] = []
     private var pdf: CGPDFDocument?
     private let lock = NSLock()
@@ -45,6 +50,7 @@ final class BookSession: @unchecked Sendable {
     var pageCount: Int {
         if let pdf { return pdf.numberOfPages }
         if !zipEntries.isEmpty { return zipEntries.count }
+        if !rarEntries.isEmpty { return rarEntries.count }
         return imageURLs.count
     }
 
@@ -69,6 +75,17 @@ final class BookSession: @unchecked Sendable {
             self.zipEntries = pages
             count = pages.count
             resolvedChapters = Chapter.build(from: pages.map { $0.name })
+
+        case .rar:
+            guard LibArchive.shared.isAvailable else { return nil }
+            let entries = LibArchive.shared.list(fileURL)
+                .filter { PageFiles.isImage($0.name) }
+                .sorted { PageFiles.naturalLess($0.name, $1.name) }
+            guard !entries.isEmpty else { return nil }
+            self.rarURL = fileURL
+            self.rarEntries = entries
+            count = entries.count
+            resolvedChapters = Chapter.build(from: entries.map { $0.name })
 
         case .pdf:
             guard let doc = CGPDFDocument(fileURL as CFURL), doc.numberOfPages > 0 else {
@@ -161,6 +178,17 @@ final class BookSession: @unchecked Sendable {
                   let size = BookSession.pixelSize(full) else { return (0.7, 0) }
             return (CGFloat(size.width / size.height), Int(size.width))
         }
+        if !rarEntries.isEmpty {
+            guard index >= 0, index < rarEntries.count else { return (0.7, 0) }
+            let name = rarEntries[index].name
+            if let head = rarData(index, name: name, limit: 262_144),
+               let size = BookSession.pixelSize(head) {
+                return (CGFloat(size.width / size.height), Int(size.width))
+            }
+            guard let full = rarData(index, name: name),
+                  let size = BookSession.pixelSize(full) else { return (0.7, 0) }
+            return (CGFloat(size.width / size.height), Int(size.width))
+        }
         guard let source = imageSourceLocked(at: index),
               let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as NSDictionary?
         else { return (0.7, 0) }
@@ -206,6 +234,12 @@ final class BookSession: @unchecked Sendable {
     // MARK: - Private
 
     private func imageSourceLocked(at index: Int) -> CGImageSource? {
+        if !rarEntries.isEmpty {
+            guard index >= 0, index < rarEntries.count,
+                  let data = rarData(index, name: rarEntries[index].name)
+            else { return nil }
+            return CGImageSourceCreateWithData(data as CFData, nil)
+        }
         if !zipEntries.isEmpty {
             guard index >= 0, index < zipEntries.count,
                   let data = zip?.data(for: zipEntries[index])
@@ -214,6 +248,26 @@ final class BookSession: @unchecked Sendable {
         }
         guard index >= 0, index < imageURLs.count else { return nil }
         return CGImageSourceCreateWithURL(imageURLs[index] as CFURL, nil)
+    }
+
+    /// 读 RAR 里的一页。libarchive 是流式的，每次要重新扫到目标条目，所以留三页缓存 ——
+    /// 翻回上一页、以及「先量尺寸再解码」这类重复访问都能直接命中。
+    private func rarData(_ index: Int, name: String, limit: Int = Int.max) -> Data? {
+        if limit == Int.max, let hit = rarCache[index] { return hit }
+        guard let url = rarURL else { return nil }
+        guard let data = LibArchive.shared.readEntry(url, named: name, limit: limit) else {
+            return nil
+        }
+        if limit == Int.max {
+            rarCache[index] = data
+            rarOrder.removeAll { $0 == index }
+            rarOrder.append(index)
+            while rarOrder.count > 3 {
+                let evicted = rarOrder.removeFirst()
+                rarCache.removeValue(forKey: evicted)
+            }
+        }
+        return data
     }
 
     private func renderPDFLocked(index: Int, maxWidth: CGFloat) -> CGImage? {

@@ -3,6 +3,7 @@ import CoreGraphics
 
 enum BookType: String, Codable {
     case zip
+    case rar
     case pdf
     case folder
 }
@@ -99,6 +100,8 @@ struct Book: Identifiable, Codable, Equatable {
     var bookmarkNames: [Int: String] = [:]
     /// File name of the cached cover inside the book's folder, nil when not generated yet.
     var coverName: String? = nil
+    /// 原始容器名（"7Z" / "TAR"）：这两种格式导入时会解包成文件夹，书架上仍显示原格式。
+    var sourceLabel: String = ""
 
     init(
         id: UUID = UUID(),
@@ -110,7 +113,8 @@ struct Book: Identifiable, Codable, Equatable {
         lastPage: Int = 0,
         bookmarks: [Int] = [],
         bookmarkNames: [Int: String] = [:],
-        coverName: String? = nil
+        coverName: String? = nil,
+        sourceLabel: String = ""
     ) {
         self.id = id
         self.title = title
@@ -122,12 +126,13 @@ struct Book: Identifiable, Codable, Equatable {
         self.bookmarks = bookmarks
         self.bookmarkNames = bookmarkNames
         self.coverName = coverName
+        self.sourceLabel = sourceLabel
     }
 
     // Hand-written coding so libraries saved by earlier builds (which had neither
     // bookmarkNames nor a few of the newer fields) still decode instead of being lost.
     enum CodingKeys: String, CodingKey {
-        case id, title, type, relativePath, pageCount, addedAt, lastPage, bookmarks, bookmarkNames, coverName
+        case id, title, type, relativePath, pageCount, addedAt, lastPage, bookmarks, bookmarkNames, coverName, sourceLabel
     }
 
     init(from decoder: Decoder) throws {
@@ -142,6 +147,7 @@ struct Book: Identifiable, Codable, Equatable {
         bookmarks = (try? c.decode([Int].self, forKey: .bookmarks)) ?? []
         bookmarkNames = (try? c.decode([Int: String].self, forKey: .bookmarkNames)) ?? [:]
         coverName = try? c.decodeIfPresent(String.self, forKey: .coverName)
+        sourceLabel = (try? c.decode(String.self, forKey: .sourceLabel)) ?? ""
     }
 
     func encode(to encoder: Encoder) throws {
@@ -156,6 +162,7 @@ struct Book: Identifiable, Codable, Equatable {
         try c.encode(bookmarks, forKey: .bookmarks)
         try c.encode(bookmarkNames, forKey: .bookmarkNames)
         try c.encodeIfPresent(coverName, forKey: .coverName)
+        try c.encode(sourceLabel, forKey: .sourceLabel)
     }
 }
 

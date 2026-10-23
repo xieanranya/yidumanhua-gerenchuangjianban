@@ -22,9 +22,15 @@ enum CoverPalette {
     static func typeLabel(_ type: BookType) -> String {
         switch type {
         case .zip: return "ZIP"
+        case .rar: return "RAR"
         case .pdf: return "PDF"
         case .folder: return "文件夹"
         }
+    }
+
+    /// 7z / tar 解包成文件夹入库，书架上仍标原容器名，免得用户以为格式变了。
+    static func label(for book: Book) -> String {
+        book.sourceLabel.isEmpty ? typeLabel(book.type) : book.sourceLabel
     }
 }
 
@@ -335,7 +341,7 @@ struct LibraryView: View {
             }
             Text("书架还是空的")
                 .font(.system(size: 16, weight: .semibold))
-            Text("支持 ZIP / CBZ / PDF，\n也可以直接导入一个装满图片的文件夹。")
+            Text("支持 ZIP / CBZ / RAR / CBR / 7Z / CB7 / TAR / PDF，\n也可以直接导入一个装满图片的文件夹。")
                 .font(.system(size: 12))
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
@@ -378,7 +384,7 @@ struct LibraryView: View {
                     .clipped()
                 }
                 .overlay(alignment: .bottomTrailing) {
-                    Text(CoverPalette.typeLabel(book.type))
+                    Text(CoverPalette.label(for: book))
                         .font(.system(size: 9, weight: .medium))
                         .foregroundColor(.white)
                         .padding(.horizontal, 6)

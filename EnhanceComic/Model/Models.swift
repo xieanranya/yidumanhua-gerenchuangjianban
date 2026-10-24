@@ -304,6 +304,17 @@ struct ReaderPrefs: Codable, Equatable, Hashable {
 struct PageRef: Hashable, Identifiable {
     let index: Int
     let half: Int
+    /// width / height of this display page (already halved for split pages).
+    ///
+    /// Carried on the ref instead of asking the session: layout runs on the main thread on
+    /// every scroll frame, and a lock round-trip there is what made flipping feel sticky.
+    let aspect: CGFloat
+
+    init(index: Int, half: Int, aspect: CGFloat = 1 / 1.42) {
+        self.index = index
+        self.half = half
+        self.aspect = aspect.isFinite && aspect > 0.02 ? aspect : 1 / 1.42
+    }
 
     var id: Int { index * 3 + half }
     var isSplit: Bool { half != 0 }
@@ -313,11 +324,12 @@ func buildPageRefs(aspects: [CGFloat], splitWidePages: Bool) -> [PageRef] {
     var out: [PageRef] = []
     out.reserveCapacity(aspects.count)
     for (i, aspect) in aspects.enumerated() {
-        if splitWidePages && aspect > 1.55 {
-            out.append(PageRef(index: i, half: 1))
-            out.append(PageRef(index: i, half: 2))
+        let base = aspect.isFinite && aspect > 0.02 ? aspect : 1 / 1.42
+        if splitWidePages && base > 1.55 {
+            out.append(PageRef(index: i, half: 1, aspect: base * 0.5))
+            out.append(PageRef(index: i, half: 2, aspect: base * 0.5))
         } else {
-            out.append(PageRef(index: i, half: 0))
+            out.append(PageRef(index: i, half: 0, aspect: base))
         }
     }
     return out

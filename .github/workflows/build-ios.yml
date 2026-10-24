@@ -88,8 +88,13 @@ jobs:
           # 而「文件」App 里要看到 App 的文件夹必须有这个键，所以在打包前直接补进去。
           /usr/libexec/PlistBuddy -c "Delete :UIFileSharingEnabled" "$PLIST" 2>/dev/null || true
           /usr/libexec/PlistBuddy -c "Add :UIFileSharingEnabled bool true" "$PLIST"
+          # ProMotion：没有这个键，iPhone 会把整个 App 的刷新率锁在 60Hz（iPad 默认不锁），
+          # 滚动和翻页动画看着就是"卡卡的、刷新率不对"。它同样不在 INFOPLIST_KEY_ 白名单里。
+          /usr/libexec/PlistBuddy -c "Delete :CADisableMinimumFrameDurationOnPhone" "$PLIST" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Add :CADisableMinimumFrameDurationOnPhone bool true" "$PLIST"
           echo "--- verify ---"
           /usr/libexec/PlistBuddy -c "Print :UIFileSharingEnabled" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Print :CADisableMinimumFrameDurationOnPhone" "$PLIST"
           /usr/libexec/PlistBuddy -c "Print :LSSupportsOpeningDocumentsInPlace" "$PLIST"
 
       - name: Package IPA

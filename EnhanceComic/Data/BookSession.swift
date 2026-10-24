@@ -213,18 +213,119 @@ final class BookSession: @unchecked Sendable {
 
     // MARK: - Decoding
 
+    /// Decoded + enhanced pages, keyed by page and render settings.
+    ///
+    /// Scrolling used to re-inflate and re-run the enhancer for every page it passed, so
+    /// flipping back one page cost as much as opening it the first time. NSCache drops
+    /// entries under memory pressure on its own.
+    private let renderCache: NSCache<NSString, CGImage> = {
+        let cache = NSCache<NSString, CGImage>()
+        cache.countLimit = 40
+        cache.totalCostLimit = 220 * 1024 * 1024
+        return cache
+    }()
+
+    /// Everything that changes the pixels of a page, so a settings tweak invalidates cleanly.
+    private func renderKey(
+        _ index: Int,
+        _ maxWidth: CGFloat,
+        _ settings: EnhanceSettings,
+        _ crop: Bool,
+        _ half: Int,
+        _ rightToLeft: Bool
+    ) -> NSString {
+        // Width is bucketed to 32px: a one-pixel layout change must not throw the page away.
+        let bucket = Int(maxWidth / 32)
+        return "\(index)|\(bucket)|\(settings.hashValue)|\(crop)|\(half)|\(rightToLeft)" as NSString
+    }
+
+    func render(
+        at index: Int,
+        maxWidth: CGFloat,
+        settings: EnhanceSettings,
+        crop: Bool,
+        half: Int,
+        rightToLeft: Bool
+    ) -> CGImage? {
+        let key = renderKey(index, maxWidth, settings, crop, half, rightToLeft)
+        if let hit = renderCache.object(forKey: key) { return hit }
+        guard let raw = image(at: index, maxWidth: maxWidth) else { return nil }
+        let output = ImageEnhancer.process(
+            raw,
+            settings: settings,
+            autoCrop: crop,
+            half: half,
+            rightToLeft: rightToLeft
+        ) ?? raw
+        let cost = output.bytesPerRow * output.height
+        renderCache.setObject(output, forKey: key, cost: cost)
+        return output
+    }
+
+    /// True when [render] would answer without touching the archive.
+    func isRendered(
+        at index: Int,
+        maxWidth: CGFloat,
+        settings: EnhanceSettings,
+        crop: Bool,
+        half: Int,
+        rightToLeft: Bool
+    ) -> Bool {
+        renderCache.object(forKey: renderKey(index, maxWidth, settings, crop, half, rightToLeft)) != nil
+    }
+
     func image(at index: Int, maxWidth: CGFloat) -> CGImage? {
+        // PDF pages are drawn from a CGPDFDocument, which is not safe to touch from two
+        // threads, so that path keeps its lock for the whole render.
         lock.lock()
-        defer { lock.unlock() }
-        if pdf != nil { return renderPDFLocked(index: index, maxWidth: maxWidth) }
-        guard let source = imageSourceLocked(at: index) else { return nil }
+        if pdf != nil {
+            let page = renderPDFLocked(index: index, maxWidth: maxWidth)
+            lock.unlock()
+            return page
+        }
+        let payload = payloadLocked(index)
+        lock.unlock()
+        guard let payload else { return nil }
+
+        let source: CGImageSource?
+        switch payload {
+        case .data(let data):
+            source = CGImageSourceCreateWithData(data as CFData, nil)
+        case .file(let url):
+            source = CGImageSourceCreateWithURL(url as CFURL, nil)
+        }
+        guard let source else { return nil }
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
             kCGImageSourceShouldCacheImmediately: true,
             kCGImageSourceThumbnailMaxPixelSize: max(64, Int(maxWidth)),
         ]
+        // Decoding happens outside the lock: several pages can be prepared at once instead
+        // of queueing behind one another while the finger is still moving.
         return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+    }
+
+    private enum Payload {
+        case data(Data)
+        case file(URL)
+    }
+
+    /// Raw bytes (or a file URL) for one page. Inflating a stream has to stay under the lock,
+    /// but it is only part of the cost — image decoding is the expensive half and is done
+    /// outside of it.
+    private func payloadLocked(_ index: Int) -> Payload? {
+        if !rarEntries.isEmpty {
+            guard index >= 0, index < rarEntries.count else { return nil }
+            return rarData(index, name: rarEntries[index].name).map(Payload.data)
+        }
+        if !zipEntries.isEmpty {
+            guard index >= 0, index < zipEntries.count, let data = zip?.data(for: zipEntries[index])
+            else { return nil }
+            return .data(data)
+        }
+        guard index >= 0, index < imageURLs.count else { return nil }
+        return .file(imageURLs[index])
     }
 
     func chapter(at page: Int) -> Chapter? {

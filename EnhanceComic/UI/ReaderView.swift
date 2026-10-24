@@ -2,6 +2,15 @@ import SwiftUI
 import CoreGraphics
 import UIKit
 
+/// Serial, low-priority queue that warms the pages just ahead of the finger.
+///
+/// Serial on purpose: a burst of parallel decodes saturates the CPU, and the page the user is
+/// actually looking at then has to compete with pages they may never reach.
+private let pagePrefetchQueue = DispatchQueue(
+    label: "com.enhancecomic.page.prefetch",
+    qos: .utility
+)
+
 /// Reader with paged, vertical-scroll and horizontal-scroll modes.
 ///
 /// The layout follows the reference reader: a title row with an overflow menu, a strip of
@@ -151,6 +160,7 @@ struct ReaderView: View {
         .onChange(of: index) { value in
             sliderValue = Double(value)
             scheduleProgressSave()
+            prefetchAhead(from: value)
         }
         .onChange(of: showChrome) { visible in
             if visible { scheduleChromeHide() }
@@ -178,7 +188,7 @@ struct ReaderView: View {
                 scrolling(size: size)
             }
         }
-        .grayscale(store.prefs.grayscale ? 1 : 0)
+        .modifier(GrayscaleFilter(active: store.prefs.grayscale))
         .modifier(InvertFilter(active: store.prefs.invert))
     }
 
@@ -454,14 +464,16 @@ struct ReaderView: View {
             ScrollView(vertical ? .vertical : .horizontal, showsIndicators: false) {
                 if vertical {
                     LazyVStack(spacing: gap) {
-                        ForEach(Array(refs.enumerated()), id: \.element.id) { position, ref in
-                            cell(ref: ref, position: position, size: size, vertical: true)
+                        // Indexed ForEach: `Array(refs.enumerated())` allocated a fresh array
+                        // of tuples on every body pass, i.e. on every scroll frame.
+                        ForEach(refs.indices, id: \.self) { position in
+                            cell(ref: refs[position], position: position, size: size, vertical: true)
                         }
                     }
                 } else {
                     LazyHStack(spacing: gap) {
-                        ForEach(Array(refs.enumerated()), id: \.element.id) { position, ref in
-                            cell(ref: ref, position: position, size: size, vertical: false)
+                        ForEach(refs.indices, id: \.self) { position in
+                            cell(ref: refs[position], position: position, size: size, vertical: false)
                         }
                     }
                 }
@@ -775,10 +787,9 @@ struct ReaderView: View {
     }
 
     private func displayAspect(_ ref: PageRef) -> CGFloat {
-        guard let session else { return 0.7 }
-        let base = session.aspect(at: ref.index)
-        let value = ref.isSplit ? base * 0.5 : base
-        return min(max(value, 0.1), 10)
+        // Measured once when the refs were built. Asking the session here meant a lock and
+        // possibly an inflate inside a layout pass.
+        min(max(ref.aspect, 0.1), 10)
     }
 
     /// Two pages when 双页 is on and the screen is wide (or 强制并排 is on).
@@ -905,8 +916,48 @@ struct ReaderView: View {
         sliderValue = Double(index)
     }
 
-    private func dismissReader() {
-        leave()
+    /// Decodes the next couple of pages in the background so a flick does not land on a
+    /// spinner. Serial + low priority, so the page on screen always wins the CPU.
+    private func prefetchAhead(from position: Int) {
+        guard let session, !scanning, refs.count > 1 else { return }
+        let size = viewSize
+        guard size.width > 1, size.height > 1 else { return }
+        let vertical = store.prefs.readingMode == .vertical
+        let settings = store.enhance
+        let crop = store.prefs.autoCropWhiteBorders
+        let rtl = store.prefs.rightToLeft
+        let scale = displayScale
+
+        var targets = [position + 1, position + 2]
+        if position > 0 { targets.append(position - 1) }
+
+        for p in targets where refs.indices.contains(p) {
+            let ref = refs[p]
+            let width = vertical
+                ? size.width * scale * 1.1
+                : size.height * ref.aspect * scale * 1.1
+            if session.isRendered(
+                at: ref.index,
+                maxWidth: width,
+                settings: settings,
+                crop: crop,
+                half: ref.half,
+                rightToLeft: rtl
+            ) { continue }
+            pagePrefetchQueue.async {
+                _ = session.render(
+                    at: ref.index,
+                    maxWidth: width,
+                    settings: settings,
+                    crop: crop,
+                    half: ref.half,
+                    rightToLeft: rtl
+                )
+            }
+        }
+    }
+
+    private func dismissReader() {        leave()
         dismiss()
     }
 
@@ -1048,8 +1099,22 @@ struct ReaderView: View {
 }
 
 /// Inverts the page content only, so the black surround stays black.
+private struct GrayscaleFilter: ViewModifier {
+    let active: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if active {
+            content.grayscale(1)
+        } else {
+            content
+        }
+    }
+}
+
 private struct InvertFilter: ViewModifier {
     let active: Bool
+
 
     @ViewBuilder
     func body(content: Content) -> some View {
@@ -1087,7 +1152,10 @@ private struct PageContent: View {
             if let image {
                 Image(decorative: image, scale: 1)
                     .resizable()
-                    .interpolation(.high)
+                    // `.high` resampled the whole page on every scroll frame. Pages are
+                    // decoded at ~1.05x their display size, so the linear filter is visually
+                    // indistinguishable here and much cheaper on a 120Hz panel.
+                    .interpolation(.medium)
                     .aspectRatio(contentMode: fill ? .fill : .fit)
             } else if failed {
                 // Never spin forever: a page that cannot be decoded says so, and the reason
@@ -1117,17 +1185,19 @@ private struct PageContent: View {
             let session = self.session
 
             let result = await Task.detached(priority: .userInitiated) { () -> CGImage? in
-                guard let raw = session.image(at: ref.index, maxWidth: maxWidth) else {
-                    return nil
-                }
-                return ImageEnhancer.process(
-                    raw,
+                // Decode + enhance + crop in one go, and keep the result: coming back to a
+                // page then costs nothing at all.
+                session.render(
+                    at: ref.index,
+                    maxWidth: maxWidth,
                     settings: settings,
-                    autoCrop: crop,
+                    crop: crop,
                     half: ref.half,
                     rightToLeft: rightToLeft
                 )
             }.value
+            // A cell that scrolled away before its page was ready has nothing to show.
+            guard !Task.isCancelled else { return }
             image = result
             failed = (result == nil)
         }

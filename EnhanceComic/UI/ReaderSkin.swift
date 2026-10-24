@@ -812,7 +812,7 @@ private struct LayoutPanel: View {
                 InlineSwitchRow(label: "拆宽页", checked: prefs.splitWidePages, skin: skin) {
                     prefs.splitWidePages = $0
                 }
-                InlineSwitchRow(label: "裁白边", checked: prefs.autoCropWhiteBorders, skin: skin) {
+                InlineSwitchRow(label: "自动裁白边", checked: prefs.autoCropWhiteBorders, skin: skin) {
                     prefs.autoCropWhiteBorders = $0
                 }
             }

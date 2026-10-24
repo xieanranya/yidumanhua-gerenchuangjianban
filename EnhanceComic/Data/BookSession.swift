@@ -44,6 +44,13 @@ final class BookSession: @unchecked Sendable {
 
     private(set) var aspects: [CGFloat] = []
 
+    /// 自动裁白边的结果（归一化，原点左上）。nil 表示整页保留。
+    ///
+    /// 这些框在打开书时就扫描好，而不是等到解码每一页时再算 —— 布局要用「裁过之后」
+    /// 的宽高比，否则图被裁窄了却还塞进原来比例的框里，就会拉伸变形。
+    private(set) var cropBoxes: [CGRect?] = []
+    private var cropScanned: [Bool] = []
+
     /// Source pixel width per page, used by the 原始尺寸 scale mode.
     private(set) var pixelWidths: [Int] = []
 
@@ -111,25 +118,111 @@ final class BookSession: @unchecked Sendable {
 
         self.chapters = resolvedChapters
         self.aspects = [CGFloat](repeating: 0, count: count)
+        self.cropBoxes = [CGRect?](repeating: nil, count: count)
+        self.cropScanned = [Bool](repeating: false, count: count)
         self.pixelWidths = [Int](repeating: 0, count: count)
     }
 
     // MARK: - Aspects
 
     /// Reads every page header so the scroll layouts are stable before drawing.
-    func scanAspects(onProgress: ((Int, Int) -> Void)? = nil) {
+    ///
+    /// With `crop` on it also detects the white border of each page, because the reader has
+    /// to know the *cropped* aspect before it can lay a page out without stretching it.
+    func scanAspects(crop: Bool = false, onProgress: ((Int, Int) -> Void)? = nil) {
         let total = pageCount
         for i in 0..<total {
+            var pending: Payload?
             lock.lock()
-            if aspects[i] <= 0.01 || pixelWidths[i] == 0 {
+            let needsMeasure = aspects[i] <= 0.01 || pixelWidths[i] == 0
+            let needsCrop = crop && !cropScanned[i] && pdf == nil
+            if needsMeasure {
                 let measured = measureLocked(i)
                 if aspects[i] <= 0.01 { aspects[i] = measured.aspect }
                 if pixelWidths[i] == 0 { pixelWidths[i] = measured.width }
             }
+            if needsCrop { pending = payloadLocked(i) }
             lock.unlock()
+
+            // Decoding and analysis stay outside the lock so a page the reader is opening
+            // does not have to queue behind the whole scan.
+            if let pending {
+                let box = BookSession.detectBox(payload: pending)
+                lock.lock()
+                cropBoxes[i] = box
+                cropScanned[i] = true
+                lock.unlock()
+            }
             if (i + 1) % 8 == 0 { onProgress?(i + 1, total) }
         }
         onProgress?(total, total)
+    }
+
+    /// Normalized crop box for a page, nil when the page should be shown in full.
+    /// Detects on demand so the very first page is already trimmed even if the scan has not
+    /// reached it yet.
+    func cropBox(at index: Int) -> CGRect? {
+        lock.lock()
+        if cropScanned.indices.contains(index), cropScanned[index] {
+            let box = cropBoxes[index]
+            lock.unlock()
+            return box
+        }
+        guard pdf == nil, let payload = payloadLocked(index) else {
+            lock.unlock()
+            return nil
+        }
+        lock.unlock()
+
+        let box = BookSession.detectBox(payload: payload)
+        lock.lock()
+        if cropScanned.indices.contains(index) {
+            cropBoxes[index] = box
+            cropScanned[index] = true
+        }
+        lock.unlock()
+        return box
+    }
+
+    /// width / height as displayed, i.e. after the white border has been trimmed.
+    func displayAspect(at index: Int, crop: Bool) -> CGFloat {
+        let base = aspect(at: index)
+        guard crop, let box = cropBox(at: index), box.height > 0.01 else { return base }
+        return base * box.width / box.height
+    }
+
+    /// The whole aspect table, cropped when asked. Pure table lookup, no decoding: this runs
+    /// on the main thread when the reader rebuilds its page list.
+    func displayAspects(crop: Bool) -> [CGFloat] {
+        lock.lock()
+        defer { lock.unlock() }
+        guard crop else { return aspects }
+        var out = aspects
+        for i in out.indices where i < cropBoxes.count {
+            guard let box = cropBoxes[i], box.height > 0.01, box.width > 0.01 else { continue }
+            out[i] = out[i] * box.width / box.height
+        }
+        return out
+    }
+
+    private nonisolated static func detectBox(payload: Payload) -> CGRect? {
+        let source: CGImageSource?
+        switch payload {
+        case .data(let data):
+            source = CGImageSourceCreateWithData(data as CFData, nil)
+        case .file(let url):
+            source = CGImageSourceCreateWithURL(url as CFURL, nil)
+        }
+        guard let source else { return nil }
+        // A 220px preview is plenty for finding the border and costs a few milliseconds.
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: 220,
+        ]
+        guard let small = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+        else { return nil }
+        return ImageEnhancer.contentBox(small)
     }
 
     /// width / height of a source page, 0.7 when unknown.
@@ -220,8 +313,11 @@ final class BookSession: @unchecked Sendable {
     /// entries under memory pressure on its own.
     private let renderCache: NSCache<NSString, CGImage> = {
         let cache = NSCache<NSString, CGImage>()
-        cache.countLimit = 40
-        cache.totalCostLimit = 220 * 1024 * 1024
+        // ~8 MB per page at typical phone widths. 24 pages keeps a whole screen either way
+        // plus the prefetch window, and stays well clear of the memory-pressure jetsam line
+        // on a 3–4 GB phone.
+        cache.countLimit = 24
+        cache.totalCostLimit = 120 * 1024 * 1024
         return cache
     }()
 
@@ -253,13 +349,26 @@ final class BookSession: @unchecked Sendable {
         let output = ImageEnhancer.process(
             raw,
             settings: settings,
-            autoCrop: crop,
+            cropBox: crop ? cropBox(at: index) : nil,
             half: half,
             rightToLeft: rightToLeft
         ) ?? raw
         let cost = output.bytesPerRow * output.height
         renderCache.setObject(output, forKey: key, cost: cost)
         return output
+    }
+
+    /// Synchronous cache probe, used when a cell is rebuilt during scrolling: the page is
+    /// already in memory, so it can be shown in the same frame instead of one frame later.
+    func cachedRender(
+        at index: Int,
+        maxWidth: CGFloat,
+        settings: EnhanceSettings,
+        crop: Bool,
+        half: Int,
+        rightToLeft: Bool
+    ) -> CGImage? {
+        renderCache.object(forKey: renderKey(index, maxWidth, settings, crop, half, rightToLeft))
     }
 
     /// True when [render] would answer without touching the archive.

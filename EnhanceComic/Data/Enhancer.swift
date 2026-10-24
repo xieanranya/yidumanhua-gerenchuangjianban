@@ -21,16 +21,13 @@ enum ImageEnhancer {
     static func process(
         _ image: CGImage,
         settings: EnhanceSettings,
-        autoCrop: Bool,
+        cropBox: CGRect?,
         half: Int,
         rightToLeft: Bool
     ) -> CGImage? {
-        // Detect the ink box on the untouched page: filters can lift faint borders.
-        let box = autoCrop ? contentBox(image) : nil
-
         var result = applyFilters(image, settings: settings) ?? image
 
-        if let box, let cropped = crop(result, normalized: box) {
+        if let cropBox, let cropped = crop(result, normalized: cropBox) {
             result = cropped
         }
         if half != 0, let split = cropHalf(result, half: half, rightToLeft: rightToLeft) {
@@ -135,12 +132,19 @@ enum ImageEnhancer {
 
     // MARK: - White border detection
 
-    /// Non-white content box in normalized coordinates with the origin at the top left,
-    /// or nil when the page is already tight.
-    static func contentBox(_ image: CGImage, threshold: Int = 238) -> CGRect? {
-        guard image.width > 0, image.height > 0 else { return nil }
-        let w = 80
-        let h = max(8, Int(Double(image.height) / Double(image.width) * Double(w)))
+    /// Detects the ink area of a page and returns it in normalized coordinates with the
+    /// origin at the top left, or nil when the page has nothing worth trimming.
+    ///
+    /// The threshold is relative to the paper colour sampled from the page border instead of
+    /// a fixed 238: scanned manga is often cream or light grey, and a fixed cut-off either
+    /// eats into the artwork or trims nothing at all on those pages. Dark pages (night
+    /// scenes, inverted scans) are left alone entirely.
+    static func contentBox(_ image: CGImage, relativeDrop: Double = 22) -> CGRect? {
+        guard image.width > 8, image.height > 8 else { return nil }
+        let w = 96
+        let rawH = Double(image.height) / Double(image.width) * Double(w)
+        guard rawH.isFinite, rawH >= 8 else { return nil }
+        let h = min(1600, max(8, Int(rawH)))
 
         var buffer = [UInt8](repeating: 255, count: w * h * 4)
         let drawn = buffer.withUnsafeMutableBytes { raw -> Bool in
@@ -159,26 +163,46 @@ enum ImageEnhancer {
         }
         guard drawn else { return nil }
 
+        func luma(_ x: Int, _ y: Int) -> Int {
+            let p = (y * w + x) * 4
+            // Rec. 601, integer only: this runs on every page while a book opens.
+            return (Int(buffer[p]) * 77 + Int(buffer[p + 1]) * 150 + Int(buffer[p + 2]) * 29) >> 8
+        }
+
+        // Paper colour from a 2px frame around the page.
+        var edge: [Int] = []
+        edge.reserveCapacity(w * 4)
+        for x in 0..<w {
+            edge.append(luma(x, 0))
+            edge.append(luma(x, 1))
+            edge.append(luma(x, h - 1))
+            edge.append(luma(x, h - 2))
+        }
+        for y in 0..<h {
+            edge.append(luma(0, y))
+            edge.append(luma(1, y))
+            edge.append(luma(w - 1, y))
+            edge.append(luma(w - 2, y))
+        }
+        edge.sort()
+        let paper = edge[edge.count / 2]
+        // Dark page: trimming by luminance would cut into the artwork.
+        guard paper >= 96 else { return nil }
+        let cut = paper - Int(relativeDrop)
+
         var rowInk = [Int](repeating: 0, count: h)
         var colInk = [Int](repeating: 0, count: w)
-        var total = 0
         for y in 0..<h {
-            for x in 0..<w {
-                let p = (y * w + x) * 4
-                let r = Int(buffer[p])
-                let g = Int(buffer[p + 1])
-                let b = Int(buffer[p + 2])
-                if (r + g + b) / 3 < threshold {
-                    rowInk[y] += 1
-                    colInk[x] += 1
-                    total += 1
-                }
+            for x in 0..<w where luma(x, y) < cut {
+                rowInk[y] += 1
+                colInk[x] += 1
             }
         }
-        guard total > 0 else { return nil }
 
-        let rowMin = max(1, Int(Double(w) * 0.004))
-        let colMin = max(1, Int(Double(h) * 0.004))
+        // A row counts as content when more than 1.2% of it is ink: a single dust speck or a
+        // stray registration mark must not extend the box.
+        let rowMin = max(1, Int(Double(w) * 0.012))
+        let colMin = max(1, Int(Double(h) * 0.012))
 
         var top = 0
         while top < h - 1 && rowInk[top] < rowMin { top += 1 }
@@ -192,14 +216,26 @@ enum ImageEnhancer {
         guard top < bottom, left < right else { return nil }
 
         let pad: CGFloat = 0.004
+        let minX = max(0, CGFloat(left) / CGFloat(w) - pad)
+        let minY = max(0, CGFloat(top) / CGFloat(h) - pad)
+        let maxX = min(1, CGFloat(right + 1) / CGFloat(w) + pad)
+        let maxY = min(1, CGFloat(bottom + 1) / CGFloat(h) + pad)
         let rect = CGRect(
-            x: max(0, CGFloat(left) / CGFloat(w) - pad),
-            y: max(0, CGFloat(top) / CGFloat(h) - pad),
-            width: min(1, CGFloat(right + 1) / CGFloat(w) + pad) - max(0, CGFloat(left) / CGFloat(w) - pad),
-            height: min(1, CGFloat(bottom + 1) / CGFloat(h) + pad) - max(0, CGFloat(top) / CGFloat(h) - pad)
+            x: minX,
+            y: minY,
+            width: maxX - minX,
+            height: maxY - minY
         )
+
+        // Safety rails: never trim away more than two thirds of the page, and keep at least a
+        // quarter of either dimension. A failed detection must leave the page untouched
+        // rather than turn it into a strip.
+        guard rect.width >= 0.25, rect.height >= 0.25 else { return nil }
+        guard rect.width * rect.height >= 0.34 else { return nil }
         // Nothing meaningful to trim.
-        if rect.width * rect.height > 0.96 { return nil }
+        if rect.width * rect.height > 0.965 && rect.width > 0.99 && rect.height > 0.99 {
+            return nil
+        }
         return rect
     }
 }

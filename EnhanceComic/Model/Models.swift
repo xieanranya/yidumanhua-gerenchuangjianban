@@ -250,7 +250,8 @@ struct ReaderPrefs: Codable, Equatable, Hashable {
     var grayscale = false
     var autoContrast = false
     var invert = false
-    var blueLight = false
+    /// 蓝光过滤强度 0–100，0 为关闭。旧版本存的是布尔开关，读到 true 时映射成 55。
+    var blueLight = 0
 
     // ---- 设置
     var keepScreenOn = true
@@ -287,7 +288,7 @@ struct ReaderPrefs: Codable, Equatable, Hashable {
         grayscale = (try? c.decode(Bool.self, forKey: .grayscale)) ?? false
         autoContrast = (try? c.decode(Bool.self, forKey: .autoContrast)) ?? false
         invert = (try? c.decode(Bool.self, forKey: .invert)) ?? false
-        blueLight = (try? c.decode(Bool.self, forKey: .blueLight)) ?? false
+        blueLight = Self.readBlueLight(c)
         keepScreenOn = (try? c.decode(Bool.self, forKey: .keepScreenOn)) ?? true
         autoBrightness = (try? c.decode(Bool.self, forKey: .autoBrightness)) ?? true
         brightness = (try? c.decode(Double.self, forKey: .brightness)) ?? 50
@@ -298,6 +299,18 @@ struct ReaderPrefs: Codable, Equatable, Hashable {
         tapLeftAction = (try? c.decode(TapAction.self, forKey: .tapLeftAction)) ?? .prevPage
         tapCenterAction = (try? c.decode(TapAction.self, forKey: .tapCenterAction)) ?? .toggleChrome
         tapRightAction = (try? c.decode(TapAction.self, forKey: .tapRightAction)) ?? .nextPage
+    }
+
+    /// `blueLight` used to be a plain on/off switch. Read either shape so an existing
+    /// preferences file does not silently lose the setting.
+    private static func readBlueLight(_ c: KeyedDecodingContainer<CodingKeys>) -> Int {
+        if let value = try? c.decode(Int.self, forKey: .blueLight) {
+            return min(max(value, 0), 100)
+        }
+        if let on = try? c.decode(Bool.self, forKey: .blueLight) {
+            return on ? 55 : 0
+        }
+        return 0
     }
 }
 

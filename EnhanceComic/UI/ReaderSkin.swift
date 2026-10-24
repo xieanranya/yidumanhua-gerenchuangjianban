@@ -313,7 +313,8 @@ struct ReaderTopChrome: View {
     private var skin: Skin { skinFor(prefs.chromeLight) }
 
     private var filtered: Bool {
-        prefs.grayscale || prefs.invert || prefs.blueLight || enhance.sharpen || enhance.contrastPass
+        prefs.grayscale || prefs.invert || prefs.blueLight > 0
+            || enhance.sharpen || enhance.contrastPass
     }
 
     var body: some View {
@@ -685,14 +686,30 @@ private struct FilterPanel: View {
             ) {
                 enhance.sharpen = $0
             }
-            HStack(spacing: 0) {
-                SkinCheckRow(label: "反色", checked: prefs.invert, skin: skin) {
-                    prefs.invert = $0
-                }
-                SkinCheckRow(label: "蓝光", checked: prefs.blueLight, skin: skin) {
-                    prefs.blueLight = $0
-                }
+            SkinCheckRow(label: "反色", checked: prefs.invert, skin: skin) {
+                prefs.invert = $0
             }
+            Color.clear.frame(height: 4)
+            HStack(spacing: 0) {
+                Text("蓝光过滤")
+                    .font(.system(size: 11))
+                    .foregroundColor(skin.dim)
+                Spacer(minLength: 0)
+                Text(prefs.blueLight > 0 ? "\(prefs.blueLight)%" : "关")
+                    .font(.system(size: 11))
+                    .foregroundColor(prefs.blueLight > 0 ? skin.accent : skin.dim)
+                    .frame(width: 54, alignment: .trailing)
+            }
+            SkinSlider(
+                value: Double(prefs.blueLight),
+                range: 0...100,
+                skin: skin
+            ) { next in
+                prefs.blueLight = Int(next.rounded())
+            }
+            Text("压低屏幕蓝光，暖色夜间阅读；0% 即关闭。")
+                .font(.system(size: 9.5))
+                .foregroundColor(skin.dim)
         }
     }
 }

@@ -59,6 +59,9 @@ struct ReaderView: View {
     @State private var progressTask: Task<Void, Never>?
     @State private var chromeTask: Task<Void, Never>?
     @State private var systemBrightness: CGFloat = 0.5
+    @State private var lastVisibleReport = Date.distantPast
+    @State private var pendingVisible: Int?
+    @State private var visibleFlush: Task<Void, Never>?
 
     private var chromeVisible: Bool { showChrome && !failed }
     private var skin: Skin { skinFor(store.prefs.chromeLight) }
@@ -76,12 +79,10 @@ struct ReaderView: View {
                     pageStack(size: geo.size)
                 }
 
-                if store.prefs.blueLight {
-                    Color(red: 1.0, green: 0.84, blue: 0.58)
-                        .opacity(0.18)
-                        .blendMode(.multiply)
-                        .allowsHitTesting(false)
-                        .ignoresSafeArea()
+                // 蓝光过滤：一层暖色 multiply 覆盖在页面之上、工具栏之下。用叠加而不是改
+                // 像素，所以拖动强度滑杆时画面立刻变，不用重新解码任何一页。
+                if store.prefs.blueLight > 0 {
+                    BlueLightLayer(strength: store.prefs.blueLight)
                 }
 
                 VStack(spacing: 0) {
@@ -153,6 +154,9 @@ struct ReaderView: View {
         .onAppear(perform: appeared)
         .onDisappear(perform: leave)
         .onChange(of: store.prefs.splitWidePages) { _ in rebuildRefs() }
+        .onChange(of: store.prefs.autoCropWhiteBorders) { _ in
+            rescanCrop(store.prefs.autoCropWhiteBorders)
+        }
         .onChange(of: store.prefs.readingMode) { _ in
             resetZoom()
             if store.prefs.readingMode != .paged { scrollTarget = currentRef?.id }
@@ -290,7 +294,7 @@ struct ReaderView: View {
             ref: ref,
             settings: store.enhance,
             crop: store.prefs.autoCropWhiteBorders,
-            maxWidth: max(target.width, cellWidth) * displayScale * 1.05,
+            maxWidth: max(target.width, cellWidth) * displayScale,
             rightToLeft: store.prefs.rightToLeft,
             fill: true
         )
@@ -510,7 +514,7 @@ struct ReaderView: View {
                 ref: ref,
                 settings: store.enhance,
                 crop: store.prefs.autoCropWhiteBorders,
-                maxWidth: (vertical ? size.width : size.height * aspect) * displayScale * 1.1,
+                maxWidth: (vertical ? size.width : size.height * aspect) * displayScale,
                 rightToLeft: store.prefs.rightToLeft,
                 fill: true
             )
@@ -520,7 +524,7 @@ struct ReaderView: View {
             )
             .clipped()
             .id(ref.id)
-            .onAppear { if !scanning { index = position } }
+            .onAppear { if !scanning { reportVisible(position) } }
         }
     }
 
@@ -890,15 +894,24 @@ struct ReaderView: View {
 
         // Show the first page straight away with the default page ratio. Measuring every
         // page first is what used to keep the reader on a spinner for a long archive.
-        refs = buildPageRefs(aspects: opened.aspects, splitWidePages: store.prefs.splitWidePages)
+        // With 裁白边 on, measure that one page now: the page list is built from the cropped
+        // ratio, and a first frame drawn before the box exists would be stretched.
+        if store.prefs.autoCropWhiteBorders {
+            _ = opened.cropBox(at: book.lastPage)
+        }
+        refs = buildPageRefs(
+            aspects: opened.displayAspects(crop: store.prefs.autoCropWhiteBorders),
+            splitWidePages: store.prefs.splitWidePages
+        )
         index = refIndexOfSource(refs, book.lastPage)
         sliderValue = Double(index)
         scanning = true
 
         Task { @MainActor in
+            let crop = store.prefs.autoCropWhiteBorders
             let aspects = await Task.detached(priority: .utility) {
-                opened.scanAspects()
-                return opened.aspects
+                opened.scanAspects(crop: crop)
+                return opened.displayAspects(crop: crop)
             }.value
             let source = currentSourcePage
             refs = buildPageRefs(aspects: aspects, splitWidePages: store.prefs.splitWidePages)
@@ -911,9 +924,56 @@ struct ReaderView: View {
     private func rebuildRefs() {
         guard let session else { return }
         let source = currentSourcePage
-        refs = buildPageRefs(aspects: session.aspects, splitWidePages: store.prefs.splitWidePages)
+        refs = buildPageRefs(
+            aspects: session.displayAspects(crop: store.prefs.autoCropWhiteBorders),
+            splitWidePages: store.prefs.splitWidePages
+        )
         index = refIndexOfSource(refs, source)
         sliderValue = Double(index)
+    }
+
+    /// 裁白边开关一变，页面比例就变了 —— 必须重新量一遍，否则图被裁窄了还塞在原来的框
+    /// 里，看着就是「变形」。
+    private func rescanCrop(_ on: Bool) {
+        guard let session else { return }
+        let source = currentSourcePage
+        scanning = true
+        Task { @MainActor in
+            let aspects = await Task.detached(priority: .utility) {
+                session.scanAspects(crop: on)
+                return session.displayAspects(crop: on)
+            }.value
+            refs = buildPageRefs(aspects: aspects, splitWidePages: store.prefs.splitWidePages)
+            index = refIndexOfSource(refs, source)
+            sliderValue = Double(index)
+            scanning = false
+            if store.prefs.readingMode != .paged, refs.indices.contains(index) {
+                scrollTarget = refs[index].id
+            }
+        }
+    }
+
+    /// Scrolling reports a new page for every cell Lazy builds, and each write to `index`
+    /// re-evaluates the whole reader — including every visible page. Merging the reports to
+    /// one per 120 ms keeps the scrubber honest while a fast flick is in progress, and the
+    /// trailing flush makes sure the final page still lands.
+    private func reportVisible(_ position: Int) {
+        guard position != index else { return }
+        let now = Date()
+        if now.timeIntervalSince(lastVisibleReport) < 0.12 {
+            pendingVisible = position
+            visibleFlush?.cancel()
+            visibleFlush = Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 140_000_000)
+                guard !Task.isCancelled, let target = pendingVisible else { return }
+                pendingVisible = nil
+                lastVisibleReport = Date()
+                index = target
+            }
+            return
+        }
+        lastVisibleReport = now
+        index = position
     }
 
     /// Decodes the next couple of pages in the background so a flick does not land on a
@@ -928,14 +988,19 @@ struct ReaderView: View {
         let rtl = store.prefs.rightToLeft
         let scale = displayScale
 
-        var targets = [position + 1, position + 2]
+        // 竖滚是最容易「划到一半空白」的模式：一屏里会同时露出两三页，所以窗口放大到
+        // 前后各两页；分页模式只需要下一页。
+        var targets: [Int] = vertical
+            ? [position + 1, position + 2, position + 3]
+            : [position + 1, position + 2]
         if position > 0 { targets.append(position - 1) }
+        if vertical && position > 1 { targets.append(position - 2) }
 
         for p in targets where refs.indices.contains(p) {
             let ref = refs[p]
             let width = vertical
-                ? size.width * scale * 1.1
-                : size.height * ref.aspect * scale * 1.1
+                ? size.width * scale
+                : size.height * ref.aspect * scale
             if session.isRendered(
                 at: ref.index,
                 maxWidth: width,
@@ -957,7 +1022,8 @@ struct ReaderView: View {
         }
     }
 
-    private func dismissReader() {        leave()
+    private func dismissReader() {
+        leave()
         dismiss()
     }
 
@@ -1126,6 +1192,27 @@ private struct InvertFilter: ViewModifier {
     }
 }
 
+/// 蓝光过滤层。
+///
+/// 用一层暖色做 multiply 叠加，而不是在解码时改像素：调强度是实时的，不用把已经缓存的
+/// 页面全部重算一遍；黑色区域乘任何颜色还是黑色，所以黑底漫画不会发灰。
+private struct BlueLightLayer: View {
+    /// 0–100
+    let strength: Int
+
+    var body: some View {
+        let t = Double(min(max(strength, 0), 100)) / 100
+        Color(
+            red: 1.0,
+            green: 1.0 - 0.16 * t,
+            blue: 1.0 - 0.52 * t
+        )
+        .blendMode(.multiply)
+        .allowsHitTesting(false)
+        .ignoresSafeArea()
+    }
+}
+
 /// One decoded + enhanced page. Reloads when the page or the settings change.
 private struct PageContent: View {
 
@@ -1142,6 +1229,37 @@ private struct PageContent: View {
     @State private var image: CGImage?
     @State private var failed = false
     @State private var attempt = 0
+
+    init(
+        session: BookSession,
+        ref: PageRef,
+        settings: EnhanceSettings,
+        crop: Bool,
+        maxWidth: CGFloat,
+        rightToLeft: Bool,
+        fill: Bool = false
+    ) {
+        self.session = session
+        self.ref = ref
+        self.settings = settings
+        self.crop = crop
+        self.maxWidth = maxWidth
+        self.rightToLeft = rightToLeft
+        self.fill = fill
+        // Lazy containers recycle cells while scrolling; a rebuilt cell whose page is still
+        // in the render cache shows its image in the very same frame instead of flashing a
+        // spinner and decoding again.
+        _image = State(
+            initialValue: session.cachedRender(
+                at: ref.index,
+                maxWidth: maxWidth,
+                settings: settings,
+                crop: crop,
+                half: ref.half,
+                rightToLeft: rightToLeft
+            )
+        )
+    }
 
     private var cacheKey: String {
         "\(ref.index)-\(ref.half)-\(settings.hashValue)-\(crop)-\(rightToLeft)-\(Int(maxWidth))-\(attempt)"
@@ -1175,6 +1293,19 @@ private struct PageContent: View {
             }
         }
         .task(id: cacheKey) {
+            // Recycled cells whose page is still cached answer immediately.
+            if let hit = self.session.cachedRender(
+                at: self.ref.index,
+                maxWidth: self.maxWidth,
+                settings: self.settings,
+                crop: self.crop,
+                half: self.ref.half,
+                rightToLeft: self.rightToLeft
+            ) {
+                image = hit
+                failed = false
+                return
+            }
             image = nil
             failed = false
             let settings = self.settings

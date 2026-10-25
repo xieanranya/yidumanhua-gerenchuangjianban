@@ -134,6 +134,19 @@ final class SourceEngine {
         await asyncCall("pages", [jsLiteral(key), jsLiteral(comicId), jsLiteral(epId)])
     }
 
+    /// 惰性取图：解第 index 页的真地址（E-Hentai 这类一页一次 API 的源用）
+    func pageImage(key: String, comicId: String, epId: String, index: Int) async -> [String: Any] {
+        await asyncCall("pageImage", [jsLiteral(key), jsLiteral(comicId), jsLiteral(epId), "\(index)"])
+    }
+
+    func login(key: String, user: String, password: String) async -> [String: Any] {
+        await asyncCall("login", [jsLiteral(key), jsLiteral(user), jsLiteral(password)])
+    }
+
+    func logout(key: String) async -> [String: Any] {
+        await asyncCall("logout", [jsLiteral(key)])
+    }
+
     func setHost(key: String, host: String) async {
         _ = await syncCall("setHost", [jsLiteral(key), jsLiteral(host)])
     }
@@ -240,6 +253,13 @@ final class SourceEngine {
         }
     }
 
+    /// KV 必须按源隔离：prelude 每个请求都带 key（源自己的 key）。
+    /// 不加前缀的话「登录了 A 源」会让 B 源也显示已登录，两个源的 token 还会互相覆盖。
+    private func kvKey(_ msg: [String: Any], _ prefix: String, _ field: String) -> String {
+        let src = (msg["key"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "default"
+        return prefix + src + "_" + (msg[field] as? String ?? "")
+    }
+
     private func dispatch(_ msg: [String: Any]) throws -> Any? {
         let method = msg["method"] as? String ?? ""
         switch method {
@@ -250,17 +270,17 @@ final class SourceEngine {
         case "cookie":
             return cookie(msg)
         case "load_data":
-            return defaults.object(forKey: "d_\(msg["data_key"] as? String ?? "")")
+            return defaults.object(forKey: kvKey(msg, "d_", "data_key"))
         case "save_data":
-            defaults.set(msg["data"], forKey: "d_\(msg["data_key"] as? String ?? "")")
+            defaults.set(msg["data"], forKey: kvKey(msg, "d_", "data_key"))
             return nil
         case "delete_data":
-            defaults.removeObject(forKey: "d_\(msg["data_key"] as? String ?? "")")
+            defaults.removeObject(forKey: kvKey(msg, "d_", "data_key"))
             return nil
         case "load_setting":
-            return defaults.object(forKey: "s_\(msg["setting_key"] as? String ?? "")")
+            return defaults.object(forKey: kvKey(msg, "s_", "setting_key"))
         case "save_setting":
-            defaults.set(msg["value"], forKey: "s_\(msg["setting_key"] as? String ?? "")")
+            defaults.set(msg["value"], forKey: kvKey(msg, "s_", "setting_key"))
             return nil
         case "isLogged":
             return defaults.bool(forKey: "logged_\(msg["key"] as? String ?? "")")

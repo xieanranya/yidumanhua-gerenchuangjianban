@@ -38,6 +38,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -66,6 +67,9 @@ data class SourceRow(
     val line: String,
     val label: String,
     val note: String,
+    val canLogin: Boolean = false,
+    val logged: Boolean = false,
+    val needLogin: Boolean = false,
 )
 
 data class ComicRow(val id: String, val title: String, val cover: String, val sub: String)
@@ -76,6 +80,9 @@ private sealed class Nav {
     data class Browse(val key: String, val title: String) : Nav()
     data class Info(val key: String, val id: String, val title: String) : Nav()
     data class Read(val urls: List<String>, val referer: String?, val title: String) : Nav()
+    /** 惰性取图：只给页数，每页真的地址由阅读器按需解 */
+    data class ReadLazy(val key: String, val comicId: String, val epId: String,
+                        val count: Int, val title: String) : Nav()
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -91,21 +98,24 @@ fun OnlineSourceScreen(onBack: () -> Unit) {
             var rows by remember { mutableStateOf<List<SourceRow>>(emptyList()) }
             var busy by remember { mutableStateOf(true) }
             var err by remember { mutableStateOf<String?>(null) }
+            var loginFor by remember { mutableStateOf<SourceRow?>(null) }
+            var toast by remember { mutableStateOf<String?>(null) }
+            var reloadTick by remember { mutableStateOf(0) }
+            var probed by remember { mutableStateOf(false) }
 
-            LaunchedEffect(Unit) {
-                busy = true
+            LaunchedEffect(reloadTick) {
+                busy = rows.isEmpty()
                 // 先把源列表显示出来（不等探测），探测结果回来再刷新
                 runCatching {
-                    val srcs = engine.sources()
-                    val st = engine.routeStatus()
-                    rows = buildRows(srcs, st)
+                    rows = buildRows(engine.sources(), engine.routeStatus())
                 }.onFailure { err = it.message }
                 busy = false
-                runCatching {
-                    engine.probeRoutes()
-                    val srcs = engine.sources()
-                    val st = engine.routeStatus()
-                    rows = buildRows(srcs, st)
+                if (!probed) {
+                    probed = true
+                    runCatching {
+                        engine.probeRoutes()
+                        rows = buildRows(engine.sources(), engine.routeStatus())
+                    }
                 }
             }
 
@@ -128,14 +138,19 @@ fun OnlineSourceScreen(onBack: () -> Unit) {
                         }
                     } else {
                         Text(
-                            "能用直连的走直连；标「需 VPN」的打开代理后自动可用，切换不用重启。",
+                            "能用直连的走直连；标「需 VPN」的打开代理后自动可用，切换不用重启。" +
+                                "点右边的「登录」填这个站的账号，登录后点书名进目录。",
                             fontSize = 12.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
                         )
                         LazyColumn(Modifier.fillMaxSize()) {
                             items(rows, key = { it.key }) { r ->
-                                SourceCard(r) { nav = Nav.Browse(r.key, r.name) }
+                                SourceCard(
+                                    r = r,
+                                    onClick = { nav = Nav.Browse(r.key, r.name) },
+                                    onLogin = { loginFor = r },
+                                )
                             }
                         }
                     }
@@ -143,7 +158,24 @@ fun OnlineSourceScreen(onBack: () -> Unit) {
                         Text("加载失败：$it", color = MaterialTheme.colorScheme.error,
                             fontSize = 12.sp, modifier = Modifier.padding(16.dp))
                     }
+                    toast?.let {
+                        Text(it, color = MaterialTheme.colorScheme.primary,
+                            fontSize = 12.sp, modifier = Modifier.padding(16.dp))
+                    }
                 }
+            }
+
+            loginFor?.let { r ->
+                LoginDialog(
+                    engine = engine,
+                    row = r,
+                    onDismiss = { loginFor = null },
+                    onDone = { msg ->
+                        loginFor = null
+                        toast = msg
+                        reloadTick++
+                    },
+                )
             }
         }
 
@@ -153,9 +185,24 @@ fun OnlineSourceScreen(onBack: () -> Unit) {
 
         is Nav.Info -> DetailScreen(engine, n.key, n.id, n.title,
             onBack = { nav = Nav.Browse(n.key, n.title) },
-            onRead = { urls, ref, t -> nav = Nav.Read(urls, ref, t) })
+            onRead = { comicId, epId, data, t ->
+                nav = if (data.optBoolean("lazy")) {
+                    Nav.ReadLazy(n.key, comicId, epId, data.optInt("count"), t)
+                } else {
+                    val imgs = data.optJSONArray("images")
+                    val urls = buildList {
+                        if (imgs != null) for (i in 0 until imgs.length()) {
+                            imgs.optString(i).takeIf { it.isNotBlank() }?.let { add(it) }
+                        }
+                    }
+                    Nav.Read(urls, null, t)
+                }
+            })
 
         is Nav.Read -> OnlineReader(n.urls, n.referer, n.title, onBack = { nav = Nav.Sources })
+
+        is Nav.ReadLazy -> OnlineLazyReader(engine, n, onBack = { nav = Nav.Sources })
+
     }
 }
 
@@ -175,13 +222,16 @@ private fun buildRows(srcs: JSONArray, st: JSONArray): List<SourceRow> {
             line = line,
             label = if (line == "direct") "直连" else if (line == "proxy") "需 VPN" else "",
             note = r?.optString("note") ?: "",
+            canLogin = s.optBoolean("canLogin"),
+            logged = s.optBoolean("logged"),
+            needLogin = s.optBoolean("needLogin"),
         )
     }
     return out
 }
 
 @Composable
-private fun SourceCard(r: SourceRow, onClick: () -> Unit) {
+private fun SourceCard(r: SourceRow, onClick: () -> Unit, onLogin: () -> Unit) {
     Row(
         Modifier
             .fillMaxWidth()
@@ -223,6 +273,119 @@ private fun SourceCard(r: SourceRow, onClick: () -> Unit) {
                     )
                     .padding(horizontal = 8.dp, vertical = 3.dp),
             )
+        }
+        if (r.canLogin) {
+            Spacer(Modifier.width(8.dp))
+            Text(
+                if (r.logged) "已登录" else "登录",
+                fontSize = 11.sp,
+                color = if (r.logged) Color(0xFF2E7D32) else Color(0xFF1565C0),
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(if (r.logged) Color(0x1A2E7D32) else Color(0x1A1565C0))
+                    .clickable { onLogin() }
+                    .padding(horizontal = 9.dp, vertical = 4.dp),
+            )
+        }
+    }
+}
+
+/** 登录表单：账号 + 密码 → 源脚本的 account.login()。登录态存在宿主 KV 里，重启还在。 */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun LoginDialog(
+    engine: SourceEngine,
+    row: SourceRow,
+    onDismiss: () -> Unit,
+    onDone: (String) -> Unit,
+) {
+    val scope = rememberCoroutineScope()
+    var user by remember { mutableStateOf("") }
+    var pass by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+    var err by remember { mutableStateOf<String?>(null) }
+
+    androidx.compose.ui.window.Dialog(onDismissRequest = { if (!busy) onDismiss() }) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(16.dp))
+                .background(MaterialTheme.colorScheme.surface)
+                .padding(18.dp),
+        ) {
+            Text("登录 ${row.name}", fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "账号密码只会存在本机，不会上传。登录后这个源才能搜索/看图。",
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(12.dp))
+            OutlinedTextField(
+                value = user, onValueChange = { user = it },
+                label = { Text("账号 / 邮箱") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = pass, onValueChange = { pass = it },
+                label = { Text("密码") },
+                singleLine = true,
+                visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            err?.let {
+                Spacer(Modifier.height(8.dp))
+                Text(it, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+            }
+            Spacer(Modifier.height(14.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (row.logged) {
+                    Text(
+                        "退出登录",
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.clickable {
+                            if (busy) return@clickable
+                            scope.launch {
+                                busy = true
+                                engine.logout(row.key)
+                                busy = false
+                                onDone("${row.name} 已退出登录")
+                            }
+                        }.padding(6.dp),
+                    )
+                }
+                Spacer(Modifier.weight(1f))
+                Text(
+                    "取消",
+                    fontSize = 13.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.clickable { if (!busy) onDismiss() }.padding(8.dp),
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    if (busy) "登录中…" else "登录",
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = if (busy || user.isBlank() || pass.isBlank())
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    else MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .clickable {
+                            if (busy || user.isBlank() || pass.isBlank()) return@clickable
+                            scope.launch {
+                                busy = true; err = null
+                                val r = engine.login(row.key, user.trim(), pass)
+                                busy = false
+                                if (r.optBoolean("ok")) onDone("${row.name} 登录成功")
+                                else err = "登录失败：" + r.optString("error", "未知原因")
+                            }
+                        }
+                        .padding(8.dp),
+                )
+            }
         }
     }
 }
@@ -362,7 +525,7 @@ private fun DetailScreen(
     id: String,
     title: String,
     onBack: () -> Unit,
-    onRead: (List<String>, String?, String) -> Unit,
+    onRead: (String, String, JSONObject, String) -> Unit,
 ) {
     var d by remember { mutableStateOf<JSONObject?>(null) }
     var busy by remember { mutableStateOf(true) }
@@ -447,15 +610,11 @@ private fun DetailScreen(
                                                 val r = engine.pages(key, id, cid)
                                                 pending = null
                                                 if (r.optBoolean("ok")) {
-                                                    val data = r.optJSONObject("data")
-                                                    val imgs = data?.optJSONArray("images")
-                                                    val urls = buildList {
-                                                        if (imgs != null) for (i in 0 until imgs.length()) {
-                                                            imgs.optString(i).takeIf { it.isNotBlank() }?.let { add(it) }
-                                                        }
-                                                    }
-                                                    if (urls.isEmpty()) err = "这一话没有图片（可能需要登录）"
-                                                    else onRead(urls, null, ch.optString("title"))
+                                                    val data = r.optJSONObject("data") ?: JSONObject()
+                                                    val n = if (data.optBoolean("lazy")) data.optInt("count")
+                                                            else data.optJSONArray("images")?.length() ?: 0
+                                                    if (n == 0) err = "这一话没有图片（可能需要登录）"
+                                                    else onRead(id, cid, data, ch.optString("title"))
                                                 } else err = r.optString("error", "取图失败")
                                             }
                                         }
@@ -502,6 +661,89 @@ private fun OnlineReader(urls: List<String>, referer: String?, title: String, on
             Text(title.ifBlank { "阅读" }, color = Color.White, fontSize = 13.sp)
             Spacer(Modifier.weight(1f))
             Text("${urls.size} 页", color = Color(0xCCFFFFFF), fontSize = 12.sp)
+        }
+    }
+}
+
+/**
+ * 惰性阅读：翻到哪解到哪，另加一页预取。
+ * E-Hentai 这类源一页要一次 API（约 1 秒），一次性预解 165 页会卡十几分钟，
+ * 所以 pages() 只回页数，图片地址在真正要显示时才解。
+ */
+@Composable
+private fun OnlineLazyReader(
+    engine: SourceEngine,
+    nav: Nav.ReadLazy,
+    onBack: () -> Unit,
+) {
+    val scope = rememberCoroutineScope()
+    val pages = remember { mutableStateMapOf<Int, String>() }
+    val fails = remember { mutableStateMapOf<Int, String>() }
+    val inflight = remember { mutableSetOf<Int>() }
+
+    fun load(idx: Int) {
+        if (idx < 0 || idx >= nav.count) return
+        if (pages.containsKey(idx) || fails.containsKey(idx)) return
+        if (!inflight.add(idx)) return
+        scope.launch {
+            val r = engine.pageImage(nav.key, nav.comicId, nav.epId, idx)
+            inflight.remove(idx)
+            if (r.optBoolean("ok")) {
+                val u = r.optJSONObject("data")?.optString("url").orEmpty()
+                if (u.isBlank()) fails[idx] = "服务端没给地址" else pages[idx] = u
+            } else {
+                fails[idx] = r.optString("error", "取图失败")
+            }
+        }
+    }
+
+    Box(Modifier.fillMaxSize().background(Color.Black)) {
+        LazyColumn(Modifier.fillMaxSize()) {
+            items(nav.count) { idx ->
+                // 显示到这一页时才解它，顺便把下一页也预取上
+                LaunchedEffect(idx) { load(idx); load(idx + 1) }
+                val u = pages[idx]
+                val f = fails[idx]
+                Box(
+                    Modifier.fillMaxWidth().aspectRatio(0.7f),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    when {
+                        u != null -> RemoteImage(
+                            url = u,
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = ContentScale.Fit,
+                        )
+                        f != null -> Text(
+                            "第 ${idx + 1} 页没取到：$f\n点这里重试",
+                            color = Color(0xCCFFFFFF),
+                            fontSize = 12.sp,
+                            modifier = Modifier
+                                .clickable { fails.remove(idx); load(idx) }
+                                .padding(14.dp),
+                        )
+                        else -> CircularProgressIndicator(
+                            color = Color(0xCCFFFFFF), strokeWidth = 2.dp,
+                            modifier = Modifier.size(24.dp),
+                        )
+                    }
+                }
+            }
+        }
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .background(Color(0x88000000))
+                .padding(horizontal = 8.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = onBack) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回", tint = Color.White)
+            }
+            Text(nav.title.ifBlank { "阅读" }, color = Color.White, fontSize = 13.sp,
+                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, false))
+            Spacer(Modifier.weight(1f))
+            Text("${pages.size}/${nav.count} 页", color = Color(0xCCFFFFFF), fontSize = 12.sp)
         }
     }
 }

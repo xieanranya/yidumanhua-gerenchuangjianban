@@ -167,6 +167,13 @@ class SourceEngine private constructor(private val app: Context) {
     suspend fun pages(key: String, comicId: String, epId: String): JSONObject =
         callAsync("pages", JSONObject.quote(key), JSONObject.quote(comicId), JSONObject.quote(epId))
 
+    /** 惰性取图：解第 index 页的真地址（E-Hentai 这类一页一次 API 的源用） */
+    suspend fun pageImage(key: String, comicId: String, epId: String, index: Int): JSONObject =
+        callAsync("pageImage", JSONObject.quote(key), JSONObject.quote(comicId), JSONObject.quote(epId), index.toString())
+
+    suspend fun logout(key: String): JSONObject =
+        callAsync("logout", JSONObject.quote(key))
+
     suspend fun explore(key: String, index: Int = 0): JSONObject =
         callAsync("explore", JSONObject.quote(key), index.toString())
 
@@ -249,20 +256,29 @@ class SourceEngine private constructor(private val app: Context) {
         return JSONObject().put("v", value ?: JSONObject.NULL).toString()
     }
 
+    private fun srcKey(msg: JSONObject): String =
+        msg.optString("key", "").ifBlank { "default" }
+
     private fun dispatch(msg: JSONObject): Any? = when (msg.optString("method")) {
         "http" -> http(msg)
         "convert" -> convert(msg)
         "cookie" -> cookie(msg)
-        "load_data" -> prefs.getString("d_" + msg.optString("data_key"), null)?.let { JSONTokener(it).nextValue() }
+        // KV 必须按源隔离：prelude 每个请求都带 key（源自己的 key），
+        // 不加前缀的话「登录了 A 源」会让 B 源也显示已登录，两个源的 token 也会互相覆盖。
+        "load_data" -> prefs.getString("d_" + srcKey(msg) + "_" + msg.optString("data_key"), null)
+            ?.let { JSONTokener(it).nextValue() }
         "save_data" -> {
-            prefs.edit().putString("d_" + msg.optString("data_key"), msg.opt("data").toString()).apply(); null
+            prefs.edit().putString("d_" + srcKey(msg) + "_" + msg.optString("data_key"),
+                msg.opt("data").toString()).apply(); null
         }
         "delete_data" -> {
-            prefs.edit().remove("d_" + msg.optString("data_key")).apply(); null
+            prefs.edit().remove("d_" + srcKey(msg) + "_" + msg.optString("data_key")).apply(); null
         }
-        "load_setting" -> prefs.getString("s_" + msg.optString("setting_key"), null)?.let { JSONTokener(it).nextValue() }
+        "load_setting" -> prefs.getString("s_" + srcKey(msg) + "_" + msg.optString("setting_key"), null)
+            ?.let { JSONTokener(it).nextValue() }
         "save_setting" -> {
-            prefs.edit().putString("s_" + msg.optString("setting_key"), msg.opt("value").toString()).apply(); null
+            prefs.edit().putString("s_" + srcKey(msg) + "_" + msg.optString("setting_key"),
+                msg.opt("value").toString()).apply(); null
         }
         "isLogged" -> prefs.getBoolean("logged_" + msg.optString("key"), false)
         "UI" -> if (msg.optString("function") == "showDialog") 0 else null

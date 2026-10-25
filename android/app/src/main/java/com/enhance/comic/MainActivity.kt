@@ -27,6 +27,7 @@ import androidx.compose.ui.platform.LocalContext
 import com.enhance.comic.data.BookStore
 import com.enhance.comic.model.Book
 import com.enhance.comic.ui.LibraryScreen
+import com.enhance.comic.ui.OnlineSourceScreen
 import com.enhance.comic.ui.ReaderScreen
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -76,6 +77,7 @@ private fun EnhanceComicApp() {
 
     var books by remember { mutableStateOf(store.loadBooks()) }
     var openBook by remember { mutableStateOf<Book?>(null) }
+    var showOnline by remember { mutableStateOf(false) }
     var importing by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
 
@@ -141,37 +143,42 @@ private fun EnhanceComicApp() {
         }
     }
 
-    val reader = openBook
-    if (reader == null) {
-        LibraryScreen(
-            books = books,
-            importing = importing,
-            onOpen = { openBook = it },
-            onImportFiles = { pickFiles.launch(arrayOf("*/*")) },
-            onImportFolder = {
-                runCatching { pickFolder.launch(null) }
-            },
-            onDelete = { book ->
-                store.deleteBook(book)
-                books = store.loadBooks()
-            },
-        )
+    if (showOnline) {
+        OnlineSourceScreen(onBack = { showOnline = false })
     } else {
-        ReaderScreen(
-            book = reader,
-            store = store,
-            onBack = { sourcePage, marks, names ->
-                val updated = reader.copy(
-                    lastPage = sourcePage,
-                    bookmarks = marks,
-                    bookmarkNames = names,
-                )
-                store.saveBooks(
-                    store.loadBooks().map { if (it.id == updated.id) updated else it },
-                )
-                books = store.loadBooks()
-                openBook = null
-            },
-        )
+        val reader = openBook
+        if (reader == null) {
+            LibraryScreen(
+                books = books,
+                importing = importing,
+                onOpen = { openBook = it },
+                onImportFiles = { pickFiles.launch(arrayOf("*/*")) },
+                onImportFolder = {
+                    runCatching { pickFolder.launch(null) }
+                },
+                onDelete = { book ->
+                    store.deleteBook(book)
+                    books = store.loadBooks()
+                },
+                onOnline = { showOnline = true },
+            )
+        } else {
+            ReaderScreen(
+                book = reader,
+                store = store,
+                onBack = { sourcePage, marks, names ->
+                    val updated = reader.copy(
+                        lastPage = sourcePage,
+                        bookmarks = marks,
+                        bookmarkNames = names,
+                    )
+                    store.saveBooks(
+                        store.loadBooks().map { if (it.id == updated.id) updated else it },
+                    )
+                    books = store.loadBooks()
+                    openBook = null
+                },
+            )
+        }
     }
 }

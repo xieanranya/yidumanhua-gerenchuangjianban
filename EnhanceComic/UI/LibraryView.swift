@@ -130,6 +130,9 @@ struct LibraryView: View {
         .fullScreenCover(item: $openBook) { book in
             ReaderView(book: book).environmentObject(store)
         }
+        .fullScreenCover(isPresented: $showOnline) {
+            OnlineSourceView()
+        }
         // 一个 sheet 槽驱动两种选择器。之前两个 `.fileImporter` 挂在同一个 View 上会抢
         // 唯一的 presentation slot，「导入漫画」那条被顶掉，点了完全没反应。
         //
@@ -196,6 +199,8 @@ struct LibraryView: View {
         return "v\(version) (\(build))"
     }
 
+    @State private var showOnline = false
+
     private var actions: some View {
         HStack(spacing: 10) {
             Button {
@@ -221,6 +226,21 @@ struct LibraryView: View {
                 HStack(spacing: 6) {
                     Image(systemName: "folder")
                     Text("导入文件夹")
+                }
+                .font(.system(size: 14, weight: .medium))
+                .padding(.horizontal, 18)
+                .padding(.vertical, 11)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(Color.secondary.opacity(0.35), lineWidth: 1)
+                )
+            }
+            Button {
+                showOnline = true
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "globe")
+                    Text("在线源")
                 }
                 .font(.system(size: 14, weight: .medium))
                 .padding(.horizontal, 18)

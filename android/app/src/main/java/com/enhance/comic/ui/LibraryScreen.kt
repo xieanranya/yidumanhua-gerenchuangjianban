@@ -31,6 +31,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.MenuBook
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.outlined.FolderOpen
+import androidx.compose.material.icons.outlined.Public
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -112,6 +113,7 @@ fun LibraryScreen(
     onImportFiles: () -> Unit,
     onImportFolder: () -> Unit,
     onDelete: (Book) -> Unit,
+    onOnline: () -> Unit = {},
 ) {
     var pendingDelete by remember { mutableStateOf<Book?>(null) }
     val reading = remember(books) { books.filter { it.lastPage > 0 }.maxByOrNull { it.addedAt } }
@@ -154,6 +156,19 @@ fun LibraryScreen(
                         )
                         Spacer(Modifier.width(6.dp))
                         Text("导入文件夹")
+                    }
+                    OutlinedButton(
+                        onClick = onOnline,
+                        shape = RoundedCornerShape(14.dp),
+                        contentPadding = PaddingValues(horizontal = 18.dp, vertical = 12.dp),
+                    ) {
+                        Icon(
+                            Icons.Outlined.Public,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text("在线源")
                     }
                 }
             }

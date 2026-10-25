@@ -42,17 +42,18 @@ final class SourceEngine {
             NSLog("[source] JS 异常: %@", err?.toString() ?? "?")
         }
 
-        // 同步桥：JS -> 原生，立即返回
-        let hostCall: @convention(block) (JSValue?) -> JSValue? = { [weak js] msg in
+        // 同步桥：JS -> 原生。原生只负责“返回一段 JSON 文本”，
+        // 拆包装（{v:...} / __err / bytes）交给下面注入的 JS 前置做——
+        // 跟安卓侧 HOSTCALL_PRELUDE 完全一致，别在这里返回解好的对象：
+        // 之前就是在原生这层直接回了 {v:...}，JS 那边当成结果用，
+        // 于是 res.status 变 undefined，而 !!{v:null} 恒为真（所有源都显示已登录）。
+        let hostRaw: @convention(block) (JSValue?) -> JSValue? = { [weak js] msg in
             guard let js else { return nil }
             let json = msg?.toString() ?? "{}"
-            let result = self.handleHostCall(json)
-            guard let encoded = try? JSONSerialization.data(withJSONObject: [result]),
-                  let arr = String(data: encoded, encoding: .utf8) else { return nil }
-            let literal = String(arr.dropFirst().dropLast())   // 拿到带引号的 JSON 字符串字面量
-            return js.evaluateScript("JSON.parse(\(literal))")
+            let out = self.handleHostCall(json)
+            return JSValue(object: out, in: js)
         }
-        js.setObject(hostCall, forKeyedSubscript: "__hostCall" as NSString)
+        js.setObject(hostRaw, forKeyedSubscript: "__hostRaw" as NSString)
 
         // 异步事件：任务结果回传
         let hostEvent: @convention(block) (JSValue?) -> Void = { [weak self] o in
@@ -76,6 +77,7 @@ final class SourceEngine {
             return false
         }
         js.evaluateScript(source)
+        js.evaluateScript(Self.hostBridgeJS)
         js.evaluateScript("SourceEngine.setEventSink(function(o){ __hostEvent(o); })")
 
         js.evaluateScript("SourceEngine.init(\(jsLiteral(routesJson())), \(jsLiteral(defaults.string(forKey: "source_route_state"))))")
@@ -85,6 +87,17 @@ final class SourceEngine {
         booted = true
         return true
     }
+
+    /// JSC 里没有 window / console。桥的拆包装与二进制转换都在引擎 prelude 里做（两端共用），
+    /// 这里只补 JSC 缺的全局对象。
+    private static let hostBridgeJS = """
+    (function () {
+      var g = (typeof globalThis !== 'undefined') ? globalThis : this;
+      if (typeof g.console === 'undefined') {
+        g.console = { log: function () {}, error: function () {}, warn: function () {}, info: function () {} };
+      }
+    })();
+    """
 
     /// 资源可能在 bundle 根目录，也可能被保留在 Resources/ 子目录里（看 Xcode 怎么同步的）
     private func resourceURL(_ name: String, _ ext: String) -> URL? {
@@ -248,13 +261,23 @@ final class SourceEngine {
             return "{\"__err\":\"bad json\"}"
         }
         do {
-            let v: Any = try dispatch(msg) ?? NSNull()
-            let wrapped: [String: Any] = ["v": v]
+            let raw = try dispatch(msg)
+            let wrapped: [String: Any] = ["v": Self.jsonSafe(raw)]
             let d = try JSONSerialization.data(withJSONObject: wrapped)
             return String(data: d, encoding: .utf8) ?? "{\"v\":null}"
         } catch {
             let d = try? JSONSerialization.data(withJSONObject: ["__err": "\(error)"])
             return d.flatMap { String(data: $0, encoding: .utf8) } ?? "{\"__err\":\"error\"}"
+        }
+    }
+
+    /// JSON 表达不了二进制：统一转成 {"__b64":"..."}，由引擎 prelude 还原成 Uint8Array。
+    /// 之前这里直接回 Data，JSONSerialization 直接抛错 —— 表现为 jm 签名、拷贝正文解密全失败。
+    private static func jsonSafe(_ v: Any?) -> Any {
+        switch v {
+        case let d as Data: return ["__b64": d.base64EncodedString()]
+        case let a as [UInt8]: return ["__b64": Data(a).base64EncodedString()]
+        default: return v ?? NSNull()
         }
     }
 
@@ -352,6 +375,9 @@ final class SourceEngine {
         if let data = msg["data"], !(data is NSNull), req.httpMethod != "GET" {
             if let s = data as? String {
                 req.httpBody = s.data(using: .utf8)
+            } else if let o = data as? [String: Any], let b = o["__b64"] as? String,
+                      let d = Data(base64Encoded: b) {
+                req.httpBody = d
             } else if let d = try? JSONSerialization.data(withJSONObject: data) {
                 req.httpBody = d
             }
@@ -375,8 +401,9 @@ final class SourceEngine {
         sem.wait()
 
         let wantBytes = (msg["bytes"] as? Bool) ?? false
+        // 二进制不直接塞进 JSON（会变成乱码字符串），统一走 {"__b64":...}
         let bodyValue: Any = wantBytes
-            ? body.base64EncodedString()
+            ? ["__b64": body.base64EncodedString()]
             : (String(data: body, encoding: .utf8) ?? "")
         return ["status": status, "headers": respHeaders, "body": bodyValue]
     }
@@ -444,6 +471,10 @@ final class SourceEngine {
             if let s = v as? String { return Data(s.utf8) }
             if let d = v as? Data { return d }
             if let a = v as? [Int] { return Data(a.map { UInt8(truncatingIfNeeded: $0) }) }
+            if let a = v as? [UInt8] { return Data(a) }
+            // 引擎把 Uint8Array 打包成 {"__b64":"..."} 传下来
+            if let o = v as? [String: Any], let b = o["__b64"] as? String,
+               let d = Data(base64Encoded: b) { return d }
             return Data()
         }
         let value = bytes(msg["value"])

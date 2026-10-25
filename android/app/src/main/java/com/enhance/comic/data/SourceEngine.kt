@@ -257,7 +257,16 @@ class SourceEngine private constructor(private val app: Context) {
         } catch (e: Throwable) {
             return JSONObject().put("__err", e.message ?: e.toString()).toString()
         }
-        return JSONObject().put("v", value ?: JSONObject.NULL).toString()
+        return JSONObject().put("v", jsonSafe(value)).toString()
+    }
+
+    /// JSON 表达不了二进制：统一转成 {"__b64":"..."}，由引擎 prelude 还原成 Uint8Array。
+    /// 原来直接把 ByteArray 塞进 JSONObject，toString() 出来是 "[B@1a2b"，
+    /// md5/AES 全在算垃圾数据（禁漫签名、拷贝正文解密都受影响）。
+    private fun jsonSafe(v: Any?): Any = when (v) {
+        null -> JSONObject.NULL
+        is ByteArray -> JSONObject().put("__b64", Base64.encodeToString(v, Base64.NO_WRAP))
+        else -> v
     }
 
     private fun srcKey(msg: JSONObject): String =
@@ -354,6 +363,10 @@ class SourceEngine private constructor(private val app: Context) {
         if (data != null && data != JSONObject.NULL && method != "GET" && method != "HEAD") {
             val bytes = when (data) {
                 is String -> data.toByteArray(Charsets.UTF_8)
+                is JSONObject -> {
+                    val b = data.optString("__b64", "")
+                    if (b.isNotEmpty()) Base64.decode(b, Base64.DEFAULT) else data.toString().toByteArray(Charsets.UTF_8)
+                }
                 else -> data.toString().toByteArray(Charsets.UTF_8)
             }
             conn.doOutput = true
@@ -385,7 +398,9 @@ class SourceEngine private constructor(private val app: Context) {
         val out = JSONObject()
         out.put("status", status)
         out.put("headers", JSONObject())
-        out.put("body", if (wantBytes) Base64.encodeToString(body, Base64.NO_WRAP) else String(body, Charsets.UTF_8))
+        // 二进制不塞成裸 base64 字符串了，统一 {"__b64":...}，由引擎 prelude 还原
+        out.put("body", if (wantBytes) JSONObject().put("__b64", Base64.encodeToString(body, Base64.NO_WRAP))
+        else String(body, Charsets.UTF_8))
         conn.disconnect()
         return out
     }
@@ -479,6 +494,11 @@ class SourceEngine private constructor(private val app: Context) {
         val value = msg.opt("value")
         fun bytes(v: Any?): ByteArray = when (v) {
             is String -> v.toByteArray(Charsets.UTF_8)
+            // 引擎把 Uint8Array 打包成 {"__b64":"..."} 传下来
+            is JSONObject -> {
+                val b = v.optString("__b64", "")
+                if (b.isNotEmpty()) Base64.decode(b, Base64.DEFAULT) else v.toString().toByteArray(Charsets.UTF_8)
+            }
             else -> v.toString().toByteArray(Charsets.UTF_8)
         }
         return when (type) {
@@ -561,20 +581,7 @@ class SourceEngine private constructor(private val app: Context) {
     }
 }
 
-/** 注入到 JS 全局的宿主桥。bundler 里的 sendMessage 直接走 __hostCall。 */
+/** 注入到 JS 全局的宿主桥。引擎 prelude 的 sendMessage 会调它，拆包装/二进制转换都在 prelude 里。 */
 private const val HOSTCALL_PRELUDE = """
-window.__hostCall = function(msg) {
-  var raw = NativeBridge.call(JSON.stringify(msg));
-  if (raw === null || raw === '') return null;
-  var r = JSON.parse(raw);
-  if (r && r.__err) throw new Error(r.__err);
-  var v = r ? r.v : null;
-  if (msg.bytes && typeof v === 'string') {
-    // 二进制响应以 base64 传回，转成 Uint8Array
-    var bin = atob(v), out = new Uint8Array(bin.length);
-    for (var i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-    return out;
-  }
-  return v;
-};
+window.__hostRaw = function(json) { return NativeBridge.call(json); };
 """

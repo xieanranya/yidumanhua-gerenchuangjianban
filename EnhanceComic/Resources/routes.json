@@ -40,7 +40,7 @@
           "name": "直连",
           "hosts": ["www.copy5000.com"],
           "map": [
-            { "re": "^www\\.(2025|2026|2027)copy\\.com$|^www\\.copy20\\.com$|^www\\.mangacopy\\.com$|^www\\.copy-manga\\.com$|^www\\.copymanga\\.tv$|^www\\.copy2000\\.(site|online)$|^www\\.copy5000\\.com$|^api\\.(mangacopy|copy-manga)\\.com$", "to": "" }
+            { "re": "^www\\.(2025|2026|2027)copy\\.com$|^www\\.copy20\\.com$|^www\\.mangacopy\\.com$|^www\\.copy-manga\\.com$|^www\\.copymanga\\.tv$|^www\\.copy2000\\.(site|online)$|^www\\.copy5000\\.com$", "to": "" }
           ]
         },
         {
@@ -48,7 +48,7 @@
           "name": "VPN",
           "hosts": ["www.2026copy.com", "www.copy20.com", "www.mangacopy.com"],
           "map": [
-            { "re": "^www\\.(2025|2026|2027)copy\\.com$|^www\\.copy20\\.com$|^www\\.mangacopy\\.com$|^www\\.copy-manga\\.com$|^www\\.copymanga\\.tv$|^www\\.copy2000\\.(site|online)$|^www\\.copy5000\\.com$|^api\\.(mangacopy|copy-manga)\\.com$", "to": "" }
+            { "re": "^www\\.(2025|2026|2027)copy\\.com$|^www\\.copy20\\.com$|^www\\.mangacopy\\.com$|^www\\.copy-manga\\.com$|^www\\.copymanga\\.tv$|^www\\.copy2000\\.(site|online)$|^www\\.copy5000\\.com$", "to": "" }
           ]
         }
       ]

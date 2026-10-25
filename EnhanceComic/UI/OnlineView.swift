@@ -69,7 +69,7 @@ struct OnlineSourceView: View {
             }
             .task { await bootstrap() }
             .sheet(item: Binding(
-                get: { loginTarget.map { AnyIdentifiable($0) } },
+                get: { loginTarget.map { AnyIdentifiable(value: $0) } },
                 set: { if $0 == nil { loginTarget = nil } }
             )) { boxed in
                 let s = boxed.value

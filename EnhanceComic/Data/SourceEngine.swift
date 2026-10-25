@@ -357,12 +357,15 @@ final class SourceEngine {
     }
 
     private static func normalizeUrl(_ u: String) -> String {
+        // URL 里的中文必须先变成 %XX，否则 URL(string:) 直接返回 nil（安卓那边是 400）。
+        // 只转空格和非 ASCII；/ : ? & = # 这些结构字符要原样保留，不能整体转义。
         var out = ""
-        for ch in u {
-            if let a = ch.asciiValue, a >= 0x21, a <= 0x7E {
-                out.append(ch)
+        out.reserveCapacity(u.count + 16)
+        for byte in u.utf8 {
+            if byte > 0x20 && byte < 0x7F {
+                out.append(Character(UnicodeScalar(byte)))
             } else {
-                out += ch.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? ""
+                out += String(format: "%%%02X", byte)
             }
         }
         return out
@@ -519,8 +522,9 @@ final class SourceEngine {
         guard keyLen == 16 || keyLen == 24 || keyLen == 32 else {
             throw HostError(msg: "AES key 长度不对: \(keyLen)")
         }
-        let alg = CCAlgorithm(keyLen == 16 ? kCCAlgorithmAES128
-            : (keyLen == 24 ? kCCAlgorithmAES192 : kCCAlgorithmAES256))
+        // CommonCrypto 只有 kCCAlgorithmAES128 这一个算法标识（值就是 kCCAlgorithmAES），
+        // 192/256 位是靠 key 长度区分的，没有单独的常量，写了会编译不过。
+        let alg = CCAlgorithm(kCCAlgorithmAES128)
         var options = CCOptions(kCCOptionPKCS7Padding)
         if iv == nil { options |= CCOptions(kCCOptionECBMode) }
 

@@ -147,6 +147,11 @@ final class SourceEngine {
         await asyncCall("logout", [jsLiteral(key)])
     }
 
+    /// 账号页：登录态 + 源自己声明的信息项（account.infoItems）
+    func account(key: String) async -> [String: Any] {
+        await asyncCall("account", [jsLiteral(key)])
+    }
+
     func setHost(key: String, host: String) async {
         _ = await syncCall("setHost", [jsLiteral(key), jsLiteral(host)])
     }

@@ -7,8 +7,7 @@ struct OnlineSourceView: View {
     @State private var routes: [String: [String: Any]] = [:]
     @State private var loading = true
     @State private var error: String?
-    @State private var loginTarget: [String: Any]?
-    @State private var toast: String?
+    @State private var accountTarget: AccountTarget?
 
     var body: some View {
         NavigationStack {
@@ -22,22 +21,23 @@ struct OnlineSourceView: View {
                             ForEach(sources.indices, id: \.self) { i in
                                 let s = sources[i]
                                 let key = s["key"] as? String ?? ""
+                                let name = s["name"] as? String ?? key
                                 let route = routes[key]
                                 let canLogin = (s["canLogin"] as? Bool) == true
                                 let logged = (s["logged"] as? Bool) == true
                                 HStack(spacing: 8) {
                                     NavigationLink {
-                                        BrowseView(key: key, title: s["name"] as? String ?? key)
+                                        BrowseView(key: key, title: name)
                                     } label: {
                                         SourceCell(
-                                            name: s["name"] as? String ?? key,
+                                            name: name,
                                             host: route?["host"] as? String ?? "",
                                             line: route?["line"] as? String ?? ""
                                         )
                                     }
                                     if canLogin {
                                         Button {
-                                            loginTarget = s
+                                            accountTarget = AccountTarget(key: key, name: name)
                                         } label: {
                                             Text(logged ? "已登录" : "登录")
                                                 .font(.system(size: 11))
@@ -52,10 +52,7 @@ struct OnlineSourceView: View {
                             }
                         } footer: {
                             Text("能用直连的走直连；标「需 VPN」的来源在打开代理后自动可用。" +
-                                 "点「登录」填这个站的账号，登录后才能搜索/看图。")
-                        }
-                        if let toast {
-                            Section { Text(toast).font(.system(size: 12)).foregroundStyle(.secondary) }
+                                 "点书名进这个源；要登录点右边的「登录」，里面有账号信息、退出登录。")
                         }
                     }
                 }
@@ -68,22 +65,17 @@ struct OnlineSourceView: View {
                 }
             }
             .task { await bootstrap() }
-            .sheet(item: Binding(
-                get: { loginTarget.map { AnyIdentifiable(value: $0) } },
-                set: { if $0 == nil { loginTarget = nil } }
-            )) { boxed in
-                let s = boxed.value
-                LoginSheet(
-                    key: s["key"] as? String ?? "",
-                    name: s["name"] as? String ?? "",
-                    logged: (s["logged"] as? Bool) == true,
-                    onDone: { msg in
-                        loginTarget = nil
-                        toast = msg
+            .navigationDestination(isPresented: Binding(
+                get: { accountTarget != nil },
+                set: { shown in
+                    if !shown {
+                        accountTarget = nil
                         Task { await reload() }
-                    },
-                    onCancel: { loginTarget = nil }
-                )
+                    }
+                }
+            )) {
+                AccountView(key: accountTarget?.key ?? "",
+                            fallbackName: accountTarget?.name ?? "")
             }
         }
     }
@@ -110,78 +102,270 @@ struct OnlineSourceView: View {
     }
 }
 
-/// sheet(item:) 需要 Identifiable，[String: Any] 不是，套一层
-struct AnyIdentifiable: Identifiable {
+/// 从源列表直接跳账号页时带的参数
+struct AccountTarget: Identifiable, Equatable {
     let id = UUID()
-    let value: [String: Any]
-}
-
-/// 登录表单：账号 + 密码 → 源脚本的 account.login()。登录态存宿主 KV，重启还在。
-struct LoginSheet: View {
     let key: String
     let name: String
-    let logged: Bool
-    let onDone: (String) -> Void
-    let onCancel: () -> Void
+}
 
+/// 独立账号页：登录 / 退出 / 看账号信息。照着 PicACG 那种「先登录再进内容」的习惯做的。
+struct AccountView: View {
+    let key: String
+    let fallbackName: String
+
+    @Environment(\.openURL) private var openURL
+    @State private var info: [String: Any] = [:]
+    @State private var route: [String: Any] = [:]
+    @State private var loading = true
+    @State private var loadError: String?
     @State private var user = ""
     @State private var pass = ""
     @State private var busy = false
-    @State private var error: String?
+    @State private var loginError: String?
+    @State private var notice: String?
+
+    private var name: String {
+        let n = info["name"] as? String ?? ""
+        return n.isEmpty ? fallbackName : n
+    }
+    private var logged: Bool { (info["logged"] as? Bool) == true }
+    private var canLogin: Bool { (info["canLogin"] as? Bool) == true }
+    private var canWeb: Bool { (info["canWebLogin"] as? Bool) == true }
+    private var registerUrl: String { info["registerUrl"] as? String ?? "" }
+    private var webUrl: String { info["loginWebUrl"] as? String ?? "" }
+    private var savedAccount: String { info["savedAccount"] as? String ?? "" }
 
     var body: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    TextField("账号 / 邮箱", text: $user)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .keyboardType(.emailAddress)
-                    SecureField("密码", text: $pass)
-                } header: {
-                    Text("登录 \(name)")
-                } footer: {
-                    Text("账号密码只存在本机，不会上传。登录后这个源才能搜索/看图。")
+        Form {
+            Section {
+                HStack(spacing: 14) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 15).fill(Color.accentColor.opacity(0.15))
+                        Text(String(name.prefix(1)))
+                            .font(.system(size: 24, weight: .bold))
+                            .foregroundStyle(.tint)
+                    }
+                    .frame(width: 58, height: 58)
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(name).font(.system(size: 17, weight: .semibold))
+                        Text(routeLine)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 0)
+                    Text(statusText)
+                        .font(.system(size: 11))
+                        .foregroundStyle(statusColor)
+                        .padding(.horizontal, 9).padding(.vertical, 4)
+                        .background(statusColor.opacity(0.12),
+                                    in: RoundedRectangle(cornerRadius: 6))
                 }
-                if let error {
-                    Section { Text(error).font(.system(size: 12)).foregroundStyle(.red) }
-                }
-                Section {
-                    Button {
-                        Task {
-                            busy = true; error = nil
-                            let r = await SourceEngine.shared.login(key: key, user: user, password: pass)
-                            busy = false
-                            if (r["ok"] as? Bool) == true { onDone("\(name) 登录成功") }
-                            else { error = "登录失败：" + (r["error"] as? String ?? "未知原因") }
-                        }
-                    } label: {
-                        HStack {
-                            Text(busy ? "登录中…" : "登录")
-                            if busy { Spacer(); ProgressView() }
+                .padding(.vertical, 4)
+            }
+
+            if loading {
+                Section { ProgressView().frame(maxWidth: .infinity).padding(.vertical, 24) }
+            } else if canLogin {
+                if logged {
+                    Section("已登录账号") {
+                        Text(savedAccount.isEmpty ? "（该源未回传账号名）" : savedAccount)
+                            .font(.system(size: 15, weight: .medium))
+                        infoRows
+                    }
+                    if let notice {
+                        Section {
+                            Text(notice).font(.system(size: 12)).foregroundStyle(.green)
                         }
                     }
-                    .disabled(busy || user.isEmpty || pass.isEmpty)
-                    if logged {
-                        Button("退出登录", role: .destructive) {
-                            Task {
-                                busy = true
-                                _ = await SourceEngine.shared.logout(key: key)
-                                busy = false
-                                onDone("\(name) 已退出登录")
+                    Section {
+                        Button(role: .destructive) {
+                            Task { await logout() }
+                        } label: {
+                            HStack {
+                                Text("退出登录")
+                                if busy { Spacer(); ProgressView() }
+                            }
+                        }
+                        .disabled(busy)
+                    } footer: {
+                        Text("退出后这个源要重新登录才能搜索和看图。")
+                    }
+                } else {
+                    Section {
+                        TextField("账号 / 邮箱", text: $user)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .keyboardType(.emailAddress)
+                        SecureField("密码", text: $pass)
+                    } header: {
+                        Text("登录 \(name)")
+                    } footer: {
+                        Text("账号密码只存在本机，不会上传。登录后这个源才能搜索和看图。")
+                    }
+                    if let loginError {
+                        Section {
+                            Text(loginError).font(.system(size: 12)).foregroundStyle(.red)
+                        }
+                    }
+                    Section {
+                        Button {
+                            Task { await login() }
+                        } label: {
+                            HStack {
+                                Text(busy ? "登录中…" : "登录")
+                                if busy { Spacer(); ProgressView() }
+                            }
+                        }
+                        .disabled(busy || user.isEmpty || pass.isEmpty)
+                        if !registerUrl.isEmpty {
+                            Button("还没有账号？去 \(name) 注册") {
+                                if let u = URL(string: registerUrl) { openURL(u) }
                             }
                         }
                     }
                 }
+            } else if canWeb {
+                Section {
+                    Text("这个源不支持账号密码，登录是在网页里完成的（靠 Cookie）。" +
+                         "App 内暂时没法替你填，公开内容不登录也能看。")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                }
+                Section {
+                    if !webUrl.isEmpty {
+                        Button("打开登录网页") {
+                            if let u = URL(string: webUrl) { openURL(u) }
+                        }
+                    }
+                    if !registerUrl.isEmpty {
+                        Button("去 \(name) 注册") {
+                            if let u = URL(string: registerUrl) { openURL(u) }
+                        }
+                    }
+                }
+            } else {
+                Section {
+                    Text("这个源不用登录，直接搜索就行。")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                }
             }
-            .navigationTitle("账号")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") { onCancel() }
+
+            if let loadError {
+                Section {
+                    Text(loadError).font(.system(size: 12)).foregroundStyle(.red)
+                }
+            }
+
+            Section {
+            } footer: {
+                Text("登录凭证保存在本机，不上传任何服务器；换设备要重新登录。")
+            }
+        }
+        .navigationTitle("账号")
+        .navigationBarTitleDisplayMode(.inline)
+        .task { await refresh() }
+    }
+
+    private var routeLine: String {
+        var parts: [String] = []
+        let host = route["host"] as? String ?? ""
+        if !host.isEmpty { parts.append(host) }
+        switch route["line"] as? String ?? "" {
+        case "direct": parts.append("直连")
+        case "proxy": parts.append("需 VPN")
+        default: break
+        }
+        return parts.isEmpty ? "线路未检测" : parts.joined(separator: " · ")
+    }
+
+    private var statusText: String {
+        if logged { return "已登录" }
+        if canLogin || canWeb { return canLogin ? "未登录" : "网页登录" }
+        return "该源不用登录"
+    }
+
+    private var statusColor: Color {
+        if logged { return .green }
+        if canLogin || canWeb { return .orange }
+        return .secondary
+    }
+
+    @ViewBuilder
+    private var infoRows: some View {
+        let items = info["items"] as? [[String: Any]] ?? []
+        let shown = items.filter {
+            let t = $0["title"] as? String ?? ""
+            let v = $0["value"] as? String ?? ""
+            let a = $0["action"] as? String ?? ""
+            return !t.isEmpty && !(v.isEmpty && a.isEmpty)
+        }
+        if shown.isEmpty {
+            Text("这个源没有回传账号信息。如果功能还是用不了，先退出再登录一次。")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+        } else {
+            ForEach(shown.indices, id: \.self) { i in
+                HStack(alignment: .top) {
+                    Text(shown[i]["title"] as? String ?? "")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 78, alignment: .leading)
+                    let v = shown[i]["value"] as? String ?? ""
+                    Text(v.isEmpty ? "需在源设置里填（App 暂不支持）" : v)
+                        .font(.system(size: 12))
+                    Spacer(minLength: 0)
                 }
             }
         }
+    }
+
+    private func refresh() async {
+        let r = await SourceEngine.shared.account(key: key)
+        await MainActor.run {
+            if (r["ok"] as? Bool) == true, let d = r["data"] as? [String: Any] {
+                info = d
+                loadError = nil
+                let saved = d["savedAccount"] as? String ?? ""
+                if !saved.isEmpty && user.isEmpty { user = saved }
+            } else {
+                loadError = r["error"] as? String ?? "账号信息读取失败"
+            }
+            loading = false
+        }
+        let st = await SourceEngine.shared.routeStatus()
+        for s in st where (s["key"] as? String) == key {
+            await MainActor.run { route = s }
+            break
+        }
+    }
+
+    private func login() async {
+        busy = true
+        loginError = nil
+        notice = nil
+        let r = await SourceEngine.shared.login(key: key, user: user.trimmingCharacters(in: .whitespaces),
+                                                password: pass)
+        busy = false
+        if (r["ok"] as? Bool) == true {
+            pass = ""
+            notice = "登录成功"
+            await refresh()
+        } else {
+            loginError = "登录失败：" + (r["error"] as? String ?? "账号或密码不对")
+        }
+    }
+
+    private func logout() async {
+        busy = true
+        _ = await SourceEngine.shared.logout(key: key)
+        busy = false
+        pass = ""
+        notice = "已退出登录"
+        await refresh()
     }
 }
 
@@ -224,71 +408,180 @@ private struct SourceCell: View {
 
 // MARK: - 搜索 / 探索
 
+struct ExploreSectionModel: Identifiable {
+    let id = UUID()
+    let title: String
+    let comics: [ComicItem]
+
+    static func parse(_ d: [String: Any]) -> [ExploreSectionModel] {
+        let arr = d["sections"] as? [[String: Any]] ?? []
+        return arr.compactMap { s in
+            let cs = (s["comics"] as? [[String: Any]] ?? []).compactMap { o -> ComicItem? in
+                guard let id = o["id"] as? String, !id.isEmpty else { return nil }
+                return ComicItem(id: id, title: o["title"] as? String ?? "",
+                                 cover: o["cover"] as? String ?? "")
+            }
+            return cs.isEmpty ? nil : ExploreSectionModel(title: s["title"] as? String ?? "", comics: cs)
+        }
+    }
+}
+
 struct BrowseView: View {
     let key: String
     let title: String
 
     @State private var keyword = ""
-    @State private var comics: [ComicItem] = []
-    @State private var busy = false
+    @State private var sections: [ExploreSectionModel] = []
+    @State private var busy = true
     @State private var error: String?
-    @State private var didLoad = false
+    @State private var searched = false
+    @State private var logged = false
+    @State private var canLogin = true
 
     private let columns = [GridItem(.adaptive(minimum: 100), spacing: 10)]
 
     var body: some View {
         ScrollView {
             if busy {
-                ProgressView().padding(24)
-            }
-            if let error {
-                Text(error).font(.system(size: 12)).foregroundStyle(.red).padding(.horizontal)
-            }
-            LazyVGrid(columns: columns, spacing: 12) {
-                ForEach(comics) { c in
-                    NavigationLink {
-                        DetailView(sourceKey: key, comicId: c.id, fallbackTitle: c.title)
-                    } label: {
-                        ComicCell(item: c)
+                ProgressView().padding(28)
+            } else if sections.allSatisfy({ $0.comics.isEmpty }) {
+                emptyState
+            } else {
+                VStack(alignment: .leading, spacing: 12) {
+                    ForEach(sections) { sec in
+                        VStack(alignment: .leading, spacing: 6) {
+                            if !sec.title.isEmpty {
+                                Text(sec.title)
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundStyle(.tint)
+                            }
+                            LazyVGrid(columns: columns, spacing: 12) {
+                                ForEach(sec.comics) { c in
+                                    NavigationLink {
+                                        DetailView(sourceKey: key, comicId: c.id, fallbackTitle: c.title)
+                                    } label: {
+                                        ComicCell(item: c)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                        }
                     }
-                    .buttonStyle(.plain)
                 }
+                .padding(12)
             }
-            .padding(12)
         }
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $keyword, prompt: "搜索关键词")
         .onSubmit(of: .search) { Task { await search(keyword) } }
-        .task {
-            if didLoad { return }
-            didLoad = true
-            await explore()
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                NavigationLink {
+                    AccountView(key: key, fallbackName: title)
+                } label: {
+                    Text(logged ? "已登录" : "账号").font(.system(size: 13))
+                }
+            }
+        }
+        .task { await reload() }
+        .onAppear {
+            // 从账号页回来时只刷登录态，不重新拉列表（否则搜索/滚动位置全丢）
+            Task { await refreshAccount() }
         }
     }
 
-    private func explore() async {
+    /// 引擎的网络错误太生硬（"HTTP 0"），换成用户能照做的说法
+    private func friendlyError(_ e: String) -> String {
+        let low = e.lowercased()
+        if low.contains("status code: 0") || e.contains("HTTP 0")
+            || low.contains("请求失败: 0") || low.contains("timeout") {
+            return "连不上这个源。它多半在墙外，先把 VPN 打开再点「重新加载」。"
+        }
+        return e
+    }
+
+    private func refreshAccount() async {
+        let a = await SourceEngine.shared.account(key: key)
+        guard (a["ok"] as? Bool) == true, let d = a["data"] as? [String: Any] else { return }
+        logged = (d["logged"] as? Bool) == true
+        canLogin = (d["canLogin"] as? Bool) != false
+    }
+
+    /// 空状态：说清为什么空、下一步点哪，别只留一个搜索框
+    @ViewBuilder
+    private var emptyState: some View {
+        let e = error ?? ""
+        let loginLikely = e.contains("登录") || e.lowercased().contains("login")
+        VStack(spacing: 10) {
+            Image(systemName: loginLikely ? "person.crop.circle.badge.exclamationmark" : "magnifyingglass")
+                .font(.system(size: 40))
+                .foregroundStyle(.secondary.opacity(0.55))
+            Text(loginLikely ? "这个源要先登录"
+                 : (searched ? "没有结果" : (e.isEmpty ? "这个源没有首页" : "没能取到内容")))
+                .font(.system(size: 15, weight: .medium))
+            Text(loginLikely ? "填这个站的账号，登录后就能搜索和看图。"
+                 : (e.isEmpty ? "直接在搜索框里输关键词试试。" : friendlyError(e)))
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+
+            if canLogin && !logged {
+                NavigationLink {
+                    AccountView(key: key, fallbackName: title)
+                } label: {
+                    Text("去登录").frame(maxWidth: .infinity).padding(.vertical, 3)
+                }
+                .buttonStyle(.borderedProminent)
+                .padding(.top, 6)
+            }
+            Button("重新加载") { Task { await reload() } }
+        }
+        .padding(.horizontal, 32)
+        .padding(.vertical, 44)
+        .frame(maxWidth: .infinity)
+    }
+
+    private func reload() async {
+        error = nil
         busy = true
+
+        let a = await SourceEngine.shared.account(key: key)
+        if (a["ok"] as? Bool) == true, let d = a["data"] as? [String: Any] {
+            logged = (d["logged"] as? Bool) == true
+            canLogin = (d["canLogin"] as? Bool) != false
+        }
+
         let r = await SourceEngine.shared.explore(key: key)
         busy = false
-        if (r["ok"] as? Bool) == true, let data = r["data"] as? [String: Any] {
-            comics = ComicItem.parseExplore(data)
+        searched = false
+        if (r["ok"] as? Bool) == true, let d = r["data"] as? [String: Any] {
+            sections = ExploreSectionModel.parse(d)
+            if sections.isEmpty { error = nil }
+        } else {
+            sections = []
+            error = r["error"] as? String ?? "加载失败"
         }
     }
 
     private func search(_ kw: String) async {
-        guard !kw.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        let q = kw.trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty else { return }
         busy = true; error = nil
-        let r = await SourceEngine.shared.search(key: key, keyword: kw, options: "[]", page: 1)
+        let r = await SourceEngine.shared.search(key: key, keyword: q, options: "[]", page: 1)
         busy = false
+        searched = true
         if (r["ok"] as? Bool) == true, let data = r["data"] as? [String: Any] {
-            comics = ComicItem.parseSearch(data)
-            if comics.isEmpty { error = "没有结果" }
+            let list = ComicItem.parseSearch(data)
+            sections = list.isEmpty ? [] : [ExploreSectionModel(title: "", comics: list)]
+            if list.isEmpty { error = "没有找到「\(q)」" }
         } else {
+            sections = []
             error = r["error"] as? String ?? "搜索失败"
         }
     }
 }
+
 
 private struct ComicCell: View {
     let item: ComicItem
@@ -376,6 +669,15 @@ struct DetailView: View {
         }
         .navigationTitle(info["title"] as? String ?? fallbackTitle)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                NavigationLink {
+                    AccountView(key: sourceKey, fallbackName: fallbackTitle)
+                } label: {
+                    Text("账号").font(.system(size: 13))
+                }
+            }
+        }
         .task { await load() }
         .sheet(item: $reading) { payload in
             ReaderSheet(payload: payload)

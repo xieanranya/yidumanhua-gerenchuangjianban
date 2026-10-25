@@ -180,6 +180,10 @@ class SourceEngine private constructor(private val app: Context) {
     suspend fun login(key: String, user: String, pass: String): JSONObject =
         callAsync("login", JSONObject.quote(key), JSONObject.quote(user), JSONObject.quote(pass))
 
+    /** 账号页：登录态 + 源自己声明的信息项（account.infoItems） */
+    suspend fun account(key: String): JSONObject =
+        callAsync("account", JSONObject.quote(key))
+
     suspend fun setHost(key: String, host: String) {
         callSync("setHost", JSONObject.quote(key), JSONObject.quote(host))
     }

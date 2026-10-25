@@ -89,13 +89,65 @@ function __unpackBytes(v, depth) {
 function sendMessage(msg) {
     // 兼容只有 __hostCall 的旧宿主（node 测试脚本）；真机两端都走 __hostRaw
     if (typeof __hostRaw !== 'function') return __hostCall(msg);
+
+    // —— 线路改写 ——
+    // 源脚本里写死的域名在国内不一定通：Komiic 写 komiic.com、拷贝漫画默认 www.2026copy.com，
+    // 这两个直连都是 000。改写原先只在各平台宿主里做了一半（node 有、安卓/iOS 忘了），
+    // 结果「源列表显示直连，请求全打在被墙域名上，登录和首页一起空白」。
+    // 放在 sendMessage 这一层，三端走同一份代码，不可能再漏。
+    var isHttp = !!msg && msg.method === 'http';
+    var isCookie = !!msg && msg.method === 'cookie';
+    var origUrl = null;
+    if ((isHttp || isCookie) && typeof msg.url === 'string' && msg.url) {
+        var rw = __routeRewrite(msg.url);
+        if (rw && rw !== msg.url) { origUrl = msg.url; msg.url = rw; }
+    }
+
+    var r = __hostRound(msg);
+    if (!r) return null;
+
+    // 这一趟彻底连不上（0）或对端 5xx：记坏点换 host，最多再试一次。
+    // 直连域名被污染时第一次必然失败，靠这一步才能不靠人手动切线路。
+    if (isHttp && origUrl && r.v && typeof r.v === 'object') {
+        var code = Number(r.v.status);
+        if (!(code >= 200 && code <= 499)) {
+            var moved = null;
+            try { moved = __routeApi() && ComicRoute.report(msg.url, code); } catch (e) { moved = null; }
+            if (moved && moved.to) {
+                var again = __routeRewrite(origUrl);
+                if (again && again !== msg.url) {
+                    msg.url = again;
+                    var r2 = __hostRound(msg);
+                    if (r2) r = r2;
+                }
+            }
+        }
+    }
+
+    if (r && r.__err) throw new Error(r.__err);
+    return __unpackBytes(r ? r.v : null, 0);
+}
+
+function __routeApi() {
+    try {
+        if (typeof ComicRoute !== 'undefined' && ComicRoute && ComicRoute.rewrite) return ComicRoute;
+    } catch (e) { }
+    return null;
+}
+
+function __routeRewrite(url) {
+    var R = __routeApi();
+    if (!R) return url;
+    try { return R.rewrite(url) || url; } catch (e) { return url; }
+}
+
+/** 一次同步宿主调用，返回拆好的 JSON（含 __err） */
+function __hostRound(msg) {
     var raw = __hostRaw(JSON.stringify(__packBytes(msg, 0)));
     if (raw === null || raw === undefined) return null;
     var text = String(raw);
     if (!text || text === 'null') return null;
-    var r = JSON.parse(text);
-    if (r && r.__err) throw new Error(r.__err);
-    return __unpackBytes(r ? r.v : null, 0);
+    try { return JSON.parse(text); } catch (e) { throw new Error('宿主返回非 JSON: ' + text.slice(0, 120)); }
 }
 
 function setTimeout(callback, delay) {
@@ -1813,8 +1865,15 @@ function compute(func, ...args) {
  * 生命周期：
  *   R.init(table, store)   读 routes.json（obj 或 JSON 串），恢复上次状态
  *   R.probe(probeFn)       并发探测各通道，选第一个可用的（直连在前）
- *   R.rewrite(url)         请求前调用，返回改写后的 url
+ *   R.rewrite(url)         请求前调用，返回改写后的 url（prelude 的 sendMessage 里调）
  *   R.report(url, status)  请求后调用，失败则换 host / 换通道 / 回落 VPN
+ *
+ * state[key] 字段：
+ *   ci      当前通道序号
+ *   host    当前主机（探测选中的，或 hosts[0] 的默认值）
+ *   bad     通道内已判死的主机
+ *   pick    true = ci/host 来自探测结果；false = 还只是默认值，UI 不能当「直连」显示
+ *   offline 所有通道都不通
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory();
@@ -1847,8 +1906,12 @@ function compute(func, ...args) {
           bad: [],
           at: 0,
           probed: false,
+          pick: false,
           offline: false
         };
+      } else if (typeof st.pick !== 'boolean') {
+        // 老版本存下来的状态没有 pick，按「已探测」处理，别把用户手上的直连清掉
+        st.pick = !!st.probed;
       }
     });
     persist();
@@ -1905,6 +1968,9 @@ function compute(func, ...args) {
     if (!host) return url;
     var s = matchSource(host);
     if (!s) return url;
+    // 由源脚本自己维护线路的源（禁漫：init 里拉官方线路表，比这里硬编码的新）不改写，
+    // 否则会把源刚探到的新域名又改回本地表里的老域名。
+    if (s.rewrite === false) return url;
     var c = cur(s.key);
     if (!c || !c.ch) return url;
     var map = c.ch.map || [];
@@ -1924,13 +1990,13 @@ function compute(func, ...args) {
     if (!c) return null;
     var st = c.st, s = c.src;
     var left = (c.ch.hosts || []).filter(function (h) { return st.bad.indexOf(h) < 0; });
-    if (left.length) { st.host = left[0]; return { host: st.host, channel: c.ch.name, line: c.ch.line }; }
+    if (left.length) { st.host = left[0]; st.pick = true; return { host: st.host, channel: c.ch.name, line: c.ch.line }; }
     // 本通道没得选了，按顺序找下一条通道（直连 → VPN）
     for (var i = 0; i < s.channels.length; i++) {
       if (i === st.ci) continue;
       var ch = s.channels[i];
       var hs = (ch.hosts || []).filter(function (h) { return st.bad.indexOf(h) < 0; });
-      if (hs.length) { st.ci = i; st.host = hs[0]; return { host: st.host, channel: ch.name, line: ch.line }; }
+      if (hs.length) { st.ci = i; st.host = hs[0]; st.pick = true; return { host: st.host, channel: ch.name, line: ch.line }; }
     }
     return null;
   }
@@ -1940,10 +2006,21 @@ function compute(func, ...args) {
     if (!host) return null;
     var s = matchSource(host);
     if (!s) return null;
+    if (s.rewrite === false) return null;
     var st = S.state[s.key];
     if (!st) return null;
     var ok = status && status >= 200 && status <= (S.probe.okStatusMax || 499);
-    if (ok) { if (st.offline) { st.offline = false; persist(); } return null; }
+    if (ok) {
+      // 通了就把它从坏点里摘掉：代理开关过的场景下，同一个 host 会先死再活
+      var bi = st.bad.indexOf(host);
+      if (bi >= 0) { st.bad.splice(bi, 1); persist(); }
+      if (st.offline) { st.offline = false; persist(); }
+      return null;
+    }
+    var c = cur(s.key);
+    var mine = c && c.ch && (c.ch.hosts || []).indexOf(host) >= 0;
+    // 封面/图片走的是 CDN 域名，它挂了不代表 API 线路挂了——不碰状态。
+    if (!mine) return null;
     // 只把「当前通道的打点 host」记坏，避免图片/静态域名带偏
     if (st.bad.indexOf(host) < 0) st.bad.push(host);
     var from = st.host;
@@ -1954,6 +2031,18 @@ function compute(func, ...args) {
     return { key: s.key, from: from, to: r.host, channel: r.channel, line: r.line };
   }
 
+  /** 探测确认某源所有通道都不通 */
+  function markOffline(key) {
+    var st = S.state[key];
+    if (!st) return false;
+    st.probed = true;
+    st.at = now();
+    st.offline = true;
+    st.pick = false;
+    persist();
+    return true;
+  }
+
   function setChannel(key, ci, host) {
     var s = src(key), st = S.state[key];
     if (!s || !st || !s.channels[ci]) return false;
@@ -1962,6 +2051,7 @@ function compute(func, ...args) {
     st.bad = [];
     st.at = now();
     st.probed = true;
+    st.pick = !!host;
     st.offline = false;
     persist();
     return true;
@@ -2043,7 +2133,7 @@ function compute(func, ...args) {
     return S.probing;
   }
 
-  /** 给 UI 用：每个源当前线路 */
+  /** 给 UI 用：每个源当前线路。pick=false 表示还没探过，UI 不能直接写「直连」 */
   function status() {
     if (!S.table) return [];
     return S.table.sources.map(function (s) {
@@ -2056,7 +2146,9 @@ function compute(func, ...args) {
         channel: c ? c.name : '',
         line: c ? c.line : '',
         offline: !!st.offline,
-        channels: s.channels.map(function (x) { return { name: x.name, line: x.line, hosts: x.hosts || [] }; }),
+        pick: !!st.pick,
+        probed: !!st.probed,
+        channels: s.channels.map(function (x) { return { name: x.name, line: x.line, hosts: x.hosts || [], probe: x.probe || '' }; }),
         note: s.note || ''
       };
     });
@@ -2067,6 +2159,7 @@ function compute(func, ...args) {
     probe: probe,
     rewrite: rewrite,
     report: report,
+    markOffline: markOffline,
     setHost: setHost,
     setChannel: setChannel,
     status: status,
@@ -2175,9 +2268,36 @@ __SOURCE_CODE["goda"] = "/**\n * \u7ae0\u8282\u56fe\u7247\u89e3\u7801\u5668 \u20
     Promise.resolve().then(fn).then(function (data) {
       emit({ id: id, ok: true, data: mapUrls(data) });
     }, function (e) {
-      emit({ id: id, ok: false, error: String(e && e.message ? e.message : e), stack: e && e.stack ? String(e.stack).slice(0, 800) : '' });
+      var msg = String(e && e.message ? e.message : e);
+      var code = errCode(msg);
+      // 源脚本里「要登录」的原文五花八门（noyacg 直接 throw 'login'），
+      // 界面不该去猜英文，这里统一成一句能直接显示的中文。
+      if (code === 'login' && /^\s*(login|need ?login|not ?logged( ?in)?|login ?required)\s*$/i.test(msg)) {
+        msg = '该源需要登录才能看内容';
+      }
+      emit({
+        id: id, ok: false, error: msg, code: code,
+        stack: e && e.stack ? String(e.stack).slice(0, 800) : ''
+      });
     });
     return id;
+  }
+
+  /**
+   * 失败原因归类。界面不该再去字符串里找「登录」，源脚本报的原文五花八门：
+   *   net        连不上（DNS / TLS / 超时 / status 0）——多半是线路问题，提示开关代理
+   *   login      要登录 / 登录态过期
+   *   forbidden  站点拒绝（403，多为 Cloudflare 风控或防盗链）
+   *   badjson    返回空串/HTML，通常是接口换了或者被拦
+   */
+  function errCode(msg) {
+    var s = String(msg || '');
+    var lo = s.toLowerCase();
+    if (/invalid status code: *0\b|^http 0$|status code: *0\b|请求失败: *0|etimedout|econnrefused|enotfound|unable to resolve|could not resolve|socket|ssl|timed out|网络|超时/.test(lo)) return 'net';
+    if (lo === 'login' || /未登录|需要登录|请先登录|not logged|login required|先登入/.test(lo)) return 'login';
+    if (/status code: *40[13]|http 40[13]|forbidden/.test(lo)) return 'forbidden';
+    if (/unexpected end of json|empty body|not valid json|读取为空/.test(lo)) return 'badjson';
+    return 'other';
   }
 
   var API = {
@@ -2203,7 +2323,13 @@ __SOURCE_CODE["goda"] = "/**\n * \u7ae0\u8282\u56fe\u7247\u89e3\u7801\u5668 \u20
       var st = R._state();
       (st.table ? st.table.sources : []).forEach(function (s) {
         s.channels.forEach(function (c, ci) {
-          out.push({ key: s.key, ci: ci, line: c.line, name: c.name, hosts: c.hosts || [], current: (st.state[s.key] || {}).ci === ci });
+          out.push({
+            key: s.key, ci: ci, line: c.line, name: c.name,
+            hosts: c.hosts || [],
+            probe: c.probe || '',            // 探测路径，空=用 /；有的站首页能开但接口不通
+            rewrite: s.rewrite !== false,
+            current: (st.state[s.key] || {}).ci === ci
+          });
         });
       });
       return out;
@@ -2213,17 +2339,44 @@ __SOURCE_CODE["goda"] = "/**\n * \u7ae0\u8282\u56fe\u7247\u89e3\u7801\u5668 \u20
     routeApply: function (key, ci, host) {
       if (!R) return false;
       var st = R._state();
-      if (!host) return false;
       var cur = st.state[key];
-      // 只采纳「更靠前」的通道，避免 VPN 通道把已探明的直连挤掉
-      if (cur && typeof cur.ci === 'number' && cur.ci < ci) return false;
+      if (!host) {
+        // 该通道没探通。只有在「还没有任何通道探通」时才记不通，
+        // 否则「直连通了、VPN 没通」会把刚选好的直连状态冲掉。
+        if (cur && cur.pick) return false;
+        return R.markOffline(key);
+      }
+      // 已经由探测选中的通道更靠前（直连优先），后面的 VPN 不再顶掉它。
+      // 原来的写法用默认 ci=0 判断，导致「直连探不通、VPN 探通」时永远拒绝采纳，
+      // 源会一直停在「直连」，实际一条线路都没用上。
+      if (cur && cur.pick && typeof cur.ci === 'number' && cur.ci < ci) return false;
       return R.setChannel(key, ci, host);
     },
 
-    routeMarkProbed: function () {
+    /** 探测某个源之前先重置成「未选」，否则上一轮选中的直连会挡住新结果 */
+    routeBeginProbe: function (key) {
+      if (!R) return false;
+      var st = R._state().state[key];
+      if (!st) return false;
+      st.pick = false;
+      st.offline = false;
+      st.bad = [];
+      st.probed = false;
+      return true;
+    },
+
+    /** 探测结束：只把传进来的源标成已探过，没探通的直接记 offline（界面显示「不通」） */
+    routeMarkProbed: function (key) {
       if (!R) return false;
       var st = R._state();
-      Object.keys(st.state).forEach(function (k) { st.state[k].probed = true; st.state[k].at = Date.now(); });
+      var keys = key ? [key] : Object.keys(st.state);
+      keys.forEach(function (k) {
+        var s = st.state[k];
+        if (!s) return;
+        s.probed = true;
+        s.at = Date.now();
+        if (!s.pick) s.offline = true;
+      });
       return true;
     },
 

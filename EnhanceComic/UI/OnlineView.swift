@@ -32,7 +32,9 @@ struct OnlineSourceView: View {
                                         SourceCell(
                                             name: name,
                                             host: route?["host"] as? String ?? "",
-                                            line: route?["line"] as? String ?? ""
+                                            line: route?["line"] as? String ?? "",
+                                            offline: (route?["offline"] as? Bool) == true,
+                                            picked: (route?["pick"] as? Bool) == true
                                         )
                                     }
                                     if canLogin {
@@ -51,8 +53,9 @@ struct OnlineSourceView: View {
                                 }
                             }
                         } footer: {
-                            Text("能用直连的走直连；标「需 VPN」的来源在打开代理后自动可用。" +
-                                 "点书名进这个源；要登录点右边的「登录」，里面有账号信息、退出登录。")
+                            Text("「直连」= 探测确认这台机器的网络能直接打开；「需 VPN」= 要开代理；" +
+                                 "「不通」= 两条线路都没探通，开关代理后点右上角箭头重探。" +
+                                 "要登录点右边的「登录」，里面有账号信息、退出登录。")
                         }
                     }
                 }
@@ -62,6 +65,14 @@ struct OnlineSourceView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("返回") { dismiss() }
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    // 开关代理之后线路会变，必须能手动重探
+                    Button {
+                        Task { await reprobe() }
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
                 }
             }
             .task { await bootstrap() }
@@ -85,6 +96,11 @@ struct OnlineSourceView: View {
         await reload()
         loading = false
         await SourceEngine.shared.probeRoutes()
+        await reload()
+    }
+
+    private func reprobe() async {
+        await SourceEngine.shared.probeRoutes(force: true)
         await reload()
     }
 
@@ -274,10 +290,16 @@ struct AccountView: View {
         var parts: [String] = []
         let host = route["host"] as? String ?? ""
         if !host.isEmpty { parts.append(host) }
-        switch route["line"] as? String ?? "" {
-        case "direct": parts.append("直连")
-        case "proxy": parts.append("需 VPN")
-        default: break
+        if (route["offline"] as? Bool) == true {
+            parts.append("不通")
+        } else if (route["pick"] as? Bool) != true {
+            parts.append("检测中")
+        } else {
+            switch route["line"] as? String ?? "" {
+            case "direct": parts.append("直连")
+            case "proxy": parts.append("需 VPN")
+            default: break
+            }
         }
         return parts.isEmpty ? "线路未检测" : parts.joined(separator: " · ")
     }
@@ -355,7 +377,15 @@ struct AccountView: View {
             notice = "登录成功"
             await refresh()
         } else {
-            loginError = "登录失败：" + (r["error"] as? String ?? "账号或密码不对")
+            let raw = r["error"] as? String ?? "账号或密码不对"
+            switch r["code"] as? String {
+            case "net":
+                loginError = "登录失败：连不上这个源（当前线路不通）。确认代理开关后，回源列表点右上角箭头重探再试。"
+            case "forbidden":
+                loginError = "登录失败：站点拒绝了请求（403），多半是云防护拦了，开/关代理后重试。"
+            default:
+                loginError = "登录失败：" + raw
+            }
         }
     }
 
@@ -373,8 +403,23 @@ private struct SourceCell: View {
     let name: String
     let host: String
     let line: String
+    /// 探测确认所有通道都不通
+    var offline: Bool = false
+    /// ci/host 是不是探测结果；false 只代表线路表里的默认值，不能当「直连」显示
+    var picked: Bool = false
+
+    private var badge: (text: String, color: Color) {
+        if offline { return ("不通", .red) }
+        if !picked { return ("检测中", .secondary) }
+        switch line {
+        case "direct": return ("直连", .green)
+        case "proxy": return ("需 VPN", .orange)
+        default: return ("", .clear)
+        }
+    }
 
     var body: some View {
+        let b = badge
         HStack(spacing: 12) {
             ZStack {
                 RoundedRectangle(cornerRadius: 10).fill(Color.accentColor.opacity(0.15))
@@ -390,16 +435,12 @@ private struct SourceCell: View {
                     .lineLimit(1)
             }
             Spacer()
-            if !line.isEmpty {
-                let direct = line == "direct"
-                Text(direct ? "直连" : "需 VPN")
+            if !b.text.isEmpty {
+                Text(b.text)
                     .font(.system(size: 11))
-                    .foregroundStyle(direct ? Color.green : Color.orange)
+                    .foregroundStyle(b.color)
                     .padding(.horizontal, 8).padding(.vertical, 3)
-                    .background(
-                        (direct ? Color.green : Color.orange).opacity(0.12),
-                        in: RoundedRectangle(cornerRadius: 6)
-                    )
+                    .background(b.color.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
             }
         }
         .padding(.vertical, 2)

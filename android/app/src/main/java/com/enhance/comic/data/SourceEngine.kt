@@ -11,6 +11,7 @@ import android.webkit.WebViewClient
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
@@ -57,6 +58,11 @@ class SourceEngine private constructor(private val app: Context) {
     companion object {
         @Volatile
         private var inst: SourceEngine? = null
+
+        /** 上次线路探测时间。从源里退回列表页不该再等一遍探测，5 分钟内复用上次结果 */
+        @Volatile
+        private var lastProbeAt = 0L
+        private const val PROBE_TTL_MS = 5 * 60 * 1000L
 
         fun get(context: Context): SourceEngine =
             inst ?: synchronized(this) {
@@ -188,39 +194,72 @@ class SourceEngine private constructor(private val app: Context) {
         callSync("setHost", JSONObject.quote(key), JSONObject.quote(host))
     }
 
-    /** 原生侧并发探测线路，比 JS 里串行同步快得多 */
-    suspend fun probeRoutes(): List<Triple<String, Int, String>> {
+    /**
+     * 原生侧并发探测线路。
+     *
+     * 按「源」分组探，不是按候选条目一条条探：一个源的所有 host（直连 + VPN）一起并发打，
+     * 然后**按通道顺序**取第一条通的——直连能通就绝不用 VPN。
+     *
+     * 三种结果都要写回引擎，不然后面判断不了「这个源压根不通」：
+     *   探到 host  -> routeApply(key, ci, host)
+     *   全都不通    -> routeApply(key, 0, "")  → offline，界面显示「不通」
+     *   结束时      -> routeMarkProbed(key)     → 只标这个源，不再一把全标（旧逻辑会把没探的也标成已探）
+     */
+    suspend fun probeRoutes(force: Boolean = false): List<Triple<String, Int, String>> {
+        if (!force && System.currentTimeMillis() - lastProbeAt < PROBE_TTL_MS) return emptyList()
         val cands = runCatching { JSONArray(callSync("routeCandidates")) }.getOrElse { JSONArray() }
-        val out = mutableListOf<Triple<String, Int, String>>()
+        // key -> 该源的候选 host（含通道序号与探测路径）
+        val byKey = LinkedHashMap<String, MutableList<Triple<Int, String, String>>>()
         for (i in 0 until cands.length()) {
             val c = cands.optJSONObject(i) ?: continue
             val key = c.optString("key")
+            if (key.isBlank()) continue
             val ci = c.optInt("ci")
+            val path = c.optString("probe").ifBlank { "/" }
             val hosts = c.optJSONArray("hosts") ?: continue
-            val hostList = (0 until hosts.length()).map { hosts.optString(it) }.filter { it.isNotBlank() }
-            val hit = coroutineScope {
-                hostList.map { h ->
-                    async(Dispatchers.IO) { if (probeHost(h)) h else "" }
-                }.map { it.await() }.firstOrNull { it.isNotEmpty() } ?: ""
-            }
-            if (hit.isNotEmpty()) {
-                callSync("routeApply", JSONObject.quote(key), ci.toString(), JSONObject.quote(hit))
-                out += Triple(key, ci, hit)
+            val list = byKey.getOrPut(key) { mutableListOf() }
+            for (j in 0 until hosts.length()) {
+                val h = hosts.optString(j)
+                if (h.isNotBlank()) list += Triple(ci, h, path)
             }
         }
-        callSync("routeMarkProbed")
+
+        val out = mutableListOf<Triple<String, Int, String>>()
+        for ((key, list) in byKey) {
+            if (list.isEmpty()) continue
+            callSync("routeBeginProbe", JSONObject.quote(key))
+            val hits = coroutineScope {
+                list.map { c -> async(Dispatchers.IO) { if (probeHost(c.second, c.third)) c else null } }
+                    .awaitAll().filterNotNull()
+            }
+            val pick = hits.minWithOrNull(compareBy({ it.first }, { list.indexOf(it) }))
+            if (pick != null) {
+                callSync("routeApply", JSONObject.quote(key), pick.first.toString(), JSONObject.quote(pick.second))
+                out += Triple(key, pick.first, pick.second)
+            } else {
+                callSync("routeApply", JSONObject.quote(key), "0", JSONObject.quote(""))
+            }
+            callSync("routeMarkProbed", JSONObject.quote(key))
+        }
+        lastProbeAt = System.currentTimeMillis()
         return out
     }
 
-    private fun probeHost(host: String): Boolean = runCatching {
-        val conn = URL("https://$host/").openConnection() as HttpURLConnection
-        conn.connectTimeout = 3500
-        conn.readTimeout = 3500
+    private fun probeHost(host: String, path: String = "/"): Boolean = runCatching {
+        val p = if (path.startsWith("/")) path else "/$path"
+        val conn = URL("https://$host$p").openConnection() as HttpURLConnection
+        conn.connectTimeout = 4000
+        conn.readTimeout = 4000
         conn.requestMethod = "GET"
         conn.instanceFollowRedirects = true
-        conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 13) Chrome/130 Mobile Safari/537.36")
+        conn.setRequestProperty(
+            "User-Agent",
+            "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 " +
+                "(KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36"
+        )
         val code = conn.responseCode
         conn.disconnect()
+        // 2xx~4xx 说明 TCP/TLS/HTTP 全通；403 是风控页但线路本身可达
         code in 200..499
     }.getOrElse { false }
 

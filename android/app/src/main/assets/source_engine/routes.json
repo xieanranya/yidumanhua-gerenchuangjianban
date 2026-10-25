@@ -1,6 +1,6 @@
 {
   "_readme": "线路表。一个源可以有多个通道（channel），按顺序优选：直连优先，不通再走 VPN。map 里的 to 为空表示用该通道探测出的最优 host。改这里不用改源脚本，三端共用。",
-  "version": "2026-10-24b",
+  "version": "2026-10-25c",
   "probe": {
     "timeoutMs": 3000,
     "okStatusMax": 499,
@@ -10,6 +10,7 @@
     {
       "key": "jm",
       "label": "禁漫天堂",
+      "rewrite": false,
       "note": "官方 newsvr-2025.txt 解出 5 条线路，全部国内直连可达；封面 CDN（cdn-msp.jmapiproxy3.cc）也直连，图片域名由 baseUrl 的 /setting 接口下发，跟着线路走。",
       "channels": [
         {

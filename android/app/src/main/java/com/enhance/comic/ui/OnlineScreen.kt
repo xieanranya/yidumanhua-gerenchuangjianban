@@ -83,6 +83,8 @@ data class SourceRow(
     val canLogin: Boolean = false,
     val logged: Boolean = false,
     val needLogin: Boolean = false,
+    /** 探测确认所有通道都不通 */
+    val offline: Boolean = false,
 )
 
 data class ComicRow(val id: String, val title: String, val cover: String, val sub: String)
@@ -126,7 +128,8 @@ fun OnlineSourceScreen(onBack: () -> Unit) {
                 if (!probed) {
                     probed = true
                     runCatching {
-                        engine.probeRoutes()
+                        // reloadTick>0 说明是用户主动点「重新检测」，必须重新探
+                        engine.probeRoutes(force = reloadTick > 0)
                         rows = buildRows(engine.sources(), engine.routeStatus())
                     }
                 }
@@ -141,6 +144,15 @@ fun OnlineSourceScreen(onBack: () -> Unit) {
                                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
                             }
                         },
+                        actions = {
+                            // 开关代理之后线路会变，必须能手动重探，不能等缓存过期
+                            TextButton(onClick = { probed = false; reloadTick++ }) {
+                                Icon(Icons.Default.Refresh, contentDescription = null,
+                                    modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("重新检测", fontSize = 13.sp)
+                            }
+                        },
                     )
                 },
             ) { pad ->
@@ -151,8 +163,9 @@ fun OnlineSourceScreen(onBack: () -> Unit) {
                         }
                     } else {
                         Text(
-                            "能用直连的走直连；标「需 VPN」的打开代理后自动可用，切换不用重启。" +
-                                "点书名进这个源；要登录就点右边的「登录」，里面能填账号、看账号信息、退出登录。",
+                            "「直连」= 探测确认这台机器的网络能直接打开；「需 VPN」= 要开代理；" +
+                                "「不通」= 两条线路都没探通，开关代理后点右上角「重新检测」。" +
+                                "要登录就点右边的「登录」。",
                             fontSize = 12.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
@@ -224,16 +237,27 @@ private fun buildRows(srcs: JSONArray, st: JSONArray): List<SourceRow> {
         val key = s.optString("key")
         val r = byKey[key]
         val line = r?.optString("line") ?: ""
+        // pick=false 说明 ci/host 还只是线路表里的默认值，不是探测结果。
+        // 旧代码直接把默认值当「直连」显示，于是出现「标着直连、其实打的是被墙域名」。
+        val picked = r?.optBoolean("pick") == true
+        val offline = r?.optBoolean("offline") == true
         out += SourceRow(
             key = key,
             name = s.optString("name", key),
             host = r?.optString("host") ?: "",
             line = line,
-            label = if (line == "direct") "直连" else if (line == "proxy") "需 VPN" else "",
+            label = when {
+                offline -> "不通"
+                !picked -> "检测中"
+                line == "direct" -> "直连"
+                line == "proxy" -> "需 VPN"
+                else -> ""
+            },
             note = r?.optString("note") ?: "",
             canLogin = s.optBoolean("canLogin"),
             logged = s.optBoolean("logged"),
             needLogin = s.optBoolean("needLogin"),
+            offline = offline,
         )
     }
     return out
@@ -270,16 +294,19 @@ private fun SourceCard(r: SourceRow, onClick: () -> Unit, onLogin: () -> Unit) {
             )
         }
         if (r.label.isNotEmpty()) {
-            val direct = r.line == "direct"
+            val tone = when {
+                r.offline -> Color(0xFFC62828)
+                r.label == "直连" -> Color(0xFF2E7D32)
+                r.label == "检测中" -> Color(0xFF6B6B6B)
+                else -> Color(0xFFB26A00)
+            }
             Text(
                 r.label,
                 fontSize = 11.sp,
-                color = if (direct) Color(0xFF2E7D32) else Color(0xFFB26A00),
+                color = tone,
                 modifier = Modifier
                     .clip(RoundedCornerShape(6.dp))
-                    .background(
-                        if (direct) Color(0x1A2E7D32) else Color(0x1AB26A00)
-                    )
+                    .background(tone.copy(alpha = 0.10f))
                     .padding(horizontal = 8.dp, vertical = 3.dp),
             )
         }
@@ -357,7 +384,14 @@ private fun AccountScreen(
                 notice = "登录成功"
                 refresh()
             } else {
-                loginErr = "登录失败：" + r.optString("error", "账号或密码不对")
+                val code = r.optString("code")
+                val raw = r.optString("error", "账号或密码不对")
+                loginErr = when (code) {
+                    "net" -> "登录失败：连不上这个源（当前线路不通）。确认代理开关后，" +
+                        "回源列表点右上角「重新检测」再试。"
+                    "forbidden" -> "登录失败：站点拒绝了请求（403），多半是云防护拦了，开/关代理后重试。"
+                    else -> "登录失败：$raw"
+                }
             }
         }
     }
@@ -370,6 +404,8 @@ private fun AccountScreen(
     val webUrl = info?.optString("loginWebUrl").orEmpty()
     val line = route?.optString("line").orEmpty()
     val host = route?.optString("host").orEmpty()
+    val routePick = route?.optBoolean("pick") == true
+    val routeOffline = route?.optBoolean("offline") == true
 
     Scaffold(
         topBar = {
@@ -412,14 +448,17 @@ private fun AccountScreen(
                     Text(
                         listOfNotNull(
                             host.ifBlank { null },
-                            when (line) {
-                                "direct" -> "直连"
-                                "proxy" -> "需 VPN"
+                            when {
+                                routeOffline -> "不通"
+                                !routePick -> "检测中"
+                                line == "direct" -> "直连"
+                                line == "proxy" -> "需 VPN"
                                 else -> null
                             },
                         ).joinToString(" · ").ifBlank { "线路未检测" },
                         fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = if (routeOffline) Color(0xFFC62828)
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
@@ -812,7 +851,8 @@ private fun friendlyError(e: String): String {
     return when {
         low.contains("status code: 0") || e.contains("HTTP 0") ||
             low.contains("请求失败: 0") || low.contains("timed out") || low.contains("timeout") ->
-            "连不上这个源。它多半在墙外，先把 VPN 打开再点「重新加载」。"
+            "连不上这个源。回到源列表点右上角「重新检测」，看它标「直连」还是「需 VPN」——" +
+                "标「需 VPN」就要先开代理。"
         else -> e
     }
 }

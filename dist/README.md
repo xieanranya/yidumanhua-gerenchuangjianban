@@ -2,11 +2,51 @@
 
 | 平台 | 文件 | 大小 | 要求 |
 |---|---|---|---|
-| Android | `EnhanceComic-Android-v1.9.13.apk` | 14.4 MB | Android 8.0 (API 26) 及以上，直接覆盖安装 |
-| iOS | `EnhanceComic-iOS-v1.9.13.ipa` | 约 1.2 MB | iOS 16.0 及以上，**未签名**，需 Sideloadly / AltStore 签名 |
+| Android | `EnhanceComic-Android-v1.9.14.apk` | 14.4 MB | Android 8.0 (API 26) 及以上，直接覆盖安装 |
+| iOS | `EnhanceComic-iOS-v1.9.14.ipa` | 约 1.2 MB | iOS 16.0 及以上，**未签名**，需 Sideloadly / AltStore 签名 |
 
-版本：**两端统一 `1.9.13 (24)`**。装完在首页/我的页能看到版本号，两端显示一致就是同一版。
+版本：**两端统一 `1.9.14 (25)`**。装完在首页/我的页能看到版本号，两端显示一致就是同一版。
 签名没变（`d5084caf…`），Android 可以直接覆盖安装，书库和登录态都保留。
+
+## v1.9.14：去掉「直连 / VPN」，登录按普通聚合软件那样工作
+
+上一版的线路层有两个问题，这一版把它整个拆了：
+
+1. 探不到线路时，`routeApply(key, 0, "")` 会把当前主机清空，域名改写随之失效，
+   请求就打回源脚本里写死的 `komiic.com` / `www.2026copy.com` —— 这两个在国内是打不开的。
+   表现就是「首页空、登录全失败」。
+2. 「直连 / 需 VPN / 检测中 / 不通」这套标签本身也没必要让用户看：开没开代理，用户自己知道。
+
+**现在的做法（跟普通聚合软件一样）**：
+
+- 请求该发哪儿发哪儿，只是把源脚本里写死的墙外域名换成同一套站点的可用域名
+  （Komiic `komiic.com` → `komiic.cc`；拷贝 `www.2026copy.com` → `www.copy5000.com`）。
+- 某个域名连不上（DNS / TLS / 超时 / 5xx），自动换下一个备用域名重试一次，用户无感知；
+  失败的域名 10 分钟内不再选，重启即恢复。
+- 4xx 不换域名（那是站点在说话，比如密码错），避免把「密码错」误判成「域名不通」。
+- **界面上的线路全部删掉**：源列表不再有「直连 / 需 VPN / 检测中 / 不通」标签，
+  不再有「重新检测」按钮，账户页不再显示线路，首页/我的页的小结只报源数量与登录数。
+
+### 顺带
+
+- 仓库补进了 **`src-engine/` 引擎源码**（此前只有 `bundle.js` 产物，换台机器没法重建）：
+  `build_bundle.py`、`build_prelude.py`、`route.js`、`engine_api.js`、`dom_pure.js`、
+  `routes.json`、`vendor/` 全部源脚本、`node/` 调试与回归脚本。
+  生成物 `bundle.js` / `prelude.js` 不入库，避免和两个 App 目录里的副本打架。
+- 登录失败文案不再让人「去点重新检测」，改成「先确认网站本身能打开；E-Hentai / 绅士漫画 /
+  PicACG 这类站点国内要开代理」。
+
+### 两端校验
+
+| 检查项 | 结果 |
+|---|---|
+| Android versionCode / versionName | `25` / `1.9.14` |
+| Android 签名 SHA-256 | `d5084caf…`（未变，可覆盖安装） |
+| Android 网络权限 | `android.permission.INTERNET` 在 |
+| 包内 `bundle.js` md5（两端） | `faa74ce0…`，与源码一致 |
+| 包内 `routes.json` md5（两端） | `dad3a912…` |
+| iOS CFBundleShortVersionString / CFBundleVersion | `1.9.14` / `25` |
+| iOS ATS / 120Hz / 文件共享键 | 均在 |
 
 ## v1.9.13：四 Tab 重做 + 同作品多源聚合（双端）
 

@@ -36,6 +36,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.enhance.comic.data.OnlineRecord
 import com.enhance.comic.data.SourceEngine
+import com.enhance.comic.data.UiStore
 import com.enhance.comic.model.Book
 
 /** 「我的」：源管理、阅读记录、外观、本地漫画、阅读设置、关于。 */
@@ -43,9 +44,11 @@ import com.enhance.comic.model.Book
 fun MeScreen(
     books: List<Book>,
     engine: SourceEngine,
+    ui: UiStore,
     version: String,
     themeMode: ThemeMode,
     recordCount: Int,
+    sourceRev: Int = 0,
     onTheme: (ThemeMode) -> Unit,
     onSourceManager: () -> Unit,
     onHistory: () -> Unit,
@@ -57,8 +60,10 @@ fun MeScreen(
     var pickTheme by remember { mutableStateOf(false) }
     var about by remember { mutableStateOf(false) }
 
-    LaunchedEffect(Unit) {
-        runCatching { rows = buildRows(engine.sources()) }
+    LaunchedEffect(sourceRev) {
+        runCatching {
+            rows = buildRows(engine.sources(), ui.disabledSources(), ui.sourceOrder())
+        }
     }
 
     LazyColumn(

@@ -122,6 +122,8 @@ private fun Root() {
     var prefs by remember { mutableStateOf(store.readerPrefs) }
     var enhance by remember { mutableStateOf(store.enhance) }
     var discoverQuery by remember { mutableStateOf("") }
+    // 源开关/顺序改一次就 +1，让首页、发现、我的知道该重新读源列表
+    var sourceRev by remember { mutableStateOf(0) }
 
     LaunchedEffect(message) {
         val text = message ?: return@LaunchedEffect
@@ -243,6 +245,7 @@ private fun Root() {
                         startAlts = over.alts,
                         uiStore = ui,
                         onRecordsChanged = { records = ui.records() },
+                        onSourcesChanged = { sourceRev++ },
                         onBack = { overlay = null },
                     )
 
@@ -251,6 +254,8 @@ private fun Root() {
                             AppTab.HOME -> HomeScreen(
                                 books = books,
                                 engine = engine,
+                                ui = ui,
+                                sourceRev = sourceRev,
                                 onOpenBook = { openBook = it },
                                 onDiscover = { switchTab(AppTab.DISCOVER) },
                                 onSourceManager = { overlay = Overlay.Online(null, null, "") },
@@ -267,6 +272,8 @@ private fun Root() {
 
                             AppTab.DISCOVER -> DiscoverScreen(
                                 engine = engine,
+                                ui = ui,
+                                sourceRev = sourceRev,
                                 initialQuery = discoverQuery,
                                 onOpenWork = { w ->
                                     overlay = Overlay.Online(
@@ -305,6 +312,8 @@ private fun Root() {
                             AppTab.ME -> MeScreen(
                                 books = books,
                                 engine = engine,
+                                ui = ui,
+                                sourceRev = sourceRev,
                                 version = version,
                                 themeMode = themeMode,
                                 recordCount = records.size,

@@ -285,6 +285,10 @@ final class SourceEngine {
             // 不认这个方法会抛「未实现的宿主方法」，源的 ui getter 直接炸。
             return false
         case "htmanga_state":
+            // 绅士漫画问「现在用哪个 API 域名」。
+            // 1.9.14 之后没有线路层了，域名交给 prelude 的别名表改写；
+            // 这里只把老版本升级残留在 source_route_state 里的 host 当线索回一次，
+            // 拿不到就回空，让源用它自己的 fallback。全新安装永远是空。
             let key = msg["key"] as? String ?? "htmanga"
             if let raw = defaults.string(forKey: "source_route_state"),
                let data = raw.data(using: .utf8),

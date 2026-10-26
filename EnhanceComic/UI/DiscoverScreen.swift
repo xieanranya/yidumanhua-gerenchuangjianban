@@ -99,7 +99,7 @@ struct DiscoverScreen: View {
                 Chip(text: "全部", selected: picked.isEmpty) {
                     picked = ""
                 }
-                ForEach(hub.rows) { row in
+                ForEach(hub.enabledRows) { row in
                     Chip(
                         text: row.name,
                         selected: picked == row.key
@@ -208,7 +208,7 @@ struct DiscoverScreen: View {
             failedSources = 0
         }
         await hub.load()
-        let rows = hub.rows
+        let rows = hub.enabledRows
         // 用「已提交」的关键词，别用输入框里的实时文本：切源时不该跟着未提交的字搜
         let q = query
 
@@ -219,7 +219,7 @@ struct DiscoverScreen: View {
                     works = []
                     sections = []
                     busy = false
-                    error = "没有可用的源。去「我的 → 源管理」看看源列表是不是空的。"
+                    error = "你把所有源都关掉了。去「我的 → 源管理」至少打开一个。"
                 }
                 return
             }

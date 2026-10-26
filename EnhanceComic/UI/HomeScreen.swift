@@ -116,7 +116,7 @@ struct HomeScreen: View {
 
     private var subline: String {
         let local = store.books.isEmpty ? "本地书库还是空的" : "本地 \(store.books.count) 本"
-        let online = hub.rows.isEmpty ? "在线源读取中" : "\(hub.rows.count) 个在线源"
+        let online = hub.rows.isEmpty ? "在线源读取中" : "\(hub.enabledRows.count) 个在线源"
         return local + " · " + online
     }
 
@@ -167,7 +167,7 @@ struct HomeScreen: View {
     private var quickEntries: some View {
         HStack(spacing: 9) {
             quickCard(glyph: .shelf, title: "本地书架", note: "\(store.books.count) 本", action: onShelf)
-            quickCard(glyph: .list, title: "源管理", note: "\(hub.rows.count) 个", action: onSources)
+            quickCard(glyph: .list, title: "源管理", note: "\(hub.enabledRows.count) 个", action: onSources)
             quickCard(glyph: .search, title: "搜索", note: "全源", action: onSearch)
         }
     }
@@ -200,7 +200,7 @@ struct HomeScreen: View {
 
     private func loadHot() async {
         await hub.load()
-        let targets = Array(hub.rows.prefix(3))
+        let targets = Array(hub.enabledRows.prefix(3))
         if targets.isEmpty {
             hotBusy = false
             return

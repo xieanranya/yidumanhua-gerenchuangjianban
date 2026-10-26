@@ -6,7 +6,7 @@ import org.json.JSONObject
 /**
  * 一个源在界面上的状态。
  *
- * 只有登录相关——**没有线路这个概念**。域名不通会自动换别名重试一次，
+ * 只有登录与开关——**没有线路这个概念**。域名不通会自动换别名重试一次，
  * 用户不需要知道「直连还是 VPN」，就像普通聚合软件那样。
  */
 data class SourceRow(
@@ -16,6 +16,8 @@ data class SourceRow(
     val canLogin: Boolean = false,
     val logged: Boolean = false,
     val needLogin: Boolean = false,
+    /** 用户是否把它算进「全部源」的搜索与首页推荐里 */
+    val enabled: Boolean = true,
 )
 
 data class ComicRow(
@@ -88,13 +90,23 @@ fun parseComics(
     return out
 }
 
-fun buildRows(srcs: JSONArray): List<SourceRow> {
-    val out = mutableListOf<SourceRow>()
+/**
+ * 把引擎给的源列表套上用户的开关与顺序。
+ *
+ * 顺序：`order` 里列出的按它的先后排；没列到的（引擎后来新增的）保持引擎原顺序接在后面。
+ * 用稳定的 sortedBy，所以「没列到」的彼此之间不会被搅乱。
+ */
+fun buildRows(
+    srcs: JSONArray,
+    off: Set<String> = emptySet(),
+    order: List<String> = emptyList(),
+): List<SourceRow> {
+    val rows = mutableListOf<SourceRow>()
     for (i in 0 until srcs.length()) {
         val s = srcs.optJSONObject(i) ?: continue
         val key = s.optString("key")
         if (key.isBlank()) continue
-        out += SourceRow(
+        rows += SourceRow(
             key = key,
             name = s.optString("name", key),
             note = s.optString("note"),
@@ -103,15 +115,19 @@ fun buildRows(srcs: JSONArray): List<SourceRow> {
             needLogin = s.optBoolean("needLogin"),
         )
     }
-    return out
+    val rank = order.withIndex().associate { (i, k) -> k to i }
+    return rows
+        .sortedBy { rank[it.key] ?: Int.MAX_VALUE }
+        .map { it.copy(enabled = it.key !in off) }
 }
 
-/** 源小结：只说数量，不提线路（已经不存在这个概念）。 */
+/** 源小结：只说数量与开关，不提线路（已经不存在这个概念）。 */
 fun sourceSummary(rows: List<SourceRow>): String {
     if (rows.isEmpty()) return "正在读取源列表…"
     val logged = rows.count { it.logged }
+    val enabled = rows.count { it.enabled }
     return buildString {
-        append("${rows.size} 个源")
+        append("$enabled/${rows.size} 个源在用")
         if (logged > 0) append(" · $logged 个已登录")
     }
 }

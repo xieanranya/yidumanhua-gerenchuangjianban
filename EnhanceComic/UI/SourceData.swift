@@ -4,7 +4,7 @@ import SwiftUI
 
 /// 一个源在界面上的状态。
 ///
-/// 只有登录相关——**没有线路这个概念**。域名打不开会自动换别名重试一次，
+/// 只有登录与开关——**没有线路这个概念**。域名打不开会自动换别名重试一次，
 /// 用户不需要知道「直连还是 VPN」，就像普通聚合软件那样。
 struct SourceRow: Identifiable, Equatable {
     let key: String
@@ -12,11 +12,14 @@ struct SourceRow: Identifiable, Equatable {
     let canLogin: Bool
     let logged: Bool
     let needLogin: Bool
+    /// 用户是否把它算进「全部源」的搜索与首页推荐里
+    var enabled: Bool = true
 
     var id: String { key }
 
-    static func build(sources: [[String: Any]]) -> [SourceRow] {
-        sources.compactMap { s in
+    /// 套上用户的开关与顺序：`order` 里列出的按它排，没列到的（引擎新增的）保持原顺序跟在后面。
+    static func build(sources: [[String: Any]], off: Set<String> = [], order: [String] = []) -> [SourceRow] {
+        let rows = sources.compactMap { s -> SourceRow? in
             guard let key = s["key"] as? String, !key.isEmpty else { return nil }
             return SourceRow(
                 key: key,
@@ -26,14 +29,31 @@ struct SourceRow: Identifiable, Equatable {
                 needLogin: (s["needLogin"] as? Bool) == true
             )
         }
+        return rows
+            .enumerated()
+            .sorted { a, b in
+                let ra = order.firstIndex(of: a.element.key) ?? Int.max
+                let rb = order.firstIndex(of: b.element.key) ?? Int.max
+                // 都没列到的保持引擎原顺序（用原下标兜底），排序才是稳定的
+                return ra == rb ? a.offset < b.offset : ra < rb
+            }
+            .map { $0.element }
+            .map { row in
+                var r = row
+                r.enabled = !off.contains(row.key)
+                return r
+            }
     }
 }
 
-/// 源小结：只说数量，不提线路（已经不存在这个概念）。
+/// 源小结：只说数量与开关，不提线路（已经不存在这个概念）。
 func sourceSummary(_ rows: [SourceRow]) -> String {
     if rows.isEmpty { return "正在读取源列表…" }
     let logged = rows.filter { $0.logged }.count
-    return logged > 0 ? "\(rows.count) 个源 · \(logged) 个已登录" : "\(rows.count) 个源"
+    let on = rows.filter { $0.enabled }.count
+    var s = "\(on)/\(rows.count) 个源在用"
+    if logged > 0 { s += " · \(logged) 个已登录" }
+    return s
 }
 
 /// 源抛出来的网络错误太生硬（"HTTP 0"），换成用户能照做的说法。
@@ -181,11 +201,32 @@ func groupWorks(_ comics: [ComicRow]) -> [Work] {
 // ============================================================================ 源的共享状态
 
 /// 源列表。首页、发现、我的三个页面共用一份，避免每次切 Tab 都重新读一遍。
+///
+/// 源的开关与顺序也存在这里：它是这份列表的 owner，改完 `@Published` 一响，
+/// 三个页面自己就刷新了，不用再往下传一层。
 final class SourceHub: ObservableObject {
     @Published private(set) var rows: [SourceRow] = []
     @Published private(set) var loading = false
+    /// 关掉的源（存「关掉的」而不是「开着的」：以后引擎加源默认是开的）
+    @Published private(set) var disabled: Set<String>
+    /// 用户拖出来的顺序；没列到的按引擎原顺序排在这些之后
+    @Published private(set) var order: [String]
 
     static let shared = SourceHub()
+
+    private enum Keys {
+        static let off = "src.off"
+        static let order = "src.order"
+    }
+
+    private init() {
+        let d = UserDefaults.standard
+        disabled = Set(d.stringArray(forKey: Keys.off) ?? [])
+        order = d.stringArray(forKey: Keys.order) ?? []
+    }
+
+    /// 只有开着的源参与「全部源」的搜索、发现的源 chips、首页推荐。
+    var enabledRows: [SourceRow] { rows.filter { $0.enabled } }
 
     func load(force: Bool = false) async {
         if !rows.isEmpty && !force { return }
@@ -199,8 +240,36 @@ final class SourceHub: ObservableObject {
     /// 登录后刷新「已登录」标记
     func refreshRows() async {
         let srcs = await SourceEngine.shared.sources()
-        let built = SourceRow.build(sources: srcs)
+        let off = disabled
+        let ord = order
+        let built = SourceRow.build(sources: srcs, off: off, order: ord)
         await MainActor.run { rows = built }
+    }
+
+    func setEnabled(_ key: String, _ on: Bool) {
+        var next = disabled
+        if on { next.remove(key) } else { next.insert(key) }
+        disabled = next
+        UserDefaults.standard.set(Array(next), forKey: Keys.off)
+        rows = rows.map { r in
+            var r = r
+            r.enabled = !next.contains(r.key)
+            return r
+        }
+    }
+
+    /// 把某个源上移（-1）或下移（+1）。
+    func move(_ key: String, by delta: Int) {
+        let keys = rows.map { $0.key }
+        guard let from = keys.firstIndex(of: key) else { return }
+        let to = from + delta
+        guard to >= 0, to < keys.count else { return }
+        var next = keys
+        next.swapAt(from, to)
+        order = next
+        UserDefaults.standard.set(next, forKey: Keys.order)
+        let byKey = Dictionary(uniqueKeysWithValues: rows.map { ($0.key, $0) })
+        rows = next.compactMap { byKey[$0] }
     }
 }
 

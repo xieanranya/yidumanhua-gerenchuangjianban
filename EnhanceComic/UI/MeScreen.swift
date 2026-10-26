@@ -180,7 +180,7 @@ struct SourceManagerView: View {
 
             ScrollView {
                 VStack(spacing: 0) {
-                    ForEach(hub.rows) { row in
+                    ForEach(Array(hub.rows.enumerated()), id: \.element.id) { idx, row in
                         HStack(spacing: 11) {
                             NavigationLink {
                                 BrowseView(sourceKey: row.key, sourceName: row.name)
@@ -191,17 +191,19 @@ struct SourceManagerView: View {
                                             .fill(c.chip)
                                         Text(String(row.name.prefix(1)))
                                             .font(.system(size: 15, weight: .bold))
-                                            .foregroundColor(c.fg2)
+                                            .foregroundColor(row.enabled ? c.fg2 : c.fg3)
                                     }
                                     .frame(width: 34, height: 34)
 
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text(row.name)
                                             .font(.system(size: 13.5, weight: .medium))
-                                            .foregroundColor(c.fg)
-                                        Text(row.logged ? "已登录" : (row.needLogin ? "登录后才能看内容" : "公开内容可直接看"))
+                                            .foregroundColor(row.enabled ? c.fg : c.fg3)
+                                        Text(row.logged ? "已登录"
+                                             : (row.needLogin ? "不登录看不了"
+                                                : (row.canLogin ? "未登录" : "公开内容")))
                                             .font(.system(size: 10))
-                                            .foregroundColor(c.fg3)
+                                            .foregroundColor(row.logged ? c.ok : c.fg3)
                                             .lineLimit(1)
                                     }
                                     Spacer(minLength: 0)
@@ -210,29 +212,48 @@ struct SourceManagerView: View {
                             }
                             .buttonStyle(.plain)
 
-                            if row.canLogin {
-                                Button {
-                                    account = row
-                                } label: {
-                                    Text(row.logged ? "已登录" : "登录")
-                                        .font(.system(size: 10.5, weight: .medium))
-                                        .foregroundColor(row.logged ? c.ok : c.accent)
-                                        .padding(.horizontal, 8)
-                                        .padding(.vertical, 4)
-                                        .background((row.logged ? c.ok : c.accent).opacity(0.12))
-                                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                            VStack(alignment: .trailing, spacing: 3) {
+                                Toggle("", isOn: Binding(
+                                    get: { row.enabled },
+                                    set: { hub.setEnabled(row.key, $0) }
+                                ))
+                                .labelsHidden()
+                                .tint(c.accent)
+                                .scaleEffect(0.82)
+                                .frame(width: 43, height: 26)
+
+                                HStack(spacing: 3) {
+                                    if row.canLogin {
+                                        Button {
+                                            account = row
+                                        } label: {
+                                            Text(row.logged ? "账号" : "登录")
+                                                .font(.system(size: 10, weight: .medium))
+                                                .foregroundColor(row.logged ? c.ok : c.accent)
+                                                .padding(.horizontal, 7)
+                                                .padding(.vertical, 3)
+                                                .background((row.logged ? c.ok : c.accent).opacity(0.12))
+                                                .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
+                                    moveButton("chevron.up", enabled: idx > 0) {
+                                        hub.move(row.key, by: -1)
+                                    }
+                                    moveButton("chevron.down", enabled: idx < hub.rows.count - 1) {
+                                        hub.move(row.key, by: 1)
+                                    }
                                 }
-                                .buttonStyle(.plain)
                             }
                         }
                         .padding(.horizontal, 16)
-                        .padding(.vertical, 9)
+                        .padding(.vertical, 8)
                         HLine().padding(.leading, 61)
                     }
 
                     NoteBar(
-                        text: "内容直接来自各源自己的站点，某个域名打不开会自动换备用域名重试。"
-                            + "E-Hentai / 绅士漫画 / PicACG 这类站点国内仍需自备代理。",
+                        text: "关掉的源不参与「全部源」的搜索和首页推荐，箭头调顺序，"
+                            + "单独点进去仍然能看。E-Hentai / 绅士漫画 / PicACG 这类站点国内仍需自备代理。",
                         tone: .neutral,
                         inset: false
                     )
@@ -257,6 +278,21 @@ struct SourceManagerView: View {
         ) {
             AccountView(key: account?.key ?? "", fallbackName: account?.name ?? "")
         }
+    }
+
+    /// 行内的小箭头：调顺序用。到头了就淡掉并禁用，不做「绕回」。
+    @ViewBuilder
+    private func moveButton(_ symbol: String, enabled: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 9, weight: .bold))
+                .foregroundColor(enabled ? c.fg2 : c.fg3.opacity(0.3))
+                .frame(width: 21, height: 19)
+                .background(enabled ? c.chip : Color.clear)
+                .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
     }
 }
 

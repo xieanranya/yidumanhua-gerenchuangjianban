@@ -29,6 +29,7 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
@@ -103,6 +104,7 @@ fun OnlineSourceScreen(
     startAlts: List<WorkEntry> = emptyList(),
     uiStore: UiStore? = null,
     onRecordsChanged: () -> Unit = {},
+    onSourcesChanged: () -> Unit = {},
     onBack: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -120,7 +122,9 @@ fun OnlineSourceScreen(
     when (val n = nav) {
         is Nav.Sources -> SourcesScreen(
             engine = engine,
+            ui = uiStore,
             onBack = onBack,
+            onChanged = onSourcesChanged,
             onOpen = { key, name -> nav = Nav.Browse(key, name) },
             onAccount = { key, name -> nav = Nav.Account(key, name, Nav.Sources) },
         )
@@ -184,10 +188,19 @@ private fun imageUrls(data: JSONObject): List<String> {
 
 // ==================================================================================== 源列表
 
+/**
+ * 源管理：登录状态 + 开关 + 顺序。
+ *
+ * 开关只影响「全部源」的搜索、发现页的源 chips 和首页推荐；单独点进某个源仍然能看，
+ * 免得用户关了之后连临时打开看一眼都做不到。
+ * 顺序决定首页推荐取哪几个、发现页 chips 的先后。
+ */
 @Composable
 private fun SourcesScreen(
     engine: SourceEngine,
+    ui: UiStore?,
     onBack: () -> Unit,
+    onChanged: () -> Unit,
     onOpen: (String, String) -> Unit,
     onAccount: (String, String) -> Unit,
 ) {
@@ -195,13 +208,42 @@ private fun SourcesScreen(
     var busy by remember { mutableStateOf(true) }
     var err by remember { mutableStateOf<String?>(null) }
 
+    suspend fun reload() {
+        runCatching {
+            rows = buildRows(
+                engine.sources(),
+                ui?.disabledSources() ?: emptySet(),
+                ui?.sourceOrder() ?: emptyList(),
+            )
+        }.onFailure { err = it.message }
+    }
+
     LaunchedEffect(Unit) {
         busy = rows.isEmpty()
-        runCatching { rows = buildRows(engine.sources()) }
-            .onFailure { err = it.message }
+        reload()
         busy = false
     }
 
+    fun toggle(key: String, on: Boolean) {
+        ui?.setSourceEnabled(key, on)
+        rows = rows.map { if (it.key == key) it.copy(enabled = on) else it }
+        onChanged()
+    }
+
+    fun move(from: Int, delta: Int) {
+        val to = from + delta
+        if (from !in rows.indices || to !in rows.indices) return
+        val reordered = rows.map { it.key }.toMutableList().also {
+            val t = it[from]
+            it[from] = it[to]
+            it[to] = t
+        }
+        ui?.setSourceOrder(reordered)
+        rows = reordered.mapNotNull { k -> rows.firstOrNull { it.key == k } }
+        onChanged()
+    }
+
+    val onCount = rows.count { it.enabled }
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
         SubTopBar("漫画源", onBack)
         if (busy && rows.isEmpty()) {
@@ -209,18 +251,22 @@ private fun SourcesScreen(
         } else {
             LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 20.dp)) {
                 item {
-                    SectionHeader("全部源", more = "${rows.size} 个")
+                    SectionHeader("全部源", more = "$onCount/${rows.size} 在用")
                 }
-                items(rows, key = { it.key }) { r ->
+                itemsIndexed(rows, key = { _, r -> r.key }) { i, r ->
                     SourceRowItem(
                         r = r,
+                        index = i,
+                        total = rows.size,
                         onClick = { onOpen(r.key, r.name) },
                         onLogin = { onAccount(r.key, r.name) },
+                        onToggle = { on -> toggle(r.key, on) },
+                        onMove = { delta -> move(i, delta) },
                     )
                 }
                 item {
                     Text(
-                        "内容直接来自各源自己的站点，某个域名打不开会自动换备用域名重试。" +
+                        "关掉的源不参与「全部源」的搜索和首页推荐，但单独点进去仍然能看。" +
                             "E-Hentai / 绅士漫画 / PicACG 这类站点国内仍需自备代理。",
                         color = LocalColors.current.fg3,
                         fontSize = 10.5.sp,
@@ -244,7 +290,15 @@ private fun SourcesScreen(
 }
 
 @Composable
-private fun SourceRowItem(r: SourceRow, onClick: () -> Unit, onLogin: () -> Unit) {
+private fun SourceRowItem(
+    r: SourceRow,
+    index: Int,
+    total: Int,
+    onClick: () -> Unit,
+    onLogin: () -> Unit,
+    onToggle: (Boolean) -> Unit,
+    onMove: (Int) -> Unit,
+) {
     val c = LocalColors.current
     Row(
         modifier = Modifier
@@ -262,56 +316,95 @@ private fun SourceRowItem(r: SourceRow, onClick: () -> Unit, onLogin: () -> Unit
         ) {
             Text(
                 r.name.take(2),
-                color = c.fg,
+                color = if (r.enabled) c.fg else c.fg3,
                 fontSize = 12.5.sp,
                 fontWeight = FontWeight.Bold,
             )
         }
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
-            Text(
-                r.name,
-                color = c.fg,
-                fontSize = 14.sp,
-                fontWeight = FontWeight.Medium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            val sub = when {
-                r.needLogin && !r.logged -> "登录后才能看内容"
-                r.canLogin && !r.logged -> "需要账号 · 点右边登录"
-                r.logged -> "已登录"
-                else -> "公开内容可直接看"
-            }
-            Spacer(Modifier.height(2.dp))
-            Text(
-                sub,
-                color = c.fg3,
-                fontSize = 10.5.sp,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-        if (r.canLogin) {
-            Spacer(Modifier.width(7.dp))
-            if (r.logged) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    "已登录",
-                    color = c.ok,
-                    fontSize = 11.sp,
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(7.dp))
-                        .background(c.okBg)
-                        .clickable(onClick = onLogin)
-                        .padding(horizontal = 10.dp, vertical = 5.dp),
+                    r.name,
+                    color = if (r.enabled) c.fg else c.fg3,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
                 )
-            } else {
-                MiniButton("登录", onLogin)
+                MiniSwitch(checked = r.enabled, onChange = onToggle)
+            }
+            Spacer(Modifier.height(3.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    when {
+                        r.needLogin && !r.logged -> "不登录看不了"
+                        r.canLogin && !r.logged -> "未登录"
+                        r.logged -> "已登录"
+                        else -> "公开内容"
+                    },
+                    color = if (r.logged) c.ok else c.fg3,
+                    fontSize = 10.5.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                if (r.canLogin) {
+                    MiniButton(if (r.logged) "账号" else "登录", onLogin)
+                    Spacer(Modifier.width(6.dp))
+                }
+                MoveButton("↑", enabled = index > 0) { onMove(-1) }
+                Spacer(Modifier.width(3.dp))
+                MoveButton("↓", enabled = index < total - 1) { onMove(1) }
             }
         }
     }
     HLine(Modifier.padding(start = 68.dp))
 }
+
+/** 开关关掉时整行的文字压暗，但行本身仍可点进去。 */
+@Composable
+private fun MiniSwitch(checked: Boolean, onChange: (Boolean) -> Unit) {
+    val c = LocalColors.current
+    Box(
+        Modifier
+            .size(38.dp, 22.dp)
+            .clip(CircleShape)
+            .background(if (checked) c.accent else c.chip)
+            .clickable { onChange(!checked) },
+        contentAlignment = if (checked) Alignment.CenterEnd else Alignment.CenterStart,
+    ) {
+        Box(
+            Modifier
+                .padding(horizontal = 2.dp)
+                .size(18.dp)
+                .clip(CircleShape)
+                .background(if (checked) c.accentInk else c.fg3),
+        )
+    }
+}
+
+@Composable
+private fun MoveButton(label: String, enabled: Boolean, onClick: () -> Unit) {
+    val c = LocalColors.current
+    Box(
+        Modifier
+            .size(26.dp)
+            .clip(RoundedCornerShape(7.dp))
+            .background(if (enabled) c.chip else Color.Transparent)
+            .clickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            label,
+            color = if (enabled) c.fg2 else c.fg3.copy(alpha = 0.3f),
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Bold,
+        )
+    }
+}
+
 
 // ==================================================================================== 浏览
 

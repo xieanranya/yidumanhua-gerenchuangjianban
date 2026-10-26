@@ -35,6 +35,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.enhance.comic.data.SourceEngine
+import com.enhance.comic.data.UiStore
 import com.enhance.comic.model.Book
 
 /**
@@ -45,6 +46,8 @@ import com.enhance.comic.model.Book
 fun HomeScreen(
     books: List<Book>,
     engine: SourceEngine,
+    ui: UiStore,
+    sourceRev: Int = 0,
     onOpenBook: (Book) -> Unit,
     onDiscover: () -> Unit,
     onSourceManager: () -> Unit,
@@ -58,13 +61,14 @@ fun HomeScreen(
     var hotLabel by remember { mutableStateOf("") }
     var hotBusy by remember { mutableStateOf(true) }
 
-    LaunchedEffect(Unit) {
+    LaunchedEffect(sourceRev) {
+        hotBusy = true
         runCatching {
-            rows = buildRows(engine.sources())
-            // 取前三个源合起来聚一次，同一本在多个源出现就显示「N 源」
+            rows = buildRows(engine.sources(), ui.disabledSources(), ui.sourceOrder())
+            // 取前三个**开着的**源合起来聚一次，同一本在多个源出现就显示「N 源」
             val pool = mutableListOf<ComicRow>()
             var hit = 0
-            for (s in rows.take(3)) {
+            for (s in rows.filter { it.enabled }.take(3)) {
                 // 单个源等太久就把首页拖死了，给 15 秒上限然后换下一个
                 val r = kotlinx.coroutines.withTimeoutOrNull(15_000) { engine.explore(s.key, 0) }
                     ?: continue
@@ -133,7 +137,7 @@ fun HomeScreen(
                 QuickEntry(
                     glyph = Glyph.DISCOVER,
                     label = "发现",
-                    sub = if (rows.isEmpty()) "全部源" else "${rows.size} 个源",
+                    sub = if (rows.isEmpty()) "全部源" else "${rows.count { it.enabled }} 个源",
                     onClick = onDiscover,
                     modifier = Modifier.weight(1f),
                 )
@@ -147,7 +151,7 @@ fun HomeScreen(
                 QuickEntry(
                     glyph = Glyph.GEAR,
                     label = "源管理",
-                    sub = if (rows.isEmpty()) "读取中" else "${rows.size} 个源",
+                    sub = if (rows.isEmpty()) "读取中" else "${rows.count { it.enabled }} 个源",
                     onClick = onSourceManager,
                     modifier = Modifier.weight(1f),
                 )

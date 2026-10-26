@@ -164,7 +164,7 @@ struct BrowseView: View {
             await MainActor.run {
                 busy = false
                 sections = []
-                error = "搜索超时，线路可能不通。"
+                error = "搜索超时了。这个源这次没响应，换个关键词或过一会儿再试。"
             }
             return
         }

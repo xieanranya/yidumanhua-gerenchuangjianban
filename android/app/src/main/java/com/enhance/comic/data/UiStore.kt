@@ -103,10 +103,46 @@ class UiStore(context: Context) {
         prefs.edit().remove(KEY_ONLINE).apply()
     }
 
+    // ------------------------------------------------------------------ 源开关与顺序
+
+    /**
+     * 用户关掉的源。存「关掉的」而不是「开着的」：
+     * 以后引擎新增源时默认是开的，不用为兼容去迁移一遍旧数据。
+     */
+    fun disabledSources(): Set<String> =
+        prefs.getString(KEY_SRC_OFF, "")
+            .orEmpty()
+            .split(',')
+            .filter { it.isNotBlank() }
+            .toSet()
+
+    fun setSourceEnabled(key: String, on: Boolean) {
+        if (key.isBlank()) return
+        val next = disabledSources().toMutableSet()
+        if (on) next.remove(key) else next.add(key)
+        prefs.edit().putString(KEY_SRC_OFF, next.joinToString(",")).apply()
+    }
+
+    /**
+     * 用户拖出来的顺序。只存 key 序列；
+     * 没列到的（引擎后来新增的）按引擎原顺序排在这些之后。
+     */
+    fun sourceOrder(): List<String> =
+        prefs.getString(KEY_SRC_ORDER, "")
+            .orEmpty()
+            .split(',')
+            .filter { it.isNotBlank() }
+
+    fun setSourceOrder(keys: List<String>) {
+        prefs.edit().putString(KEY_SRC_ORDER, keys.filter { it.isNotBlank() }.joinToString(",")).apply()
+    }
+
     private companion object {
         const val KEY_THEME = "theme_mode"
         const val KEY_TAB = "last_tab"
         const val KEY_ONLINE = "online_records"
+        const val KEY_SRC_OFF = "source_off"
+        const val KEY_SRC_ORDER = "source_order"
         const val MAX_RECORDS = 60
     }
 }

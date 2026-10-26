@@ -42,6 +42,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.enhance.comic.data.SourceEngine
+import com.enhance.comic.data.UiStore
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 
@@ -51,10 +52,15 @@ import kotlinx.coroutines.coroutineScope
  * 「全部」模式下把这些源的首页并发拉回来，再按**标题归一化后完全一致**的条目聚合成一张卡，
  * 卡角标显示有几个源，点进去能切源。各源没有互通的 ID，所以只做「完全一致才合并」，
  * 宁可少合也不把两本不同的书串成一本。
+ *
+ * 「全部」只用**用户开着**的源；关掉的源在下方 chips 里也不出现，避免点进去发现搜不到东西。
+ * [sourceRev] 是源开关/顺序的版本号，改了之后靠它把这一页的请求重跑一遍。
  */
 @Composable
 fun DiscoverScreen(
     engine: SourceEngine,
+    ui: UiStore,
+    sourceRev: Int = 0,
     initialQuery: String = "",
     onOpenWork: (Work) -> Unit,
     onSourceManager: () -> Unit,
@@ -71,23 +77,40 @@ fun DiscoverScreen(
     var okCount by remember { mutableIntStateOf(0) }
     var err by remember { mutableStateOf<String?>(null) }
     var tick by remember { mutableIntStateOf(0) }
+    // 源元数据（名字/能否登录）在一次页面生命周期里不会变，缓存住；
+    // 点 chips 换源时只用缓存的这份套一遍开关，不再去问一次 JS 引擎。
+    var srcs by remember { mutableStateOf<org.json.JSONArray?>(null) }
 
-    LaunchedEffect(selected, query, tick) {
+    LaunchedEffect(selected, query, tick, sourceRev) {
         busy = true
         err = null
         failures = 0
         okCount = 0
         works = emptyList()
         sections = emptyList()
+        if (srcs == null) {
+            runCatching { srcs = engine.sources() }
+        }
         runCatching {
-            if (rows.isEmpty()) rows = buildRows(engine.sources())
+            rows = buildRows(srcs ?: org.json.JSONArray(), ui.disabledSources(), ui.sourceOrder())
+        }
+
+        val onRows = rows.filter { it.enabled }
+        // 选中的源被关掉了：退回「全部」，不然这一页会一直停在一个已经关掉的源上
+        if (selected.isNotBlank() && onRows.none { it.key == selected }) {
+            selected = ""
+            return@LaunchedEffect
         }
 
         if (selected.isBlank()) {
-            val targets = rows.take(8)
+            val targets = onRows.take(8)
             if (targets.isEmpty()) {
                 busy = false
-                err = "没有可用的源，先去源管理点「重新检测」"
+                err = if (rows.isEmpty()) {
+                    "还没读到源列表，稍后再试"
+                } else {
+                    "你把所有源都关掉了。去源管理至少打开一个。"
+                }
                 return@LaunchedEffect
             }
             val hits: List<List<ComicRow>?> = coroutineScope {
@@ -128,7 +151,7 @@ fun DiscoverScreen(
                 err = if (query.isNotBlank()) {
                     "没有找到「$query」"
                 } else {
-                    "这些源这次都没返回内容。可能是线路刚被墙，回源管理重新检测一次。"
+                    "这些源这次都没返回内容。可能是网站本身暂时打不开，换个时间再试，或者只留几个快的源。"
                 }
             }
         } else {
@@ -201,7 +224,7 @@ fun DiscoverScreen(
             horizontalArrangement = Arrangement.spacedBy(7.dp),
         ) {
             item { Chip("全部", selected.isBlank()) { selected = "" } }
-            items(rows, key = { it.key }) { r ->
+            items(rows.filter { it.enabled }, key = { it.key }) { r ->
                 Chip(r.name, selected == r.key) { selected = r.key }
             }
         }
@@ -275,7 +298,7 @@ private fun EmptyBlock(err: String?, onSourceManager: () -> Unit) {
     Column {
         EmptyHint(
             title = "没有取到内容",
-            message = friendlyError(err ?: "换个关键词，或去源管理看看线路是不是标着「不通」。"),
+            message = friendlyError(err ?: "换个关键词，或者去源管理把慢的源先关掉。"),
         )
         Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
             MiniButton("去源管理", onClick = onSourceManager)

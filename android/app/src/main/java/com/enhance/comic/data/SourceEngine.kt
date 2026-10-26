@@ -85,7 +85,7 @@ class SourceEngine private constructor(private val app: Context) {
         return w
     }
 
-    /** 在主线程准备引擎并初始化线路表；幂等。 */
+    /** 在主线程准备引擎并把域名别名表灌进去；幂等。 */
     suspend fun start(): Boolean {
         if (ready) return true
         runOnMain { ensureWeb() }
@@ -265,7 +265,11 @@ class SourceEngine private constructor(private val app: Context) {
         // 不认这个方法会抛「未实现的宿主方法」，源的 ui getter 直接炸。
         "jm_ui" -> false
         "htmanga_state" -> {
-            // 绅士漫画问「现在用哪个 API 域名」；回线路层里存下的 host，没有就让源用它的 fallback
+            // 绅士漫画问「现在用哪个 API 域名」。
+            // 1.9.14 之后已经没有线路层了，域名交给 prelude 的别名表改写；
+            // 这里只把**老版本升级时残留**在 route_state 里的 host 当线索回一次
+            // （老用户继续用上次探测到的域名），拿不到就是空，让源用它自己的 fallback。
+            // 全新安装永远是空 —— 这条路径不是活机制，别再往 route_state 里写东西。
             val saved = prefs.getString("route_state", null)
             var base = ""
             runCatching {

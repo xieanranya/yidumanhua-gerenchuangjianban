@@ -1,138 +1,538 @@
 import SwiftUI
 
-/// 在线源首页：列出所有源和当前线路（直连 / 需 VPN）
-struct OnlineSourceView: View {
+// ======================================================================== 单源浏览/搜索
+
+struct BrowseView: View {
+
+    let sourceKey: String
+    let sourceName: String
+
     @Environment(\.dismiss) private var dismiss
-    @State private var sources: [[String: Any]] = []
-    @State private var routes: [String: [String: Any]] = [:]
-    @State private var loading = true
+    @Environment(\.appColors) private var c
+
+    @State private var keyword = ""
+    @State private var sections: [ExploreSection] = []
+    @State private var busy = true
     @State private var error: String?
-    @State private var accountTarget: AccountTarget?
+    @State private var searched = false
+    @State private var logged = false
+    @State private var tick = 0
+
+    private let columns = [
+        GridItem(.flexible(minimum: 0, maximum: .infinity), spacing: 9),
+        GridItem(.flexible(minimum: 0, maximum: .infinity), spacing: 9),
+        GridItem(.flexible(minimum: 0, maximum: .infinity), spacing: 9),
+    ]
 
     var body: some View {
-        NavigationStack {
-            Group {
-                if loading && sources.isEmpty {
-                    ProgressView("正在启动引擎…")
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        VStack(spacing: 0) {
+            SubHeader(
+                title: sourceName,
+                subtitle: searched ? "搜索结果" : "首页推荐",
+                onBack: { dismiss() },
+                trailing: AnyView(
+                    NavigationLink {
+                        AccountView(key: sourceKey, fallbackName: sourceName)
+                    } label: {
+                        Text(logged ? "已登录" : "账号")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(logged ? c.ok : c.accent)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background((logged ? c.ok : c.accent).opacity(0.12))
+                            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                )
+            )
+
+            searchBar.padding(.horizontal, 16).padding(.bottom, 8)
+            HLine()
+
+            ScrollView {
+                if busy {
+                    LoadingBox(height: 240)
+                } else if let error {
+                    VStack(spacing: 10) {
+                        EmptyHint(
+                            title: searched ? "没有找到" : "没有取到内容",
+                            message: error,
+                            glyph: .search
+                        )
+                        MiniButton(text: "重新加载", accent: true) { tick += 1 }
+                            .padding(.bottom, 30)
+                    }
                 } else {
-                    List {
-                        Section {
-                            ForEach(sources.indices, id: \.self) { i in
-                                let s = sources[i]
-                                let key = s["key"] as? String ?? ""
-                                let name = s["name"] as? String ?? key
-                                let route = routes[key]
-                                let canLogin = (s["canLogin"] as? Bool) == true
-                                let logged = (s["logged"] as? Bool) == true
-                                HStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(sections) { sec in
+                            if !sec.title.isEmpty {
+                                SectionHeader(title: sec.title, more: "\(sec.comics.count) 本", inset: false)
+                                    .padding(.horizontal, 18)
+                            }
+                            LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
+                                ForEach(sec.comics) { comic in
                                     NavigationLink {
-                                        BrowseView(key: key, title: name)
+                                        DetailView(work: comic.asWork)
                                     } label: {
-                                        SourceCell(
-                                            name: name,
-                                            host: route?["host"] as? String ?? "",
-                                            line: route?["line"] as? String ?? "",
-                                            offline: (route?["offline"] as? Bool) == true,
-                                            picked: (route?["pick"] as? Bool) == true
+                                        ComicCell(
+                                            title: comic.title,
+                                            cover: comic.cover,
+                                            sub: comic.sub.isEmpty ? nil : comic.sub,
+                                            seed: comic.comicId.hashValue
                                         )
                                     }
-                                    if canLogin {
-                                        Button {
-                                            accountTarget = AccountTarget(key: key, name: name)
-                                        } label: {
-                                            Text(logged ? "已登录" : "登录")
-                                                .font(.system(size: 11))
-                                                .foregroundStyle(logged ? Color.green : Color.blue)
-                                                .padding(.horizontal, 9).padding(.vertical, 4)
-                                                .background((logged ? Color.green : Color.blue).opacity(0.12),
-                                                            in: RoundedRectangle(cornerRadius: 6))
-                                        }
-                                        .buttonStyle(.borderless)
-                                    }
+                                    .buttonStyle(.plain)
                                 }
                             }
-                        } footer: {
-                            Text("「直连」= 探测确认这台机器的网络能直接打开；「需 VPN」= 要开代理；" +
-                                 "「不通」= 两条线路都没探通，开关代理后点右上角箭头重探。" +
-                                 "要登录点右边的「登录」，里面有账号信息、退出登录。")
+                            .padding(.horizontal, 18)
+                            .padding(.top, 6)
+                            .padding(.bottom, 10)
                         }
                     }
+                    .padding(.bottom, 26)
                 }
             }
-            .navigationTitle("在线漫画源")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("返回") { dismiss() }
-                }
-                ToolbarItem(placement: .primaryAction) {
-                    // 开关代理之后线路会变，必须能手动重探
-                    Button {
-                        Task { await reprobe() }
-                    } label: {
-                        Image(systemName: "arrow.clockwise")
-                    }
-                }
+        }
+        .background(c.bg.ignoresSafeArea())
+        .toolbar(.hidden, for: .navigationBar)
+        .task { await load() }
+        .onChange(of: tick) { _ in Task { await load() } }
+    }
+
+    private var searchBar: some View {
+        HStack(spacing: 8) {
+            GlyphView(glyph: .search, tint: c.fg3, size: 15, strokeWidth: 1.6)
+            TextField("在这个源里搜索", text: $keyword)
+                .font(.system(size: 13))
+                .foregroundColor(c.fg)
+                .submitLabel(.search)
+                .onSubmit { Task { await search() } }
+                .accentColor(c.accent)
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 38)
+        .background(c.card2)
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(c.border, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    private func load() async {
+        await MainActor.run {
+            busy = true
+            error = nil
+            searched = false
+        }
+        let a = await SourceEngine.shared.account(key: sourceKey)
+        if (a["ok"] as? Bool) == true, let d = a["data"] as? [String: Any] {
+            await MainActor.run { logged = (d["logged"] as? Bool) == true }
+        }
+        guard let r = await exploreWithTimeout(key: sourceKey, seconds: 25) else {
+            await MainActor.run {
+                busy = false
+                sections = []
+                error = "等了 25 秒没响应。多半是线路不通，回源管理重新检测，或者先开代理。"
             }
-            .task { await bootstrap() }
-            .navigationDestination(isPresented: Binding(
-                get: { accountTarget != nil },
-                set: { shown in
-                    if !shown {
-                        accountTarget = nil
-                        Task { await reload() }
-                    }
-                }
-            )) {
-                AccountView(key: accountTarget?.key ?? "",
-                            fallbackName: accountTarget?.name ?? "")
+            return
+        }
+        let ok = (r["ok"] as? Bool) == true
+        let data = r["data"] as? [String: Any]
+        let reason = r["error"] as? String
+        await MainActor.run {
+            busy = false
+            if ok, let data {
+                sections = ExploreSection.parse(data, sourceKey: sourceKey, sourceName: sourceName)
+                error = sections.isEmpty ? "这个源没有首页内容，试试直接搜索。" : nil
+            } else {
+                sections = []
+                error = friendlyError(reason ?? "加载失败")
             }
         }
     }
 
-    private func bootstrap() async {
-        _ = await SourceEngine.shared.start()
-        await reload()
-        loading = false
-        await SourceEngine.shared.probeRoutes()
-        await reload()
+    private func search() async {
+        let q = keyword.trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty else { return }
+        await MainActor.run {
+            busy = true
+            error = nil
+            searched = true
+        }
+        guard let r = await searchWithTimeout(key: sourceKey, keyword: q, seconds: 25) else {
+            await MainActor.run {
+                busy = false
+                sections = []
+                error = "搜索超时，线路可能不通。"
+            }
+            return
+        }
+        let ok = (r["ok"] as? Bool) == true
+        let data = r["data"] as? [String: Any]
+        let reason = r["error"] as? String
+        await MainActor.run {
+            busy = false
+            if ok, let data {
+                let comics = parseSearchComics(data, sourceKey: sourceKey, sourceName: sourceName)
+                sections = comics.isEmpty ? [] : [ExploreSection(title: "搜索结果", comics: comics)]
+                error = comics.isEmpty ? "没有找到「\(q)」" : nil
+            } else {
+                sections = []
+                error = friendlyError(reason ?? "搜索失败")
+            }
+        }
+    }
+}
+
+// ============================================================================== 详情
+
+/// 一话的引用（摊平后仍保留分组标题，暂时只用来定位和显示）
+private struct EpRef: Identifiable {
+    let id: String
+    let title: String
+    let index: Int
+    let group: String
+}
+
+struct DetailView: View {
+
+    let work: Work
+
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var ui: UiStore
+    @Environment(\.appColors) private var c
+
+    @State private var entryIndex = 0
+    @State private var info: [String: Any] = [:]
+    @State private var chapters: [EpRef] = []
+    @State private var busy = true
+    @State private var error: String?
+    @State private var reading: ReadingPayload?
+
+    private let chapterColumns = [
+        GridItem(.flexible(minimum: 0, maximum: .infinity), spacing: 7),
+        GridItem(.flexible(minimum: 0, maximum: .infinity), spacing: 7),
+        GridItem(.flexible(minimum: 0, maximum: .infinity), spacing: 7),
+    ]
+
+    private var entry: WorkEntry {
+        work.entries[min(entryIndex, work.entries.count - 1)]
     }
 
-    private func reprobe() async {
-        await SourceEngine.shared.probeRoutes(force: true)
-        await reload()
+    private var title: String {
+        let t = info["title"] as? String ?? ""
+        return t.isEmpty ? work.title : t
     }
 
-    private func reload() async {
-        let srcs = await SourceEngine.shared.sources()
-        let st = await SourceEngine.shared.routeStatus()
-        var map: [String: [String: Any]] = [:]
-        for r in st {
-            if let k = r["key"] as? String { map[k] = r }
+    private var cover: String {
+        let s = info["cover"] as? String ?? ""
+        return s.isEmpty ? work.cover : s
+    }
+
+    private var description: String {
+        (info["description"] as? String ?? "")
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespaces)
+    }
+
+    private var record: OnlineRecord? {
+        ui.record(sourceKey: entry.sourceKey, comicId: entry.comicId)
+    }
+
+    private var currentEpId: String { record?.epId ?? "" }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            SubHeader(
+                title: title,
+                subtitle: work.sourceCount > 1 ? "\(work.sourceCount) 个源有这本" : entry.sourceName,
+                onBack: { dismiss() },
+                trailing: AnyView(
+                    NavigationLink {
+                        AccountView(key: entry.sourceKey, fallbackName: entry.sourceName)
+                    } label: {
+                        Text("账号")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(c.accent)
+                    }
+                    .buttonStyle(.plain)
+                )
+            )
+            HLine()
+
+            if busy {
+                LoadingBox(height: 260)
+                Spacer(minLength: 0)
+            } else if let error {
+                EmptyHint(title: "加载失败", message: error, glyph: .spark)
+                MiniButton(text: "重试", accent: true) { Task { await load(entryIndex) } }
+                Spacer(minLength: 0)
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        head
+                        sourceSwitch
+                        continueButton
+                        chapterGrid
+                    }
+                    .padding(.bottom, 26)
+                }
+            }
+        }
+        .background(c.bg.ignoresSafeArea())
+        .toolbar(.hidden, for: .navigationBar)
+        .task { await load(0) }
+        .sheet(item: $reading) { payload in
+            ReaderSheet(payload: payload)
+        }
+    }
+
+    private var head: some View {
+        HStack(alignment: .top, spacing: 12) {
+            ZStack {
+                coverGradient(seed: work.norm.hashValue, dark: c.dark)
+                if let u = URL(string: cover), !cover.isEmpty {
+                    AsyncImage(url: u) { phase in
+                        if let img = phase.image {
+                            img.resizable().scaledToFill()
+                        } else {
+                            Color.clear
+                        }
+                    }
+                } else {
+                    Text(String(title.prefix(1)))
+                        .font(.system(size: 24, weight: .bold))
+                        .foregroundColor(placeholderInk(c.dark))
+                }
+            }
+            .frame(width: 84, height: 114)
+            .clipped()
+            .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(title)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(c.fg)
+                    .lineLimit(2)
+                Text("来源：\(entry.sourceName)")
+                    .font(.system(size: 10.5))
+                    .foregroundColor(c.accent)
+                if !description.isEmpty {
+                    Text(description)
+                        .font(.system(size: 10.5))
+                        .foregroundColor(c.fg3)
+                        .lineLimit(5)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 18)
+        .padding(.top, 12)
+    }
+
+    /// 同作品多源：这里直接切源，章节和阅读进度各算各的。
+    @ViewBuilder
+    private var sourceSwitch: some View {
+        if work.entries.count > 1 {
+            VStack(alignment: .leading, spacing: 0) {
+                SectionHeader(title: "换一个源看", inset: false)
+                    .padding(.horizontal, 18)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 7) {
+                        ForEach(work.entries.indices, id: \.self) { i in
+                            Chip(
+                                text: work.entries[i].sourceName,
+                                selected: i == entryIndex
+                            ) {
+                                guard i != entryIndex else { return }
+                                Task { await load(i) }
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 18)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var continueButton: some View {
+        if !chapters.isEmpty {
+            let target = chapters.first { $0.id == currentEpId } ?? chapters[0]
+            HStack(spacing: 9) {
+                Button {
+                    Task { await open(target) }
+                } label: {
+                    HStack(spacing: 6) {
+                        GlyphView(glyph: .right, tint: c.accentInk, size: 14, strokeWidth: 2)
+                        Text(record != nil ? "继续阅读 · \(target.title)" : "从第一话开始")
+                            .font(.system(size: 13, weight: .semibold))
+                            .lineLimit(1)
+                    }
+                    .foregroundColor(c.accentInk)
+                    .padding(.horizontal, 14)
+                    .frame(height: 40)
+                    .frame(maxWidth: .infinity)
+                    .background(c.accent)
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                }
+                .buttonStyle(.plain)
+
+                Text("\(chapters.count) 话")
+                    .font(.system(size: 10.5))
+                    .foregroundColor(c.fg3)
+            }
+            .padding(.horizontal, 18)
+            .padding(.top, 14)
+        }
+    }
+
+    private var chapterGrid: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            SectionHeader(
+                title: "章节",
+                more: record != nil ? "读到 \(record?.epTitle ?? "")" : nil,
+                inset: false
+            )
+            .padding(.horizontal, 18)
+
+            LazyVGrid(columns: chapterColumns, alignment: .leading, spacing: 7) {
+                ForEach(chapters) { ep in
+                    Button {
+                        Task { await open(ep) }
+                    } label: {
+                        Text(ep.title)
+                            .font(.system(size: 10.5, weight: ep.id == currentEpId ? .semibold : .regular))
+                            .foregroundColor(ep.id == currentEpId ? c.accentInk : c.fg2)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .frame(maxWidth: .infinity)
+                            .padding(.horizontal, 6)
+                            .frame(height: 32)
+                            .background(ep.id == currentEpId ? c.accent : c.card2)
+                            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 18)
+        }
+    }
+
+    private func load(_ index: Int) async {
+        let e = work.entries[min(index, work.entries.count - 1)]
+        await MainActor.run {
+            entryIndex = index
+            busy = true
+            error = nil
+            chapters = []
+            info = [:]
+        }
+        let r = await SourceEngine.shared.detail(key: e.sourceKey, id: e.comicId)
+        guard (r["ok"] as? Bool) == true, let d = r["data"] as? [String: Any] else {
+            let reason = r["error"] as? String ?? "加载失败"
+            await MainActor.run {
+                busy = false
+                error = friendlyError(reason)
+            }
+            return
+        }
+        var flat: [EpRef] = []
+        for g in (d["groups"] as? [[String: Any]] ?? []) {
+            let gt = g["title"] as? String ?? ""
+            for o in (g["items"] as? [[String: Any]] ?? []) {
+                guard let id = o["id"] as? String, !id.isEmpty else { continue }
+                flat.append(
+                    EpRef(
+                        id: id,
+                        title: o["title"] as? String ?? id,
+                        index: flat.count,
+                        group: gt
+                    )
+                )
+            }
+        }
+        let finalFlat = flat
+        await MainActor.run {
+            info = d
+            chapters = finalFlat
+            busy = false
+            if finalFlat.isEmpty {
+                error = "这个源没有返回章节。可能需要先登录，或者换个源。"
+            }
+        }
+    }
+
+    private func open(_ ep: EpRef) async {
+        await MainActor.run { busy = true }
+        let r = await SourceEngine.shared.pages(
+            key: entry.sourceKey,
+            comicId: entry.comicId,
+            epId: ep.id
+        )
+        await MainActor.run { busy = false }
+        guard (r["ok"] as? Bool) == true, let d = r["data"] as? [String: Any] else {
+            await MainActor.run { error = friendlyError(r["error"] as? String ?? "取图失败") }
+            return
+        }
+        ui.remember(
+            sourceKey: entry.sourceKey,
+            sourceName: entry.sourceName,
+            comicId: entry.comicId,
+            title: work.title,
+            cover: cover,
+            sourceTitle: title,
+            epId: ep.id,
+            epTitle: ep.title,
+            epIndex: ep.index
+        )
+        // 惰性源（E-Hentai 这类一页一次 API）只回页数，真地址进阅读器再逐页解
+        if (d["lazy"] as? Bool) == true {
+            let n = d["count"] as? Int ?? 0
+            guard n > 0 else {
+                await MainActor.run { error = "这一话没有图片（可能需要登录）" }
+                return
+            }
+            await MainActor.run {
+                reading = ReadingPayload(
+                    title: ep.title,
+                    urls: [],
+                    lazy: LazyRef(
+                        key: entry.sourceKey,
+                        comicId: entry.comicId,
+                        epId: ep.id,
+                        count: n
+                    )
+                )
+            }
+            return
+        }
+        let urls = d["images"] as? [String] ?? []
+        guard !urls.isEmpty else {
+            await MainActor.run { error = "这一话没有图片（可能需要登录）" }
+            return
         }
         await MainActor.run {
-            sources = srcs
-            routes = map
+            reading = ReadingPayload(title: ep.title, urls: urls)
         }
     }
 }
 
-/// 从源列表直接跳账号页时带的参数
-struct AccountTarget: Identifiable, Equatable {
-    let id = UUID()
-    let key: String
-    let name: String
-}
+// ============================================================================== 账号
 
 /// 独立账号页：登录 / 退出 / 看账号信息。照着 PicACG 那种「先登录再进内容」的习惯做的。
 struct AccountView: View {
+
     let key: String
     let fallbackName: String
 
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.appColors) private var c
     @Environment(\.openURL) private var openURL
+
     @State private var info: [String: Any] = [:]
-    @State private var route: [String: Any] = [:]
     @State private var loading = true
     @State private var loadError: String?
     @State private var user = ""
@@ -153,167 +553,129 @@ struct AccountView: View {
     private var savedAccount: String { info["savedAccount"] as? String ?? "" }
 
     var body: some View {
-        Form {
-            Section {
-                HStack(spacing: 14) {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 15).fill(Color.accentColor.opacity(0.15))
-                        Text(String(name.prefix(1)))
-                            .font(.system(size: 24, weight: .bold))
-                            .foregroundStyle(.tint)
-                    }
-                    .frame(width: 58, height: 58)
+        VStack(spacing: 0) {
+            SubHeader(
+                title: "账号",
+                subtitle: name,
+                onBack: { dismiss() },
+                trailing: AnyView(
+                    Text(logged ? "已登录" : (canLogin ? "未登录" : "免登录"))
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundColor(logged ? c.ok : (canLogin ? c.warn : c.fg3))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background((logged ? c.ok : (canLogin ? c.warn : c.fg3)).opacity(0.12))
+                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                )
+            )
+            HLine()
 
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(name).font(.system(size: 17, weight: .semibold))
-                        Text(routeLine)
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                    Spacer(minLength: 0)
-                    Text(statusText)
-                        .font(.system(size: 11))
-                        .foregroundStyle(statusColor)
-                        .padding(.horizontal, 9).padding(.vertical, 4)
-                        .background(statusColor.opacity(0.12),
-                                    in: RoundedRectangle(cornerRadius: 6))
-                }
-                .padding(.vertical, 4)
-            }
-
-            if loading {
-                Section { ProgressView().frame(maxWidth: .infinity).padding(.vertical, 24) }
-            } else if canLogin {
-                if logged {
-                    Section("已登录账号") {
-                        Text(savedAccount.isEmpty ? "（该源未回传账号名）" : savedAccount)
-                            .font(.system(size: 15, weight: .medium))
-                        infoRows
-                    }
-                    if let notice {
-                        Section {
-                            Text(notice).font(.system(size: 12)).foregroundStyle(.green)
-                        }
-                    }
-                    Section {
-                        Button(role: .destructive) {
-                            Task { await logout() }
-                        } label: {
-                            HStack {
-                                Text("退出登录")
-                                if busy { Spacer(); ProgressView() }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    if loading {
+                        LoadingBox(height: 140)
+                    } else if canLogin {
+                        if logged {
+                            groupCard {
+                                Text(savedAccount.isEmpty ? "（该源未回传账号名）" : savedAccount)
+                                    .font(.system(size: 14, weight: .medium))
+                                    .foregroundColor(c.fg)
+                                if let notice {
+                                    Text(notice)
+                                        .font(.system(size: 11))
+                                        .foregroundColor(c.ok)
+                                        .padding(.top, 4)
+                                }
+                                infoRows
                             }
-                        }
-                        .disabled(busy)
-                    } footer: {
-                        Text("退出后这个源要重新登录才能搜索和看图。")
-                    }
-                } else {
-                    Section {
-                        TextField("账号 / 邮箱", text: $user)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                            .keyboardType(.emailAddress)
-                        SecureField("密码", text: $pass)
-                    } header: {
-                        Text("登录 \(name)")
-                    } footer: {
-                        Text("账号密码只存在本机，不会上传。登录后这个源才能搜索和看图。")
-                    }
-                    if let loginError {
-                        Section {
-                            Text(loginError).font(.system(size: 12)).foregroundStyle(.red)
-                        }
-                    }
-                    Section {
-                        Button {
-                            Task { await login() }
-                        } label: {
-                            HStack {
-                                Text(busy ? "登录中…" : "登录")
-                                if busy { Spacer(); ProgressView() }
+                            MiniButton(text: busy ? "退出中…" : "退出登录", enabled: !busy) {
+                                Task { await logout() }
                             }
-                        }
-                        .disabled(busy || user.isEmpty || pass.isEmpty)
-                        if !registerUrl.isEmpty {
-                            Button("还没有账号？去 \(name) 注册") {
-                                if let u = URL(string: registerUrl) { openURL(u) }
+                            .padding(.horizontal, 18)
+                            .padding(.top, 12)
+                            Text("退出后这个源要重新登录才能搜索和看图。")
+                                .font(.system(size: 10))
+                                .foregroundColor(c.fg3)
+                                .padding(.horizontal, 18)
+                                .padding(.top, 6)
+                        } else {
+                            groupCard {
+                                TextField("账号 / 邮箱", text: $user)
+                                    .font(.system(size: 13))
+                                    .foregroundColor(c.fg)
+                                    .textInputAutocapitalization(.never)
+                                    .autocorrectionDisabled()
+                                    .accentColor(c.accent)
+                                    .padding(.vertical, 8)
+                                HLine()
+                                SecureField("密码", text: $pass)
+                                    .font(.system(size: 13))
+                                    .foregroundColor(c.fg)
+                                    .accentColor(c.accent)
+                                    .padding(.vertical, 8)
                             }
+                            if let loginError {
+                                NoteBar(text: loginError, tone: .bad, inset: false)
+                                    .padding(.horizontal, 18)
+                                    .padding(.top, 10)
+                            }
+                            HStack(spacing: 9) {
+                                MiniButton(
+                                    text: busy ? "登录中…" : "登录",
+                                    accent: true,
+                                    enabled: !busy && !user.isEmpty && !pass.isEmpty
+                                ) {
+                                    Task { await login() }
+                                }
+                                if !registerUrl.isEmpty {
+                                    MiniButton(text: "去注册") {
+                                        if let u = URL(string: registerUrl) { openURL(u) }
+                                    }
+                                }
+                                Spacer(minLength: 0)
+                            }
+                            .padding(.horizontal, 18)
+                            .padding(.top, 12)
+                            Text("账号密码只存在本机，不会上传。登录后这个源才能搜索和看图。")
+                                .font(.system(size: 10))
+                                .foregroundColor(c.fg3)
+                                .padding(.horizontal, 18)
+                                .padding(.top, 6)
                         }
-                    }
-                }
-            } else if canWeb {
-                Section {
-                    Text("这个源不支持账号密码，登录是在网页里完成的（靠 Cookie）。" +
-                         "App 内暂时没法替你填，公开内容不登录也能看。")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                }
-                Section {
-                    if !webUrl.isEmpty {
-                        Button("打开登录网页") {
-                            if let u = URL(string: webUrl) { openURL(u) }
+                    } else if canWeb {
+                        NoteBar(
+                            text: "这个源不支持账号密码，登录是在网页里完成的（靠 Cookie）。公开内容不登录也能看。",
+                            tone: .neutral,
+                            inset: false
+                        )
+                        .padding(.horizontal, 18)
+                        .padding(.top, 12)
+                        if !webUrl.isEmpty {
+                            MiniButton(text: "打开登录网页", accent: true) {
+                                if let u = URL(string: webUrl) { openURL(u) }
+                            }
+                            .padding(.horizontal, 18)
+                            .padding(.top, 10)
                         }
+                    } else {
+                        NoteBar(text: "这个源不用登录，直接搜索就行。", tone: .neutral, inset: false)
+                            .padding(.horizontal, 18)
+                            .padding(.top, 12)
                     }
-                    if !registerUrl.isEmpty {
-                        Button("去 \(name) 注册") {
-                            if let u = URL(string: registerUrl) { openURL(u) }
-                        }
-                    }
-                }
-            } else {
-                Section {
-                    Text("这个源不用登录，直接搜索就行。")
-                        .font(.system(size: 13))
-                        .foregroundStyle(.secondary)
-                }
-            }
 
-            if let loadError {
-                Section {
-                    Text(loadError).font(.system(size: 12)).foregroundStyle(.red)
+                    if let loadError {
+                        NoteBar(text: loadError, tone: .bad, inset: false)
+                            .padding(.horizontal, 18)
+                            .padding(.top, 10)
+                    }
                 }
-            }
-
-            Section {
-            } footer: {
-                Text("登录凭证保存在本机，不上传任何服务器；换设备要重新登录。")
+                .padding(.top, 14)
+                .padding(.bottom, 30)
             }
         }
-        .navigationTitle("账号")
-        .navigationBarTitleDisplayMode(.inline)
+        .background(c.bg.ignoresSafeArea())
+        .toolbar(.hidden, for: .navigationBar)
         .task { await refresh() }
-    }
-
-    private var routeLine: String {
-        var parts: [String] = []
-        let host = route["host"] as? String ?? ""
-        if !host.isEmpty { parts.append(host) }
-        if (route["offline"] as? Bool) == true {
-            parts.append("不通")
-        } else if (route["pick"] as? Bool) != true {
-            parts.append("检测中")
-        } else {
-            switch route["line"] as? String ?? "" {
-            case "direct": parts.append("直连")
-            case "proxy": parts.append("需 VPN")
-            default: break
-            }
-        }
-        return parts.isEmpty ? "线路未检测" : parts.joined(separator: " · ")
-    }
-
-    private var statusText: String {
-        if logged { return "已登录" }
-        if canLogin || canWeb { return canLogin ? "未登录" : "网页登录" }
-        return "该源不用登录"
-    }
-
-    private var statusColor: Color {
-        if logged { return .green }
-        if canLogin || canWeb { return .orange }
-        return .secondary
     }
 
     @ViewBuilder
@@ -325,452 +687,106 @@ struct AccountView: View {
             let a = $0["action"] as? String ?? ""
             return !t.isEmpty && !(v.isEmpty && a.isEmpty)
         }
-        if shown.isEmpty {
-            Text("这个源没有回传账号信息。如果功能还是用不了，先退出再登录一次。")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-        } else {
-            ForEach(shown.indices, id: \.self) { i in
-                HStack(alignment: .top) {
-                    Text(shown[i]["title"] as? String ?? "")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 78, alignment: .leading)
-                    let v = shown[i]["value"] as? String ?? ""
-                    Text(v.isEmpty ? "需在源设置里填（App 暂不支持）" : v)
-                        .font(.system(size: 12))
-                    Spacer(minLength: 0)
+        if !shown.isEmpty {
+            VStack(spacing: 0) {
+                ForEach(shown.indices, id: \.self) { i in
+                    HStack(alignment: .top, spacing: 8) {
+                        Text(shown[i]["title"] as? String ?? "")
+                            .font(.system(size: 11))
+                            .foregroundColor(c.fg3)
+                            .frame(width: 76, alignment: .leading)
+                        let v = shown[i]["value"] as? String ?? ""
+                        Text(v.isEmpty ? "需在源设置里填（App 暂不支持）" : v)
+                            .font(.system(size: 11))
+                            .foregroundColor(c.fg2)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.top, 6)
                 }
             }
         }
     }
 
+    @ViewBuilder
+    private func groupCard<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 0) { content() }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(c.card2)
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(c.border, lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .padding(.horizontal, 18)
+    }
+
     private func refresh() async {
         let r = await SourceEngine.shared.account(key: key)
-        await MainActor.run {
-            if (r["ok"] as? Bool) == true, let d = r["data"] as? [String: Any] {
+        if (r["ok"] as? Bool) == true, let d = r["data"] as? [String: Any] {
+            let saved = d["savedAccount"] as? String ?? ""
+            await MainActor.run {
                 info = d
                 loadError = nil
-                let saved = d["savedAccount"] as? String ?? ""
                 if !saved.isEmpty && user.isEmpty { user = saved }
-            } else {
-                loadError = r["error"] as? String ?? "账号信息读取失败"
+                loading = false
             }
-            loading = false
-        }
-        let st = await SourceEngine.shared.routeStatus()
-        for s in st where (s["key"] as? String) == key {
-            await MainActor.run { route = s }
-            break
+        } else {
+            let msg = r["error"] as? String ?? "账号信息读取失败"
+            await MainActor.run {
+                loadError = friendlyError(msg)
+                loading = false
+            }
         }
     }
 
     private func login() async {
-        busy = true
-        loginError = nil
-        notice = nil
-        let r = await SourceEngine.shared.login(key: key, user: user.trimmingCharacters(in: .whitespaces),
-                                                password: pass)
-        busy = false
-        if (r["ok"] as? Bool) == true {
-            pass = ""
-            notice = "登录成功"
+        await MainActor.run {
+            busy = true
+            loginError = nil
+            notice = nil
+        }
+        let u = user.trimmingCharacters(in: .whitespaces)
+        let r = await SourceEngine.shared.login(key: key, user: u, password: pass)
+        let ok = (r["ok"] as? Bool) == true
+        let raw = r["error"] as? String ?? "账号或密码不对"
+        let code = r["code"] as? String
+        await MainActor.run { busy = false }
+        if ok {
+            await MainActor.run {
+                pass = ""
+                notice = "登录成功"
+            }
+            await SourceHub.shared.refreshRows()
             await refresh()
         } else {
-            let raw = r["error"] as? String ?? "账号或密码不对"
-            switch r["code"] as? String {
-            case "net":
-                loginError = "登录失败：连不上这个源（当前线路不通）。确认代理开关后，回源列表点右上角箭头重探再试。"
-            case "forbidden":
-                loginError = "登录失败：站点拒绝了请求（403），多半是云防护拦了，开/关代理后重试。"
-            default:
-                loginError = "登录失败：" + raw
+            await MainActor.run {
+                switch code {
+                case "net":
+                    loginError = "连不上这个源（当前线路不通）。回源管理确认它标「直连」还是「需 VPN」，开了代理再点右上角重新检测。"
+                case "forbidden":
+                    loginError = "站点拒绝了请求（403），多半是云防护拦了。开或关代理后重试。"
+                default:
+                    loginError = "登录失败：" + raw
+                }
             }
         }
     }
 
     private func logout() async {
-        busy = true
+        await MainActor.run { busy = true }
         _ = await SourceEngine.shared.logout(key: key)
-        busy = false
-        pass = ""
-        notice = "已退出登录"
+        await MainActor.run {
+            busy = false
+            pass = ""
+            notice = "已退出登录"
+        }
+        await SourceHub.shared.refreshRows()
         await refresh()
     }
 }
 
-private struct SourceCell: View {
-    let name: String
-    let host: String
-    let line: String
-    /// 探测确认所有通道都不通
-    var offline: Bool = false
-    /// ci/host 是不是探测结果；false 只代表线路表里的默认值，不能当「直连」显示
-    var picked: Bool = false
-
-    private var badge: (text: String, color: Color) {
-        if offline { return ("不通", .red) }
-        if !picked { return ("检测中", .secondary) }
-        switch line {
-        case "direct": return ("直连", .green)
-        case "proxy": return ("需 VPN", .orange)
-        default: return ("", .clear)
-        }
-    }
-
-    var body: some View {
-        let b = badge
-        HStack(spacing: 12) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 10).fill(Color.accentColor.opacity(0.15))
-                Text(String(name.prefix(1))).font(.system(size: 17, weight: .bold)).foregroundStyle(.tint)
-            }
-            .frame(width: 40, height: 40)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(name).font(.system(size: 15, weight: .medium))
-                Text(host.isEmpty ? "未检测" : host)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-            Spacer()
-            if !b.text.isEmpty {
-                Text(b.text)
-                    .font(.system(size: 11))
-                    .foregroundStyle(b.color)
-                    .padding(.horizontal, 8).padding(.vertical, 3)
-                    .background(b.color.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
-            }
-        }
-        .padding(.vertical, 2)
-    }
-}
-
-// MARK: - 搜索 / 探索
-
-struct ExploreSectionModel: Identifiable {
-    let id = UUID()
-    let title: String
-    let comics: [ComicItem]
-
-    static func parse(_ d: [String: Any]) -> [ExploreSectionModel] {
-        let arr = d["sections"] as? [[String: Any]] ?? []
-        return arr.compactMap { s in
-            let cs = (s["comics"] as? [[String: Any]] ?? []).compactMap { o -> ComicItem? in
-                guard let id = o["id"] as? String, !id.isEmpty else { return nil }
-                return ComicItem(id: id, title: o["title"] as? String ?? "",
-                                 cover: o["cover"] as? String ?? "")
-            }
-            return cs.isEmpty ? nil : ExploreSectionModel(title: s["title"] as? String ?? "", comics: cs)
-        }
-    }
-}
-
-struct BrowseView: View {
-    let key: String
-    let title: String
-
-    @State private var keyword = ""
-    @State private var sections: [ExploreSectionModel] = []
-    @State private var busy = true
-    @State private var error: String?
-    @State private var searched = false
-    @State private var logged = false
-    @State private var canLogin = true
-
-    private let columns = [GridItem(.adaptive(minimum: 100), spacing: 10)]
-
-    var body: some View {
-        ScrollView {
-            if busy {
-                ProgressView().padding(28)
-            } else if sections.allSatisfy({ $0.comics.isEmpty }) {
-                emptyState
-            } else {
-                VStack(alignment: .leading, spacing: 12) {
-                    ForEach(sections) { sec in
-                        VStack(alignment: .leading, spacing: 6) {
-                            if !sec.title.isEmpty {
-                                Text(sec.title)
-                                    .font(.system(size: 13, weight: .medium))
-                                    .foregroundStyle(.tint)
-                            }
-                            LazyVGrid(columns: columns, spacing: 12) {
-                                ForEach(sec.comics) { c in
-                                    NavigationLink {
-                                        DetailView(sourceKey: key, comicId: c.id, fallbackTitle: c.title)
-                                    } label: {
-                                        ComicCell(item: c)
-                                    }
-                                    .buttonStyle(.plain)
-                                }
-                            }
-                        }
-                    }
-                }
-                .padding(12)
-            }
-        }
-        .navigationTitle(title)
-        .navigationBarTitleDisplayMode(.inline)
-        .searchable(text: $keyword, prompt: "搜索关键词")
-        .onSubmit(of: .search) { Task { await search(keyword) } }
-        .toolbar {
-            ToolbarItem(placement: .navigationBarTrailing) {
-                NavigationLink {
-                    AccountView(key: key, fallbackName: title)
-                } label: {
-                    Text(logged ? "已登录" : "账号").font(.system(size: 13))
-                }
-            }
-        }
-        .task { await reload() }
-        .onAppear {
-            // 从账号页回来时只刷登录态，不重新拉列表（否则搜索/滚动位置全丢）
-            Task { await refreshAccount() }
-        }
-    }
-
-    /// 引擎的网络错误太生硬（"HTTP 0"），换成用户能照做的说法
-    private func friendlyError(_ e: String) -> String {
-        let low = e.lowercased()
-        if low.contains("status code: 0") || e.contains("HTTP 0")
-            || low.contains("请求失败: 0") || low.contains("timeout") {
-            return "连不上这个源。它多半在墙外，先把 VPN 打开再点「重新加载」。"
-        }
-        return e
-    }
-
-    private func refreshAccount() async {
-        let a = await SourceEngine.shared.account(key: key)
-        guard (a["ok"] as? Bool) == true, let d = a["data"] as? [String: Any] else { return }
-        logged = (d["logged"] as? Bool) == true
-        canLogin = (d["canLogin"] as? Bool) != false
-    }
-
-    /// 空状态：说清为什么空、下一步点哪，别只留一个搜索框
-    @ViewBuilder
-    private var emptyState: some View {
-        let e = error ?? ""
-        let loginLikely = e.contains("登录") || e.lowercased().contains("login")
-        VStack(spacing: 10) {
-            Image(systemName: loginLikely ? "person.crop.circle.badge.exclamationmark" : "magnifyingglass")
-                .font(.system(size: 40))
-                .foregroundStyle(.secondary.opacity(0.55))
-            Text(loginLikely ? "这个源要先登录"
-                 : (searched ? "没有结果" : (e.isEmpty ? "这个源没有首页" : "没能取到内容")))
-                .font(.system(size: 15, weight: .medium))
-            Text(loginLikely ? "填这个站的账号，登录后就能搜索和看图。"
-                 : (e.isEmpty ? "直接在搜索框里输关键词试试。" : friendlyError(e)))
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-
-            if canLogin && !logged {
-                NavigationLink {
-                    AccountView(key: key, fallbackName: title)
-                } label: {
-                    Text("去登录").frame(maxWidth: .infinity).padding(.vertical, 3)
-                }
-                .buttonStyle(.borderedProminent)
-                .padding(.top, 6)
-            }
-            Button("重新加载") { Task { await reload() } }
-        }
-        .padding(.horizontal, 32)
-        .padding(.vertical, 44)
-        .frame(maxWidth: .infinity)
-    }
-
-    private func reload() async {
-        error = nil
-        busy = true
-
-        let a = await SourceEngine.shared.account(key: key)
-        if (a["ok"] as? Bool) == true, let d = a["data"] as? [String: Any] {
-            logged = (d["logged"] as? Bool) == true
-            canLogin = (d["canLogin"] as? Bool) != false
-        }
-
-        let r = await SourceEngine.shared.explore(key: key)
-        busy = false
-        searched = false
-        if (r["ok"] as? Bool) == true, let d = r["data"] as? [String: Any] {
-            sections = ExploreSectionModel.parse(d)
-            if sections.isEmpty { error = nil }
-        } else {
-            sections = []
-            error = r["error"] as? String ?? "加载失败"
-        }
-    }
-
-    private func search(_ kw: String) async {
-        let q = kw.trimmingCharacters(in: .whitespaces)
-        guard !q.isEmpty else { return }
-        busy = true; error = nil
-        let r = await SourceEngine.shared.search(key: key, keyword: q, options: "[]", page: 1)
-        busy = false
-        searched = true
-        if (r["ok"] as? Bool) == true, let data = r["data"] as? [String: Any] {
-            let list = ComicItem.parseSearch(data)
-            sections = list.isEmpty ? [] : [ExploreSectionModel(title: "", comics: list)]
-            if list.isEmpty { error = "没有找到「\(q)」" }
-        } else {
-            sections = []
-            error = r["error"] as? String ?? "搜索失败"
-        }
-    }
-}
-
-
-private struct ComicCell: View {
-    let item: ComicItem
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Color.clear
-                .aspectRatio(0.72, contentMode: .fit)
-                .overlay {
-                    AsyncImage(url: URL(string: item.cover)) { phase in
-                        if let img = phase.image {
-                            img.resizable().scaledToFill()
-                        } else {
-                            Rectangle().fill(Color.secondary.opacity(0.12))
-                                .overlay(ProgressView().scaleEffect(0.6))
-                        }
-                    }
-                }
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-            Text(item.title)
-                .font(.system(size: 11))
-                .lineLimit(2)
-                .multilineTextAlignment(.leading)
-        }
-    }
-}
-
-// MARK: - 详情
-
-struct DetailView: View {
-    let sourceKey: String
-    let comicId: String
-    let fallbackTitle: String
-
-    @State private var info: [String: Any] = [:]
-    @State private var groups: [(title: String, items: [(id: String, title: String)])] = []
-    @State private var busy = true
-    @State private var error: String?
-    @State private var reading: ReadingPayload?
-
-    var body: some View {
-        Group {
-            if busy {
-                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if let error {
-                Text(error).foregroundStyle(.red).padding()
-            } else {
-                List {
-                    Section {
-                        HStack(alignment: .top, spacing: 12) {
-                            AsyncImage(url: URL(string: info["cover"] as? String ?? "")) { phase in
-                                if let img = phase.image {
-                                    img.resizable().scaledToFill()
-                                } else {
-                                    Rectangle().fill(Color.secondary.opacity(0.12))
-                                }
-                            }
-                            .frame(width: 92, height: 128)
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
-
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text(info["title"] as? String ?? fallbackTitle)
-                                    .font(.system(size: 15, weight: .semibold))
-                                Text((info["description"] as? String ?? "")
-                                    .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression))
-                                    .font(.system(size: 11))
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(6)
-                            }
-                        }
-                    }
-                    ForEach(groups.indices, id: \.self) { gi in
-                        Section(groups[gi].title) {
-                            ForEach(groups[gi].items.indices, id: \.self) { ci in
-                                let ch = groups[gi].items[ci]
-                                Button {
-                                    Task { await open(ch.id, ch.title) }
-                                } label: {
-                                    Text(ch.title).font(.system(size: 13))
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        .navigationTitle(info["title"] as? String ?? fallbackTitle)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .navigationBarTrailing) {
-                NavigationLink {
-                    AccountView(key: sourceKey, fallbackName: fallbackTitle)
-                } label: {
-                    Text("账号").font(.system(size: 13))
-                }
-            }
-        }
-        .task { await load() }
-        .sheet(item: $reading) { payload in
-            ReaderSheet(payload: payload)
-        }
-    }
-
-    private func load() async {
-        busy = true
-        let r = await SourceEngine.shared.detail(key: sourceKey, id: comicId)
-        busy = false
-        guard (r["ok"] as? Bool) == true, let d = r["data"] as? [String: Any] else {
-            error = r["error"] as? String ?? "加载失败"
-            return
-        }
-        info = d
-        var gs: [(String, [(String, String)])] = []
-        for g in (d["groups"] as? [[String: Any]] ?? []) {
-            let t = g["title"] as? String ?? ""
-            let items = (g["items"] as? [[String: Any]] ?? []).compactMap { o -> (String, String)? in
-                guard let id = o["id"] as? String else { return nil }
-                return (id, o["title"] as? String ?? id)
-            }
-            gs.append((t, items))
-        }
-        groups = gs
-    }
-
-    private func open(_ epId: String, _ epTitle: String) async {
-        busy = true
-        let r = await SourceEngine.shared.pages(key: sourceKey, comicId: comicId, epId: epId)
-        busy = false
-        guard (r["ok"] as? Bool) == true, let d = r["data"] as? [String: Any] else {
-            error = r["error"] as? String ?? "取图失败"
-            return
-        }
-        // 惰性源（E-Hentai 这类一页一次 API）只回页数，真地址进阅读器再逐页解
-        if (d["lazy"] as? Bool) == true {
-            let n = d["count"] as? Int ?? 0
-            guard n > 0 else { error = "这一话没有图片（可能需要登录）"; return }
-            reading = ReadingPayload(
-                title: epTitle, urls: [],
-                lazy: LazyRef(key: sourceKey, comicId: comicId, epId: epId, count: n))
-            return
-        }
-        let urls = d["images"] as? [String] ?? []
-        guard !urls.isEmpty else {
-            error = "这一话没有图片（可能需要登录）"
-            return
-        }
-        reading = ReadingPayload(title: epTitle, urls: urls)
-    }
-}
+// ============================================================================== 阅读器
 
 /// 惰性取图的引用信息
 struct LazyRef {
@@ -935,33 +951,5 @@ struct PlainReaderSheet: View {
         }
         .statusBarHidden()
         .onTapGesture { showBar.toggle() }
-    }
-}
-
-// MARK: - 数据
-
-struct ComicItem: Identifiable {
-    let id: String
-    let title: String
-    let cover: String
-
-    static func parseSearch(_ d: [String: Any]) -> [ComicItem] {
-        ((d["comics"] as? [[String: Any]]) ?? []).compactMap {
-            guard let id = $0["id"] as? String else { return nil }
-            return ComicItem(id: id, title: $0["title"] as? String ?? "", cover: $0["cover"] as? String ?? "")
-        }
-    }
-
-    /// 探索页返回 {分区: [comic]}，取第一个非空分区
-    static func parseExplore(_ d: [String: Any]) -> [ComicItem] {
-        for (_, v) in d {
-            if let arr = v as? [[String: Any]], !arr.isEmpty {
-                return arr.compactMap {
-                    guard let id = $0["id"] as? String else { return nil }
-                    return ComicItem(id: id, title: $0["title"] as? String ?? "", cover: $0["cover"] as? String ?? "")
-                }
-            }
-        }
-        return []
     }
 }

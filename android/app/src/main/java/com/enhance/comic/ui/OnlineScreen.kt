@@ -2,9 +2,14 @@ package com.enhance.comic.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
@@ -13,37 +18,25 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Search
-import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -56,137 +49,81 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.enhance.comic.data.OnlineRecord
 import com.enhance.comic.data.SourceEngine
+import com.enhance.comic.data.UiStore
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
 
-/** 源的展示信息 */
-data class SourceRow(
-    val key: String,
-    val name: String,
-    val host: String,
-    val line: String,
-    val label: String,
-    val note: String,
-    val canLogin: Boolean = false,
-    val logged: Boolean = false,
-    val needLogin: Boolean = false,
-    /** 探测确认所有通道都不通 */
-    val offline: Boolean = false,
-)
-
-data class ComicRow(val id: String, val title: String, val cover: String, val sub: String)
-data class ChapterRow(val id: String, val title: String)
-
 private sealed class Nav {
     object Sources : Nav()
     data class Browse(val key: String, val title: String) : Nav()
-    data class Info(val key: String, val id: String, val title: String) : Nav()
-    data class Read(val urls: List<String>, val referer: String?, val title: String) : Nav()
+    data class Info(
+        val key: String,
+        val id: String,
+        val title: String,
+        /** 同作品多源聚合的其它入口；空表示这本只在当前源出现 */
+        val alts: List<WorkEntry> = emptyList(),
+    ) : Nav()
+    data class Read(val urls: List<String>, val referer: String?, val title: String, val back: Nav) : Nav()
     /** 惰性取图：只给页数，每页真的地址由阅读器按需解 */
-    data class ReadLazy(val key: String, val comicId: String, val epId: String,
-                        val count: Int, val title: String) : Nav()
+    data class ReadLazy(
+        val key: String,
+        val comicId: String,
+        val epId: String,
+        val count: Int,
+        val title: String,
+        val back: Nav,
+    ) : Nav()
     /** 独立的账号页：登录 / 退出 / 看账号信息，退出后回到来的那一页 */
     data class Account(val key: String, val name: String, val back: Nav) : Nav()
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+/**
+ * 在线部分的全部页面。带 startComicId 进来时直接落在详情页，
+ * 这样首页/阅读记录点一本书不用再从源列表一层层点下去。
+ */
 @Composable
-fun OnlineSourceScreen(onBack: () -> Unit) {
+fun OnlineSourceScreen(
+    startKey: String? = null,
+    startComicId: String? = null,
+    startTitle: String = "",
+    startAlts: List<WorkEntry> = emptyList(),
+    uiStore: UiStore? = null,
+    onRecordsChanged: () -> Unit = {},
+    onBack: () -> Unit,
+) {
     val context = LocalContext.current
     val engine = remember { SourceEngine.get(context) }
-    val scope = rememberCoroutineScope()
-    var nav by remember { mutableStateOf<Nav>(Nav.Sources) }
+    var nav by remember {
+        mutableStateOf<Nav>(
+            if (startKey != null && startComicId != null) {
+                Nav.Info(startKey, startComicId, startTitle, startAlts)
+            } else {
+                Nav.Sources
+            },
+        )
+    }
 
     when (val n = nav) {
-        is Nav.Sources -> {
-            var rows by remember { mutableStateOf<List<SourceRow>>(emptyList()) }
-            var busy by remember { mutableStateOf(true) }
-            var err by remember { mutableStateOf<String?>(null) }
-            var reloadTick by remember { mutableStateOf(0) }
-            var probed by remember { mutableStateOf(false) }
-
-            LaunchedEffect(reloadTick) {
-                busy = rows.isEmpty()
-                // 先把源列表显示出来（不等探测），探测结果回来再刷新
-                runCatching {
-                    rows = buildRows(engine.sources(), engine.routeStatus())
-                }.onFailure { err = it.message }
-                busy = false
-                if (!probed) {
-                    probed = true
-                    runCatching {
-                        // reloadTick>0 说明是用户主动点「重新检测」，必须重新探
-                        engine.probeRoutes(force = reloadTick > 0)
-                        rows = buildRows(engine.sources(), engine.routeStatus())
-                    }
-                }
-            }
-
-            Scaffold(
-                topBar = {
-                    TopAppBar(
-                        title = { Text("在线漫画源", fontWeight = FontWeight.SemiBold) },
-                        navigationIcon = {
-                            IconButton(onClick = onBack) {
-                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
-                            }
-                        },
-                        actions = {
-                            // 开关代理之后线路会变，必须能手动重探，不能等缓存过期
-                            TextButton(onClick = { probed = false; reloadTick++ }) {
-                                Icon(Icons.Default.Refresh, contentDescription = null,
-                                    modifier = Modifier.size(16.dp))
-                                Spacer(Modifier.width(4.dp))
-                                Text("重新检测", fontSize = 13.sp)
-                            }
-                        },
-                    )
-                },
-            ) { pad ->
-                Column(Modifier.padding(pad).fillMaxSize()) {
-                    if (busy && rows.isEmpty()) {
-                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            CircularProgressIndicator()
-                        }
-                    } else {
-                        Text(
-                            "「直连」= 探测确认这台机器的网络能直接打开；「需 VPN」= 要开代理；" +
-                                "「不通」= 两条线路都没探通，开关代理后点右上角「重新检测」。" +
-                                "要登录就点右边的「登录」。",
-                            fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
-                        )
-                        LazyColumn(Modifier.fillMaxSize()) {
-                            items(rows, key = { it.key }) { r ->
-                                SourceCard(
-                                    r = r,
-                                    onClick = { nav = Nav.Browse(r.key, r.name) },
-                                    onLogin = { nav = Nav.Account(r.key, r.name, Nav.Sources) },
-                                )
-                            }
-                        }
-                    }
-                    err?.let {
-                        Text("加载失败：$it", color = MaterialTheme.colorScheme.error,
-                            fontSize = 12.sp, modifier = Modifier.padding(16.dp))
-                    }
-                }
-            }
-        }
+        is Nav.Sources -> SourcesScreen(
+            engine = engine,
+            onBack = onBack,
+            onOpen = { key, name -> nav = Nav.Browse(key, name) },
+            onAccount = { key, name -> nav = Nav.Account(key, name, Nav.Sources) },
+        )
 
         is Nav.Browse -> BrowseScreen(
             engine = engine,
@@ -197,22 +134,31 @@ fun OnlineSourceScreen(onBack: () -> Unit) {
             onOpen = { id, title -> nav = Nav.Info(n.key, id, title) },
         )
 
-        is Nav.Info -> DetailScreen(engine, n.key, n.id, n.title,
-            onBack = { nav = Nav.Browse(n.key, n.title) },
-            onAccount = { nav = Nav.Account(n.key, n.title, Nav.Info(n.key, n.id, n.title)) },
+        is Nav.Info -> DetailScreen(
+            engine = engine,
+            key = n.key,
+            id = n.id,
+            title = n.title,
+            alts = n.alts,
+            uiStore = uiStore,
+            onBack = { nav = Nav.Sources },
+            onSwitch = { e -> nav = Nav.Info(e.sourceKey, e.comicId, e.title, n.alts) },
+            onAccount = { name ->
+                nav = Nav.Account(n.key, name, Nav.Info(n.key, n.id, n.title, n.alts))
+            },
             onRead = { comicId, epId, data, t ->
+                val back = Nav.Info(n.key, n.id, n.title, n.alts)
                 nav = if (data.optBoolean("lazy")) {
-                    Nav.ReadLazy(n.key, comicId, epId, data.optInt("count"), t)
+                    Nav.ReadLazy(n.key, comicId, epId, data.optInt("count"), t, back)
                 } else {
-                    val imgs = data.optJSONArray("images")
-                    val urls = buildList {
-                        if (imgs != null) for (i in 0 until imgs.length()) {
-                            imgs.optString(i).takeIf { it.isNotBlank() }?.let { add(it) }
-                        }
-                    }
-                    Nav.Read(urls, null, t)
+                    Nav.Read(imageUrls(data), null, t, back)
                 }
-            })
+            },
+            onRemember = {
+                uiStore?.remember(it)
+                onRecordsChanged()
+            },
+        )
 
         is Nav.Account -> AccountScreen(
             engine = engine,
@@ -221,113 +167,661 @@ fun OnlineSourceScreen(onBack: () -> Unit) {
             onBack = { nav = n.back },
         )
 
-        is Nav.Read -> OnlineReader(n.urls, n.referer, n.title, onBack = { nav = Nav.Sources })
+        is Nav.Read -> OnlineReader(n.urls, n.referer, n.title, onBack = { nav = n.back })
 
-        is Nav.ReadLazy -> OnlineLazyReader(engine, n, onBack = { nav = Nav.Sources })
-
+        is Nav.ReadLazy -> OnlineLazyReader(engine, n, onBack = { nav = n.back })
     }
 }
 
-private fun buildRows(srcs: JSONArray, st: JSONArray): List<SourceRow> {
-    val byKey = HashMap<String, JSONObject>()
-    for (i in 0 until st.length()) st.optJSONObject(i)?.let { byKey[it.optString("key")] = it }
-    val out = mutableListOf<SourceRow>()
-    for (i in 0 until srcs.length()) {
-        val s = srcs.optJSONObject(i) ?: continue
-        val key = s.optString("key")
-        val r = byKey[key]
-        val line = r?.optString("line") ?: ""
-        // pick=false 说明 ci/host 还只是线路表里的默认值，不是探测结果。
-        // 旧代码直接把默认值当「直连」显示，于是出现「标着直连、其实打的是被墙域名」。
-        val picked = r?.optBoolean("pick") == true
-        val offline = r?.optBoolean("offline") == true
-        out += SourceRow(
-            key = key,
-            name = s.optString("name", key),
-            host = r?.optString("host") ?: "",
-            line = line,
-            label = when {
-                offline -> "不通"
-                !picked -> "检测中"
-                line == "direct" -> "直连"
-                line == "proxy" -> "需 VPN"
-                else -> ""
-            },
-            note = r?.optString("note") ?: "",
-            canLogin = s.optBoolean("canLogin"),
-            logged = s.optBoolean("logged"),
-            needLogin = s.optBoolean("needLogin"),
-            offline = offline,
-        )
+private fun imageUrls(data: JSONObject): List<String> {
+    val imgs = data.optJSONArray("images") ?: return emptyList()
+    return buildList {
+        for (i in 0 until imgs.length()) {
+            imgs.optString(i).takeIf { it.isNotBlank() }?.let { add(it) }
+        }
     }
-    return out
+}
+
+// ==================================================================================== 源列表
+
+@Composable
+private fun SourcesScreen(
+    engine: SourceEngine,
+    onBack: () -> Unit,
+    onOpen: (String, String) -> Unit,
+    onAccount: (String, String) -> Unit,
+) {
+    var rows by remember { mutableStateOf<List<SourceRow>>(emptyList()) }
+    var busy by remember { mutableStateOf(true) }
+    var err by remember { mutableStateOf<String?>(null) }
+    var tick by remember { mutableStateOf(0) }
+    var probed by remember { mutableStateOf(false) }
+
+    LaunchedEffect(tick) {
+        busy = rows.isEmpty()
+        // 先把源列表显示出来（不等探测），探测结果回来再刷新
+        runCatching { rows = buildRows(engine.sources(), engine.routeStatus()) }
+            .onFailure { err = it.message }
+        busy = false
+        if (!probed) {
+            probed = true
+            runCatching {
+                // tick>0 说明是用户主动点「重新检测」，必须重新探
+                engine.probeRoutes(force = tick > 0)
+                rows = buildRows(engine.sources(), engine.routeStatus())
+            }
+        }
+    }
+
+    Column(Modifier.fillMaxSize().statusBarsPadding()) {
+        SubTopBar("漫画源", onBack, action = {
+            MiniButton("重新检测", onClick = { probed = false; tick++ })
+        })
+        if (busy && rows.isEmpty()) {
+            LoadingBox(220.dp)
+        } else {
+            LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 20.dp)) {
+                item {
+                    SectionHeader("全部源", more = routeSummary(rows))
+                }
+                items(rows, key = { it.key }) { r ->
+                    SourceRowItem(
+                        r = r,
+                        onClick = { onOpen(r.key, r.name) },
+                        onLogin = { onAccount(r.key, r.name) },
+                    )
+                }
+                item {
+                    Text(
+                        "「直连」= 这台机器能直接打开；「需 VPN」= 要开代理；" +
+                            "「不通」= 两条线路都没探通，开关代理后点「重新检测」。",
+                        color = LocalColors.current.fg3,
+                        fontSize = 10.5.sp,
+                        lineHeight = 16.sp,
+                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 14.dp),
+                    )
+                }
+                err?.let {
+                    item {
+                        Text(
+                            "加载失败：$it",
+                            color = LocalColors.current.bad,
+                            fontSize = 11.sp,
+                            modifier = Modifier.padding(horizontal = 20.dp),
+                        )
+                    }
+                }
+            }
+        }
+    }
 }
 
 @Composable
-private fun SourceCard(r: SourceRow, onClick: () -> Unit, onLogin: () -> Unit) {
+private fun SourceRowItem(r: SourceRow, onClick: () -> Unit, onLogin: () -> Unit) {
+    val c = LocalColors.current
     Row(
-        Modifier
+        modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 12.dp),
+            .padding(horizontal = 18.dp, vertical = 11.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(
             Modifier
-                .size(44.dp)
-                .clip(RoundedCornerShape(12.dp))
-                .background(MaterialTheme.colorScheme.primaryContainer),
+                .size(38.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(c.chip),
             contentAlignment = Alignment.Center,
         ) {
-            Text(r.name.take(1), fontSize = 18.sp, fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onPrimaryContainer)
+            Text(
+                r.name.take(2),
+                color = c.fg,
+                fontSize = 12.5.sp,
+                fontWeight = FontWeight.Bold,
+            )
         }
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
-            Text(r.name, fontSize = 15.sp, fontWeight = FontWeight.Medium)
             Text(
-                if (r.host.isBlank()) "未检测" else r.host,
-                fontSize = 11.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                r.name,
+                color = c.fg,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            val sub = when {
+                r.offline -> "两条线路都没探通"
+                r.needLogin && !r.logged -> "登录后才能看内容"
+                r.canLogin && !r.logged -> "需要账号 · 点右边登录"
+                r.logged -> "已登录"
+                r.note.isNotBlank() -> r.note
+                else -> r.host.ifBlank { "公开内容可直接看" }
+            }
+            Spacer(Modifier.height(2.dp))
+            Text(
+                sub,
+                color = c.fg3,
+                fontSize = 10.5.sp,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
         }
-        if (r.label.isNotEmpty()) {
-            val tone = when {
-                r.offline -> Color(0xFFC62828)
-                r.label == "直连" -> Color(0xFF2E7D32)
-                r.label == "检测中" -> Color(0xFF6B6B6B)
-                else -> Color(0xFFB26A00)
-            }
-            Text(
-                r.label,
-                fontSize = 11.sp,
-                color = tone,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(tone.copy(alpha = 0.10f))
-                    .padding(horizontal = 8.dp, vertical = 3.dp),
-            )
+        when {
+            r.offline -> Pill("不通", Tone.BAD)
+            !r.picked -> Pill("检测中", Tone.PLAIN)
+            r.line == "direct" -> Pill("直连", Tone.OK)
+            r.line == "proxy" -> Pill("需 VPN", Tone.WARN)
+            else -> Pill("未探", Tone.PLAIN)
         }
         if (r.canLogin) {
-            Spacer(Modifier.width(8.dp))
-            Text(
-                if (r.logged) "已登录" else "登录",
-                fontSize = 11.sp,
-                color = if (r.logged) Color(0xFF2E7D32) else Color(0xFF1565C0),
-                modifier = Modifier
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(if (r.logged) Color(0x1A2E7D32) else Color(0x1A1565C0))
-                    .clickable { onLogin() }
-                    .padding(horizontal = 9.dp, vertical = 4.dp),
-            )
+            Spacer(Modifier.width(7.dp))
+            if (r.logged) {
+                Text(
+                    "已登录",
+                    color = c.ok,
+                    fontSize = 11.sp,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(7.dp))
+                        .background(c.okBg)
+                        .clickable(onClick = onLogin)
+                        .padding(horizontal = 10.dp, vertical = 5.dp),
+                )
+            } else {
+                MiniButton("登录", onLogin)
+            }
+        }
+    }
+    HLine(Modifier.padding(start = 68.dp))
+}
+
+// ==================================================================================== 浏览
+
+@Composable
+private fun BrowseScreen(
+    engine: SourceEngine,
+    key: String,
+    title: String,
+    onBack: () -> Unit,
+    onAccount: (String) -> Unit,
+    onOpen: (String, String) -> Unit,
+) {
+    val c = LocalColors.current
+    val scope = rememberCoroutineScope()
+    var kw by remember { mutableStateOf("") }
+    var sections by remember { mutableStateOf<List<ExploreSection>>(emptyList()) }
+    var busy by remember { mutableStateOf(true) }
+    var err by remember { mutableStateOf<String?>(null) }
+    var tick by remember { mutableStateOf(0) }
+    var searched by remember { mutableStateOf(false) }
+    var logged by remember { mutableStateOf(false) }
+    var canLogin by remember { mutableStateOf(true) }
+
+    LaunchedEffect(tick) {
+        busy = true
+        err = null
+        runCatching {
+            val a = engine.account(key)
+            if (a.optBoolean("ok")) {
+                val d = a.optJSONObject("data")
+                logged = d?.optBoolean("logged") == true
+                canLogin = d?.optBoolean("canLogin") != false
+            }
+        }
+        val r = engine.explore(key, 0)
+        busy = false
+        if (r.optBoolean("ok")) {
+            sections = parseSections(r.optJSONObject("data"))
+            if (sections.isEmpty()) searched = false
+        } else {
+            err = r.optString("error", "加载失败")
+        }
+    }
+
+    fun doSearch(q: String) {
+        if (busy || q.isBlank()) return
+        scope.launch {
+            busy = true
+            err = null
+            val r = engine.search(key, q, "[]", 1)
+            busy = false
+            searched = true
+            if (r.optBoolean("ok")) {
+                val list = parseComics(r.optJSONObject("data"))
+                sections = if (list.isEmpty()) emptyList() else listOf(ExploreSection("", list))
+                if (list.isEmpty()) err = "没有找到「$q」"
+            } else {
+                sections = emptyList()
+                err = r.optString("error", "搜索失败")
+            }
+        }
+    }
+
+    Column(Modifier.fillMaxSize().statusBarsPadding()) {
+        SubTopBar(title, onBack, action = {
+            MiniButton(if (logged) "已登录" else "账号", onClick = { onAccount(title) })
+        })
+        SearchBar(value = kw, placeholder = "在这个源里搜索", onValue = { kw = it }, onSubmit = { doSearch(kw) })
+        Spacer(Modifier.height(8.dp))
+
+        val flat = sections.flatMap { it.comics }
+        when {
+            busy && flat.isEmpty() -> LoadingBox(180.dp)
+            flat.isEmpty() -> {
+                val e = err
+                val loginLikely = e != null && (e.contains("登录") || e.contains("login", true))
+                Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally) {
+                    EmptyHint(
+                        title = when {
+                            loginLikely -> "这个源要先登录"
+                            searched -> "没有结果"
+                            e != null -> "没能取到内容"
+                            else -> "这个源没有首页"
+                        },
+                        message = when {
+                            loginLikely -> if (logged) {
+                                "已登录还这样，多半是登录态过期：进账号页退出再登一次。"
+                            } else {
+                                "点右上角「账号」填这个站的账号，登录后就能搜索和看图。"
+                            }
+                            e != null -> friendlyError(e)
+                            else -> "直接在搜索框里输关键词试试。"
+                        },
+                        icon = if (loginLikely) Glyph.USER else Glyph.SEARCH,
+                    )
+                    MiniButton("重新加载", onClick = { tick++ })
+                }
+            }
+            else -> LazyVerticalGrid(
+                columns = GridCells.Fixed(3),
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(start = 18.dp, end = 18.dp, bottom = 20.dp),
+                horizontalArrangement = Arrangement.spacedBy(GridGap),
+                verticalArrangement = Arrangement.spacedBy(GridGapV),
+            ) {
+                sections.forEachIndexed { si, sec ->
+                    if (sec.title.isNotBlank()) {
+                        item(span = { GridItemSpan(maxLineSpan) }, key = "h$si") {
+                            SectionHeader(sec.title, more = "${sec.comics.size} 本")
+                        }
+                    }
+                    itemsIndexed(sec.comics, key = { i, it -> "c$si-$i-" + it.id }) { _, comic ->
+                        ComicCell(
+                            cover = comic.cover,
+                            title = comic.title,
+                            sub = comic.sub,
+                            seed = comic.title.hashCode(),
+                            onClick = { onOpen(comic.id, comic.title) },
+                        )
+                    }
+                }
+            }
+        }
+        if (err != null && flat.isNotEmpty()) {
+            Text(err!!, color = c.bad, fontSize = 10.5.sp, modifier = Modifier.padding(horizontal = 18.dp))
         }
     }
 }
 
-/** 独立账号页：登录 / 退出 / 看账号信息。照着 PicACG 那种「先登录再进内容」的习惯做的。 */
-@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SearchBar(
+    value: String,
+    placeholder: String,
+    onValue: (String) -> Unit,
+    onSubmit: () -> Unit,
+) {
+    val c = LocalColors.current
+    Row(
+        modifier = Modifier
+            .padding(horizontal = 16.dp)
+            .fillMaxWidth()
+            .height(38.dp)
+            .background(c.chip, RoundedCornerShape(10.dp))
+            .padding(horizontal = 13.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        GlyphView(Glyph.SEARCH, c.fg3, 16.dp)
+        Spacer(Modifier.width(8.dp))
+        Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+            if (value.isEmpty()) Text(placeholder, color = c.fg3, fontSize = 13.sp)
+            BasicTextField(
+                value = value,
+                onValueChange = onValue,
+                singleLine = true,
+                textStyle = TextStyle(color = c.fg, fontSize = 13.sp),
+                cursorBrush = SolidColor(c.accent),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { onSubmit() }),
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+        Text(
+            "搜索",
+            color = c.accent,
+            fontSize = 12.sp,
+            modifier = Modifier.clickable(onClick = onSubmit).padding(start = 8.dp),
+        )
+    }
+}
+
+// ==================================================================================== 详情
+
+/** 章节摊平：groups[].items[] 保持原顺序，顺便记住序号给「继续阅读」定位。 */
+private data class Chap(val id: String, val title: String, val index: Int)
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun DetailScreen(
+    engine: SourceEngine,
+    key: String,
+    id: String,
+    title: String,
+    alts: List<WorkEntry> = emptyList(),
+    uiStore: UiStore?,
+    onBack: () -> Unit,
+    onSwitch: (WorkEntry) -> Unit = {},
+    onAccount: (String) -> Unit,
+    onRead: (String, String, JSONObject, String) -> Unit,
+    onRemember: (OnlineRecord) -> Unit,
+) {
+    val c = LocalColors.current
+    val scope = rememberCoroutineScope()
+    var d by remember { mutableStateOf<JSONObject?>(null) }
+    var busy by remember { mutableStateOf(true) }
+    var err by remember { mutableStateOf<String?>(null) }
+    var pending by remember { mutableStateOf<String?>(null) }
+    var sourceName by remember { mutableStateOf(title) }
+
+    // 详情页只有源 key，没有源名；存阅读记录和开账号页都要用它
+    LaunchedEffect(key) {
+        runCatching {
+            val arr = engine.sources()
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                if (o.optString("key") == key) {
+                    sourceName = o.optString("name", key)
+                    break
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(id) {
+        busy = true
+        val r = engine.detail(key, id)
+        busy = false
+        if (r.optBoolean("ok")) d = r.optJSONObject("data")
+        else err = r.optString("error", "加载失败")
+    }
+
+    val chapters = remember(d) {
+        val groups = d?.optJSONArray("groups") ?: JSONArray()
+        val out = mutableListOf<Chap>()
+        for (g in 0 until groups.length()) {
+            val grp = groups.optJSONObject(g) ?: continue
+            val arr = grp.optJSONArray("items") ?: continue
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                val cid = o.optString("id")
+                if (cid.isBlank()) continue
+                out += Chap(cid, o.optString("title").ifBlank { cid }, out.size)
+            }
+        }
+        out
+    }
+    val last = remember(id, chapters.size) { uiStore?.lastChapter(key, id) }
+
+    fun openChapter(cid: String, epTitle: String) {
+        if (pending != null) return
+        pending = cid
+        scope.launch {
+            val r = engine.pages(key, id, cid)
+            pending = null
+            if (!r.optBoolean("ok")) {
+                err = r.optString("error", "取图失败")
+                return@launch
+            }
+            val data = r.optJSONObject("data") ?: JSONObject()
+            val n = if (data.optBoolean("lazy")) data.optInt("count")
+            else data.optJSONArray("images")?.length() ?: 0
+            if (n == 0) {
+                err = "这一话没有图片（可能需要登录）"
+                return@launch
+            }
+            val idx = chapters.firstOrNull { it.id == cid }?.index ?: 0
+            onRemember(
+                OnlineRecord(
+                    source = key,
+                    sourceName = sourceName,
+                    comicId = id,
+                    title = d?.optString("title").orEmpty().ifBlank { title },
+                    cover = d?.optString("cover").orEmpty(),
+                    epId = cid,
+                    epTitle = epTitle,
+                    epIndex = idx,
+                    epTotal = chapters.size,
+                    at = System.currentTimeMillis(),
+                ),
+            )
+            onRead(id, cid, data, epTitle)
+        }
+    }
+
+    Column(Modifier.fillMaxSize().statusBarsPadding()) {
+        SubTopBar("", onBack, action = {
+            MiniButton("账号", onClick = { onAccount(sourceName) })
+        })
+        val info = d
+        if (busy && info == null) {
+            LoadingBox(240.dp)
+        } else if (info == null) {
+            EmptyHint("没能打开这本", friendlyError(err ?: "详情加载失败"), Glyph.SEARCH)
+        } else {
+            LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
+                item {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(start = 18.dp, end = 18.dp, top = 2.dp),
+                        horizontalArrangement = Arrangement.spacedBy(13.dp),
+                    ) {
+                        Box(
+                            Modifier
+                                .width(100.dp)
+                                .height(134.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(coverBrush(title.hashCode(), c.dark)),
+                        ) {
+                            val cover = info.optString("cover")
+                            if (cover.isNotBlank()) {
+                                RemoteImage(
+                                    url = cover,
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentScale = ContentScale.Crop,
+                                )
+                            } else {
+                                Text(
+                                    title.take(2),
+                                    color = placeholderInk(c.dark),
+                                    fontSize = 20.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.align(Alignment.Center),
+                                )
+                            }
+                        }
+                        Column(Modifier.weight(1f).padding(top = 2.dp)) {
+                            Text(
+                                info.optString("title").ifBlank { title },
+                                color = c.fg,
+                                fontSize = 16.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                lineHeight = 21.sp,
+                                maxLines = 3,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            val sub = info.optString("subTitle").ifBlank {
+                                info.optString("author")
+                            }
+                            if (sub.isNotBlank()) {
+                                Spacer(Modifier.height(6.dp))
+                                Text(sub, color = c.fg2, fontSize = 11.sp, maxLines = 2)
+                            }
+                            Spacer(Modifier.height(8.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                                Pill(sourceName, Tone.PLAIN)
+                                if (chapters.isNotEmpty()) Pill("${chapters.size} 话", Tone.PLAIN)
+                            }
+                        }
+                    }
+                }
+
+                // 同作品多源：一本在几个源都有时列出来，直接切（切了就是换一本详情重载）
+                if (alts.size > 1) {
+                    item {
+                        Column(Modifier.fillMaxWidth().padding(top = 12.dp)) {
+                            Text(
+                                "换一个源看",
+                                color = c.fg2,
+                                fontSize = 11.5.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.padding(start = 18.dp, bottom = 7.dp),
+                            )
+                            LazyRow(
+                                contentPadding = PaddingValues(horizontal = 18.dp),
+                                horizontalArrangement = Arrangement.spacedBy(7.dp),
+                            ) {
+                                items(alts, key = { it.sourceKey + "|" + it.comicId }) { e ->
+                                    val on = e.sourceKey == key && e.comicId == id
+                                    Chip(e.sourceName, selected = on) {
+                                        if (!on) onSwitch(e)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                item {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(start = 18.dp, end = 18.dp, top = 14.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        val target = last?.let { l -> chapters.firstOrNull { it.id == l.epId } }
+                            ?: chapters.firstOrNull()
+                        Box(
+                            Modifier
+                                .weight(1f)
+                                .height(40.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(if (target != null) c.accent else c.chip)
+                                .clickable(enabled = target != null) {
+                                    target?.let { openChapter(it.id, it.title) }
+                                },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                when {
+                                    pending != null -> "取图中…"
+                                    target == null -> "没有可读的章节"
+                                    last != null -> "继续阅读 · ${last.epTitle}"
+                                    else -> "开始阅读 · ${chapters.first().title}"
+                                },
+                                color = if (target != null) c.accentInk else c.fg3,
+                                fontSize = 13.5.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        Box(
+                            Modifier
+                                .width(40.dp)
+                                .height(40.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(c.chip)
+                                .clickable { onAccount(sourceName) },
+                            contentAlignment = Alignment.Center,
+                        ) { GlyphView(Glyph.USER, c.fg2, 18.dp) }
+                    }
+                }
+
+                val desc = info.optString("description").replace(Regex("\\s+"), " ").trim()
+                if (desc.isNotBlank()) {
+                    item {
+                        Text(
+                            desc,
+                            color = c.fg2,
+                            fontSize = 12.sp,
+                            lineHeight = 19.sp,
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(horizontal = 18.dp, vertical = 13.dp),
+                        )
+                    }
+                }
+
+                err?.let { e ->
+                    item {
+                        Text(
+                            friendlyError(e),
+                            color = c.bad,
+                            fontSize = 11.5.sp,
+                            modifier = Modifier.padding(horizontal = 18.dp, vertical = 6.dp),
+                        )
+                    }
+                }
+
+                item {
+                    SectionHeader("目录", more = if (chapters.isEmpty()) null else "${chapters.size} 话")
+                }
+
+                if (chapters.isEmpty()) {
+                    item {
+                        EmptyHint(
+                            title = "没解析到章节",
+                            message = "可能需要登录，或者这个源改版了。点右上角「账号」登录后再试。",
+                            icon = Glyph.LIST,
+                        )
+                    }
+                } else {
+                    item {
+                        FlowRow(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 18.dp),
+                            horizontalArrangement = Arrangement.spacedBy(7.dp),
+                            verticalArrangement = Arrangement.spacedBy(7.dp),
+                        ) {
+                            chapters.forEach { ch ->
+                                val cur = ch.id == last?.epId
+                                Box(
+                                    Modifier
+                                        .width(100.dp)
+                                        .height(34.dp)
+                                        .clip(RoundedCornerShape(7.dp))
+                                        .background(if (cur) c.accent else c.card2, RoundedCornerShape(7.dp))
+                                        .clickable { openChapter(ch.id, ch.title) },
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Text(
+                                        ch.title,
+                                        color = if (cur) c.accentInk else c.fg,
+                                        fontSize = 11.sp,
+                                        fontWeight = if (cur) FontWeight.SemiBold else FontWeight.Normal,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.padding(horizontal = 6.dp),
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ==================================================================================== 账号
+
 @Composable
 private fun AccountScreen(
     engine: SourceEngine,
@@ -335,6 +829,7 @@ private fun AccountScreen(
     fallbackName: String,
     onBack: () -> Unit,
 ) {
+    val c = LocalColors.current
     val scope = rememberCoroutineScope()
     val uri = LocalUriHandler.current
     var info by remember { mutableStateOf<JSONObject?>(null) }
@@ -362,7 +857,10 @@ private fun AccountScreen(
             val st = engine.routeStatus()
             for (i in 0 until st.length()) {
                 val o = st.optJSONObject(i) ?: continue
-                if (o.optString("key") == key) { route = o; break }
+                if (o.optString("key") == key) {
+                    route = o
+                    break
+                }
             }
         }
     }
@@ -376,7 +874,9 @@ private fun AccountScreen(
     fun doLogin() {
         if (loginBusy || user.isBlank() || pass.isBlank()) return
         scope.launch {
-            loginBusy = true; loginErr = null; notice = null
+            loginBusy = true
+            loginErr = null
+            notice = null
             val r = engine.login(key, user.trim(), pass)
             loginBusy = false
             if (r.optBoolean("ok")) {
@@ -388,7 +888,7 @@ private fun AccountScreen(
                 val raw = r.optString("error", "账号或密码不对")
                 loginErr = when (code) {
                     "net" -> "登录失败：连不上这个源（当前线路不通）。确认代理开关后，" +
-                        "回源列表点右上角「重新检测」再试。"
+                        "回源列表点「重新检测」再试。"
                     "forbidden" -> "登录失败：站点拒绝了请求（403），多半是云防护拦了，开/关代理后重试。"
                     else -> "登录失败：$raw"
                 }
@@ -403,241 +903,201 @@ private fun AccountScreen(
     val registerUrl = info?.optString("registerUrl").orEmpty()
     val webUrl = info?.optString("loginWebUrl").orEmpty()
     val line = route?.optString("line").orEmpty()
-    val host = route?.optString("host").orEmpty()
     val routePick = route?.optBoolean("pick") == true
     val routeOffline = route?.optBoolean("offline") == true
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("账号", fontWeight = FontWeight.SemiBold) },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
-                    }
-                },
-            )
-        },
-    ) { pad ->
+    Column(Modifier.fillMaxSize().statusBarsPadding()) {
+        SubTopBar("账号", onBack)
         Column(
             Modifier
-                .padding(pad)
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 18.dp, vertical = 14.dp),
+                .padding(horizontal = 18.dp, vertical = 10.dp),
         ) {
-            // 源信息头部
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
                     Modifier
-                        .size(58.dp)
-                        .clip(RoundedCornerShape(16.dp))
-                        .background(MaterialTheme.colorScheme.primaryContainer),
+                        .size(52.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(c.chip),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Text(
-                        name.take(1), fontSize = 24.sp, fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer,
-                    )
+                    Text(name.take(2), color = c.fg, fontSize = 18.sp, fontWeight = FontWeight.Bold)
                 }
-                Spacer(Modifier.width(14.dp))
+                Spacer(Modifier.width(13.dp))
                 Column(Modifier.weight(1f)) {
-                    Text(name, fontSize = 18.sp, fontWeight = FontWeight.SemiBold,
-                        maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Spacer(Modifier.height(4.dp))
+                    Text(name, color = c.fg, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.height(3.dp))
                     Text(
-                        listOfNotNull(
-                            host.ifBlank { null },
-                            when {
-                                routeOffline -> "不通"
-                                !routePick -> "检测中"
-                                line == "direct" -> "直连"
-                                line == "proxy" -> "需 VPN"
-                                else -> null
-                            },
-                        ).joinToString(" · ").ifBlank { "线路未检测" },
-                        fontSize = 11.sp,
-                        color = if (routeOffline) Color(0xFFC62828)
-                        else MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
+                        buildString {
+                            append(
+                                when {
+                                    routeOffline -> "线路不通"
+                                    !routePick -> "检测中"
+                                    line == "direct" -> "直连"
+                                    line == "proxy" -> "需 VPN"
+                                    else -> "线路未检测"
+                                },
+                            )
+                            append(" · ")
+                            append(if (logged) "已登录" else if (canLogin) "未登录" else "无需登录")
+                        },
+                        color = if (routeOffline) c.bad else c.fg3,
+                        fontSize = 10.5.sp,
                     )
                 }
             }
-
-            Spacer(Modifier.height(16.dp))
-
-            val stateColor = when {
-                logged -> Color(0xFF2E7D32)
-                canLogin -> Color(0xFFB26A00)
-                canWeb -> Color(0xFFB26A00)
-                else -> Color(0xFF616161)
-            }
-            val stateText = when {
-                logged -> "已登录"
-                canLogin -> "未登录"
-                canWeb -> "网页登录"
-                else -> "该源不用登录"
-            }
-            Text(
-                stateText,
-                fontSize = 11.sp,
-                color = stateColor,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(stateColor.copy(alpha = 0.12f))
-                    .padding(horizontal = 9.dp, vertical = 4.dp),
-            )
 
             Spacer(Modifier.height(18.dp))
 
             when {
-                busy -> Box(
-                    Modifier.fillMaxWidth().height(120.dp),
-                    contentAlignment = Alignment.Center,
-                ) { CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp) }
+                busy -> LoadingBox(120.dp)
 
-                canLogin -> {
-                    if (logged) {
-                        Text("已登录账号", fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Spacer(Modifier.height(6.dp))
-                        Text(
-                            info?.optString("savedAccount").orEmpty().ifBlank { "（该源未回传账号名）" },
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.Medium,
-                        )
-                        Spacer(Modifier.height(16.dp))
-                        AccountInfoItems(info)
-                        Spacer(Modifier.height(20.dp))
-                        notice?.let {
-                            Text(it, fontSize = 12.sp, color = Color(0xFF2E7D32))
-                            Spacer(Modifier.height(8.dp))
-                        }
-                        OutlinedButton(
-                            onClick = {
-                                if (loginBusy) return@OutlinedButton
-                                scope.launch {
-                                    loginBusy = true; loginErr = null; notice = null
-                                    engine.logout(key)
-                                    loginBusy = false
-                                    pass = ""
-                                    notice = "已退出登录"
-                                    refresh()
-                                }
-                            },
-                            modifier = Modifier.fillMaxWidth().height(46.dp),
-                        ) {
-                            Text("退出登录", color = MaterialTheme.colorScheme.error)
-                        }
-                    } else {
-                        Text("账号", fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Spacer(Modifier.height(6.dp))
-                        OutlinedTextField(
-                            value = user,
-                            onValueChange = { user = it },
-                            label = { Text("账号 / 邮箱") },
-                            singleLine = true,
-                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
-                            modifier = Modifier.fillMaxWidth(),
-                        )
+                canLogin -> if (logged) {
+                    Text("已登录账号", color = c.fg3, fontSize = 11.sp)
+                    Spacer(Modifier.height(5.dp))
+                    Text(
+                        info?.optString("savedAccount").orEmpty().ifBlank { "（该源未回传账号名）" },
+                        color = c.fg,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Medium,
+                    )
+                    Spacer(Modifier.height(14.dp))
+                    AccountInfoItems(info)
+                    notice?.let {
                         Spacer(Modifier.height(10.dp))
-                        OutlinedTextField(
-                            value = pass,
-                            onValueChange = { pass = it },
-                            label = { Text("密码") },
-                            singleLine = true,
-                            visualTransformation = PasswordVisualTransformation(),
-                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                            keyboardActions = KeyboardActions(onDone = { doLogin() }),
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                        loginErr?.let {
-                            Spacer(Modifier.height(8.dp))
-                            Text(it, fontSize = 12.sp, color = MaterialTheme.colorScheme.error)
-                        }
-                        Spacer(Modifier.height(16.dp))
-                        Button(
-                            onClick = { doLogin() },
-                            enabled = !loginBusy && user.isNotBlank() && pass.isNotBlank(),
-                            modifier = Modifier.fillMaxWidth().height(48.dp),
-                        ) {
-                            if (loginBusy) {
-                                CircularProgressIndicator(
-                                    Modifier.size(16.dp), strokeWidth = 2.dp,
-                                    color = MaterialTheme.colorScheme.onPrimary,
-                                )
-                                Spacer(Modifier.width(10.dp))
-                                Text("登录中…")
-                            } else {
-                                Text("登录")
+                        Text(it, color = c.ok, fontSize = 11.5.sp)
+                    }
+                    Spacer(Modifier.height(18.dp))
+                    MiniButton(
+                        text = "退出登录",
+                        onClick = {
+                            if (loginBusy) return@MiniButton
+                            scope.launch {
+                                loginBusy = true
+                                loginErr = null
+                                notice = null
+                                engine.logout(key)
+                                loginBusy = false
+                                pass = ""
+                                notice = "已退出登录"
+                                refresh()
                             }
+                        },
+                    )
+                } else {
+                    Text("账号", color = c.fg3, fontSize = 11.sp)
+                    Spacer(Modifier.height(6.dp))
+                    OutlinedTextField(
+                        value = user,
+                        onValueChange = { user = it },
+                        label = { Text("账号 / 邮箱") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(9.dp))
+                    OutlinedTextField(
+                        value = pass,
+                        onValueChange = { pass = it },
+                        label = { Text("密码") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                        keyboardActions = KeyboardActions(onDone = { doLogin() }),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    loginErr?.let {
+                        Spacer(Modifier.height(8.dp))
+                        Text(it, color = c.bad, fontSize = 11.5.sp, lineHeight = 17.sp)
+                    }
+                    Spacer(Modifier.height(14.dp))
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .height(46.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(if (!loginBusy && user.isNotBlank() && pass.isNotBlank()) c.accent else c.chip)
+                            .clickable { doLogin() },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        if (loginBusy) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                CircularProgressIndicator(
+                                    Modifier.size(15.dp),
+                                    strokeWidth = 2.dp,
+                                    color = c.accentInk,
+                                )
+                                Spacer(Modifier.width(9.dp))
+                                Text("登录中…", color = c.accentInk, fontSize = 13.5.sp)
+                            }
+                        } else {
+                            Text("登录", color = c.accentInk, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold)
                         }
-                        if (registerUrl.isNotBlank()) {
-                            Spacer(Modifier.height(10.dp))
-                            TextButton(
-                                onClick = { runCatching { uri.openUri(registerUrl) } },
-                                modifier = Modifier.fillMaxWidth(),
-                            ) { Text("还没有账号？去 $name 注册") }
-                        }
+                    }
+                    if (registerUrl.isNotBlank()) {
+                        Spacer(Modifier.height(10.dp))
+                        Text(
+                            "还没有账号？去 $name 注册",
+                            color = c.accent,
+                            fontSize = 12.sp,
+                            modifier = Modifier.clickable { runCatching { uri.openUri(registerUrl) } },
+                        )
                     }
                 }
 
                 canWeb -> {
                     Text(
-                        "这个源不支持账号密码，登录是在网页里完成的（靠 Cookie）。" +
-                            "App 内暂时没法替你填，公开内容不登录也能看。",
+                        "这个源不支持账号密码，登录在网页里完成（靠 Cookie）。" +
+                            "公开内容不登录也能看。",
+                        color = c.fg2,
                         fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         lineHeight = 18.sp,
                     )
                     if (webUrl.isNotBlank()) {
                         Spacer(Modifier.height(14.dp))
-                        OutlinedButton(
-                            onClick = { runCatching { uri.openUri(webUrl) } },
-                            modifier = Modifier.fillMaxWidth().height(46.dp),
-                        ) { Text("打开登录网页") }
+                        MiniButton("打开登录网页", { runCatching { uri.openUri(webUrl) } }, accent = true)
                     }
                     if (registerUrl.isNotBlank()) {
-                        Spacer(Modifier.height(8.dp))
-                        TextButton(
-                            onClick = { runCatching { uri.openUri(registerUrl) } },
-                            modifier = Modifier.fillMaxWidth(),
-                        ) { Text("去 $name 注册") }
+                        Spacer(Modifier.height(10.dp))
+                        Text(
+                            "去 $name 注册",
+                            color = c.accent,
+                            fontSize = 12.sp,
+                            modifier = Modifier.clickable { runCatching { uri.openUri(registerUrl) } },
+                        )
                     }
                 }
 
                 else -> Text(
                     "这个源不用登录，直接搜索就行。",
-                    fontSize = 13.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = c.fg2,
+                    fontSize = 12.5.sp,
                 )
             }
 
             err?.let {
                 Spacer(Modifier.height(10.dp))
-                Text(it, fontSize = 12.sp, color = MaterialTheme.colorScheme.error)
+                Text(it, color = c.bad, fontSize = 11.5.sp)
             }
 
-            Spacer(Modifier.height(24.dp))
-            HorizontalDivider()
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(22.dp))
+            HLine()
+            Spacer(Modifier.height(10.dp))
             Text(
-                "账号密码只填在登录那一刻，登录凭证保存在本机，不上传任何服务器；" +
-                    "换设备要重新登录。",
-                fontSize = 11.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                lineHeight = 16.sp,
+                "账号密码只填在登录那一刻，登录凭证保存在本机，不上传任何服务器；换设备要重新登录。",
+                color = c.fg3,
+                fontSize = 10.5.sp,
+                lineHeight = 15.sp,
             )
             Spacer(Modifier.height(20.dp))
         }
     }
 }
 
-/** 源自己声明的账号信息（account.infoItems），禁漫/PicACG 会回等级、积分这些 */
 @Composable
 private fun AccountInfoItems(info: JSONObject?) {
+    val c = LocalColors.current
     val items = info?.optJSONArray("items")
     var shown = 0
     if (items != null) {
@@ -649,450 +1109,42 @@ private fun AccountInfoItems(info: JSONObject?) {
             if (t.isBlank()) continue
             if (v.isBlank() && act.isBlank()) continue
             shown++
-            Row(
-                Modifier.fillMaxWidth().padding(vertical = 7.dp),
-                verticalAlignment = Alignment.Top,
-            ) {
-                Text(
-                    t, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.width(80.dp),
-                )
+            Row(Modifier.fillMaxWidth().padding(vertical = 7.dp), verticalAlignment = Alignment.Top) {
+                Text(t, color = c.fg3, fontSize = 11.5.sp, modifier = Modifier.width(78.dp))
                 Text(
                     v.ifBlank { "需在源设置里填（App 暂不支持）" },
-                    fontSize = 12.sp,
+                    color = c.fg,
+                    fontSize = 11.5.sp,
                     modifier = Modifier.weight(1f),
                 )
             }
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+            HLine()
         }
     }
     if (shown == 0) {
         Text(
-            "这个源没有回传账号信息。如果功能还是用不了，先退出再登录一次。",
-            fontSize = 11.sp,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            "这个源没有回传账号信息。功能还是用不了就先退出再登录一次。",
+            color = c.fg3,
+            fontSize = 10.5.sp,
         )
     }
 }
 
-
-private data class ExploreSection(val title: String, val comics: List<ComicRow>)
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun BrowseScreen(
-    engine: SourceEngine,
-    key: String,
-    title: String,
-    onBack: () -> Unit,
-    onAccount: (String) -> Unit,
-    onOpen: (String, String) -> Unit,
-) {
-    val scope = rememberCoroutineScope()
-    var kw by remember { mutableStateOf("") }
-    var sections by remember { mutableStateOf<List<ExploreSection>>(emptyList()) }
-    var busy by remember { mutableStateOf(true) }
-    var err by remember { mutableStateOf<String?>(null) }
-    var tick by remember { mutableStateOf(0) }
-    var searched by remember { mutableStateOf(false) }
-    var logged by remember { mutableStateOf(false) }
-    var canLogin by remember { mutableStateOf(true) }
-
-    LaunchedEffect(tick) {
-        busy = true; err = null
-        runCatching {
-            val a = engine.account(key)
-            if (a.optBoolean("ok")) {
-                val d = a.optJSONObject("data")
-                logged = d?.optBoolean("logged") == true
-                canLogin = d?.optBoolean("canLogin") != false
-            }
-        }
-        val r = engine.explore(key, 0)
-        busy = false
-        if (r.optBoolean("ok")) {
-            sections = parseSections(r.optJSONObject("data"))
-            if (sections.isEmpty()) {
-                err = null
-                searched = false
-            }
-        } else {
-            err = r.optString("error", "加载失败")
-        }
-    }
-
-    fun doSearch(q: String) {
-        if (busy) return
-        scope.launch {
-            busy = true; err = null
-            val r = engine.search(key, q, "[]", 1)
-            busy = false
-            searched = true
-            if (r.optBoolean("ok")) {
-                val list = parseComics(r.optJSONObject("data"))
-                sections = if (list.isEmpty()) emptyList() else listOf(ExploreSection("", list))
-                if (list.isEmpty()) err = "没有找到「$q」"
-            } else {
-                sections = emptyList()
-                err = r.optString("error", "搜索失败")
-            }
-        }
-    }
-
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = {
-                    Text(title, fontWeight = FontWeight.SemiBold, maxLines = 1,
-                        overflow = TextOverflow.Ellipsis)
-                },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
-                    }
-                },
-                actions = {
-                    TextButton(onClick = { onAccount(title) }) {
-                        Icon(Icons.Default.Person, contentDescription = null, modifier = Modifier.size(17.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text(if (logged) "已登录" else "账号", fontSize = 13.sp)
-                    }
-                },
-            )
-        },
-    ) { pad ->
-        Column(Modifier.padding(pad).fillMaxSize()) {
-            OutlinedTextField(
-                value = kw,
-                onValueChange = { kw = it },
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-                placeholder = { Text("搜索关键词") },
-                singleLine = true,
-                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                keyboardActions = KeyboardActions(onSearch = { if (kw.isNotBlank()) doSearch(kw) }),
-            )
-            if (busy) {
-                Box(Modifier.fillMaxWidth().height(56.dp), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
-                }
-            }
-            val flat = sections.flatMap { it.comics }
-            when {
-                busy -> {}
-                flat.isEmpty() -> {
-                    val e = err
-                    val loginLikely = e != null && (e.contains("登录") || e.contains("login", true))
-                    BrowseEmpty(
-                        icon = if (loginLikely) Icons.Default.Person else Icons.Default.Search,
-                        title = when {
-                            loginLikely -> "这个源要先登录"
-                            searched -> "没有结果"
-                            e != null -> "没能取到内容"
-                            else -> "这个源没有首页"
-                        },
-                        message = when {
-                            loginLikely -> "点下面的「${if (logged) "重新加载" else "去登录"}」" +
-                                (if (logged) "重试；已登录还这样，多半是登录态过期，进账号页退出重登。" else "填这个站的账号，登录后就能搜索和看图。")
-                            e != null -> friendlyError(e)
-                            else -> "直接在搜索框里输关键词试试。"
-                        },
-                        primaryText = if (canLogin && !logged) "去登录" else null,
-                        onPrimary = if (canLogin && !logged) ({ onAccount(title) }) else null,
-                        onRetry = { tick++ },
-                    )
-                }
-                else -> LazyVerticalGrid(
-                    columns = GridCells.Fixed(3),
-                    contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                    modifier = Modifier.fillMaxSize(),
-                ) {
-                    sections.forEach { sec ->
-                        if (sec.title.isNotBlank()) {
-                            item(span = { GridItemSpan(maxLineSpan) }) {
-                                Text(
-                                    sec.title,
-                                    fontSize = 13.sp,
-                                    fontWeight = FontWeight.Medium,
-                                    color = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.padding(top = 10.dp, bottom = 2.dp),
-                                )
-                            }
-                        }
-                        items(sec.comics, key = { sec.title + "|" + it.id }) { c ->
-                            Column(Modifier.clickable { onOpen(c.id, c.title) }) {
-                                RemoteImage(
-                                    url = c.cover,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .aspectRatio(0.72f)
-                                        .clip(RoundedCornerShape(8.dp)),
-                                    contentScale = ContentScale.Crop,
-                                )
-                                Text(
-                                    c.title, fontSize = 11.sp, maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.padding(top = 5.dp),
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-/** 引擎抛出来的网络错误太生硬（"HTTP 0"），换成用户能照做的说法 */
-private fun friendlyError(e: String): String {
-    val low = e.lowercase()
-    return when {
-        low.contains("status code: 0") || e.contains("HTTP 0") ||
-            low.contains("请求失败: 0") || low.contains("timed out") || low.contains("timeout") ->
-            "连不上这个源。回到源列表点右上角「重新检测」，看它标「直连」还是「需 VPN」——" +
-                "标「需 VPN」就要先开代理。"
-        else -> e
-    }
-}
-
-/** 空状态：把「为什么空」和「下一步点哪」写清楚，别只留一个搜索框 */
-@Composable
-private fun BrowseEmpty(
-    icon: ImageVector,
-    title: String,
-    message: String,
-    primaryText: String?,
-    onPrimary: (() -> Unit)?,
-    onRetry: (() -> Unit)?,
-) {
-    Column(
-        Modifier.fillMaxSize().padding(horizontal = 32.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
-    ) {
-        Icon(
-            icon, contentDescription = null, modifier = Modifier.size(46.dp),
-            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f),
-        )
-        Spacer(Modifier.height(14.dp))
-        Text(title, fontSize = 15.sp, fontWeight = FontWeight.Medium)
-        Spacer(Modifier.height(8.dp))
-        Text(
-            message, fontSize = 12.sp, lineHeight = 18.sp,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center,
-        )
-        if (primaryText != null && onPrimary != null) {
-            Spacer(Modifier.height(20.dp))
-            Button(onClick = onPrimary, modifier = Modifier.fillMaxWidth().height(46.dp)) {
-                Text(primaryText)
-            }
-        }
-        if (onRetry != null) {
-            Spacer(Modifier.height(10.dp))
-            OutlinedButton(onClick = onRetry, modifier = Modifier.fillMaxWidth().height(44.dp)) {
-                Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(6.dp))
-                Text("重新加载")
-            }
-        }
-        Spacer(Modifier.height(28.dp))
-    }
-}
-
-/** 探索页统一结构：{ sections: [{ title, comics: [...] }] } */
-private fun parseSections(data: JSONObject?): List<ExploreSection> {
-    data ?: return emptyList()
-    val arr = data.optJSONArray("sections") ?: return emptyList()
-    val out = mutableListOf<ExploreSection>()
-    for (i in 0 until arr.length()) {
-        val s = arr.optJSONObject(i) ?: continue
-        val cs = s.optJSONArray("comics") ?: continue
-        val list = (0 until cs.length()).mapNotNull { idx ->
-            cs.optJSONObject(idx)?.let { o ->
-                val id = o.optString("id")
-                if (id.isBlank()) null
-                else ComicRow(id, o.optString("title"), o.optString("cover"), o.optString("subTitle"))
-            }
-        }
-        if (list.isNotEmpty()) out += ExploreSection(s.optString("title"), list)
-    }
-    return out
-}
-
-private fun parseComics(data: JSONObject?): List<ComicRow> {
-    data ?: return emptyList()
-    val arr = data.optJSONArray("comics") ?: return emptyList()
-    val out = mutableListOf<ComicRow>()
-    for (i in 0 until arr.length()) {
-        val o = arr.optJSONObject(i) ?: continue
-        val id = o.optString("id")
-        if (id.isBlank()) continue
-        out += ComicRow(
-            id = id,
-            title = o.optString("title"),
-            cover = o.optString("cover"),
-            sub = o.optString("subTitle"),
-        )
-    }
-    return out
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun DetailScreen(
-    engine: SourceEngine,
-    key: String,
-    id: String,
-    title: String,
-    onBack: () -> Unit,
-    onAccount: () -> Unit,
-    onRead: (String, String, JSONObject, String) -> Unit,
-) {
-    var d by remember { mutableStateOf<JSONObject?>(null) }
-    var busy by remember { mutableStateOf(true) }
-    var err by remember { mutableStateOf<String?>(null) }
-    var pending by remember { mutableStateOf<String?>(null) }
-    val scope = rememberCoroutineScope()
-
-    LaunchedEffect(id) {
-        busy = true
-        val r = engine.detail(key, id)
-        busy = false
-        if (r.optBoolean("ok")) d = r.optJSONObject("data")
-        else err = r.optString("error", "加载失败")
-    }
-
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text(title, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
-                    }
-                },
-                actions = {
-                    TextButton(onClick = onAccount) {
-                        Icon(Icons.Default.Person, contentDescription = null, modifier = Modifier.size(17.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("账号", fontSize = 13.sp)
-                    }
-                },
-            )
-        },
-    ) { pad ->
-        Box(Modifier.padding(pad).fillMaxSize()) {
-            val info = d
-            if (busy || info == null) {
-                if (err != null) Text(err!!, color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.padding(16.dp), fontSize = 13.sp)
-                else Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
-            } else {
-                Column(Modifier.fillMaxSize()) {
-                    Row(Modifier.padding(16.dp)) {
-                        RemoteImage(
-                            url = info.optString("cover"),
-                            modifier = Modifier.width(96.dp).aspectRatio(0.72f).clip(RoundedCornerShape(10.dp)),
-                        )
-                        Spacer(Modifier.width(12.dp))
-                        Column {
-                            Text(info.optString("title"), fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 3)
-                            Spacer(Modifier.height(6.dp))
-                            Text(
-                                info.optString("description").replace(Regex("\\s+"), " ").take(160),
-                                fontSize = 11.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 6,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        }
-                    }
-                    val groups = info.optJSONArray("groups") ?: JSONArray()
-                    if (groups.length() == 0) {
-                        Text("这本没有解析到章节（可能需要登录，或该源改版了）",
-                            fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(16.dp))
-                    }
-                    LazyColumn(Modifier.fillMaxSize()) {
-                        for (g in 0 until groups.length()) {
-                            val grp = groups.optJSONObject(g) ?: continue
-                            val gt = grp.optString("title")
-                            if (gt.isNotBlank()) {
-                                item { Text(gt, fontSize = 12.sp, fontWeight = FontWeight.Medium,
-                                    color = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) }
-                            }
-                            val arr = grp.optJSONArray("items") ?: continue
-                            val chs = (0 until arr.length()).mapNotNull { arr.optJSONObject(it) }
-                            items(chs, key = { it.optString("id") }) { ch ->
-                                val cid = ch.optString("id")
-                                Text(
-                                    ch.optString("title").ifBlank { cid },
-                                    fontSize = 13.sp,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clickable {
-                                            if (pending != null) return@clickable
-                                            pending = cid
-                                            scope.launch {
-                                                val r = engine.pages(key, id, cid)
-                                                pending = null
-                                                if (r.optBoolean("ok")) {
-                                                    val data = r.optJSONObject("data") ?: JSONObject()
-                                                    val n = if (data.optBoolean("lazy")) data.optInt("count")
-                                                            else data.optJSONArray("images")?.length() ?: 0
-                                                    if (n == 0) err = "这一话没有图片（可能需要登录）"
-                                                    else onRead(id, cid, data, ch.optString("title"))
-                                                } else err = r.optString("error", "取图失败")
-                                            }
-                                        }
-                                        .padding(horizontal = 16.dp, vertical = 10.dp),
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-            if (pending != null) {
-                Box(Modifier.fillMaxSize().background(Color(0x66000000)), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator(color = Color.White)
-                }
-            }
-        }
-    }
-}
+// ==================================================================================== 阅读
 
 @Composable
 private fun OnlineReader(urls: List<String>, referer: String?, title: String, onBack: () -> Unit) {
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         LazyColumn(Modifier.fillMaxSize()) {
-            itemsIndexed(urls) { idx, u ->
-                RemoteImage(
-                    url = u,
+            items(urls.size) { idx ->
+                RemotePageImage(
+                    url = urls[idx],
                     referer = referer,
                     modifier = Modifier.fillMaxWidth().aspectRatio(0.7f),
-                    contentScale = ContentScale.Fit,
                 )
             }
         }
-        // 顶部条：返回 + 页码提示
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .background(Color(0x88000000))
-                .padding(horizontal = 8.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            IconButton(onClick = onBack) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回", tint = Color.White)
-            }
-            Text(title.ifBlank { "阅读" }, color = Color.White, fontSize = 13.sp)
-            Spacer(Modifier.weight(1f))
-            Text("${urls.size} 页", color = Color(0xCCFFFFFF), fontSize = 12.sp)
-        }
+        ReaderOverlayBar(title, "${urls.size} 页", onBack)
     }
 }
 
@@ -1102,11 +1154,7 @@ private fun OnlineReader(urls: List<String>, referer: String?, title: String, on
  * 所以 pages() 只回页数，图片地址在真正要显示时才解。
  */
 @Composable
-private fun OnlineLazyReader(
-    engine: SourceEngine,
-    nav: Nav.ReadLazy,
-    onBack: () -> Unit,
-) {
+private fun OnlineLazyReader(engine: SourceEngine, nav: Nav.ReadLazy, onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
     val pages = remember { mutableStateMapOf<Int, String>() }
     val fails = remember { mutableStateMapOf<Int, String>() }
@@ -1131,50 +1179,62 @@ private fun OnlineLazyReader(
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         LazyColumn(Modifier.fillMaxSize()) {
             items(nav.count) { idx ->
-                // 显示到这一页时才解它，顺便把下一页也预取上
-                LaunchedEffect(idx) { load(idx); load(idx + 1) }
+                LaunchedEffect(idx) {
+                    load(idx)
+                    load(idx + 1)
+                }
                 val u = pages[idx]
                 val f = fails[idx]
-                Box(
-                    Modifier.fillMaxWidth().aspectRatio(0.7f),
-                    contentAlignment = Alignment.Center,
-                ) {
+                Box(Modifier.fillMaxWidth().aspectRatio(0.7f), contentAlignment = Alignment.Center) {
                     when {
-                        u != null -> RemoteImage(
-                            url = u,
-                            modifier = Modifier.fillMaxSize(),
-                            contentScale = ContentScale.Fit,
-                        )
+                        u != null -> RemotePageImage(u, modifier = Modifier.fillMaxSize())
                         f != null -> Text(
                             "第 ${idx + 1} 页没取到：$f\n点这里重试",
                             color = Color(0xCCFFFFFF),
                             fontSize = 12.sp,
                             modifier = Modifier
-                                .clickable { fails.remove(idx); load(idx) }
+                                .clickable {
+                                    fails.remove(idx)
+                                    load(idx)
+                                }
                                 .padding(14.dp),
                         )
                         else -> CircularProgressIndicator(
-                            color = Color(0xCCFFFFFF), strokeWidth = 2.dp,
-                            modifier = Modifier.size(24.dp),
+                            color = Color(0xCCFF6E9C),
+                            strokeWidth = 2.dp,
+                            modifier = Modifier.size(22.dp),
                         )
                     }
                 }
             }
         }
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .background(Color(0x88000000))
-                .padding(horizontal = 8.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            IconButton(onClick = onBack) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回", tint = Color.White)
-            }
-            Text(nav.title.ifBlank { "阅读" }, color = Color.White, fontSize = 13.sp,
-                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, false))
-            Spacer(Modifier.weight(1f))
-            Text("${pages.size}/${nav.count} 页", color = Color(0xCCFFFFFF), fontSize = 12.sp)
-        }
+        ReaderOverlayBar(nav.title, "${pages.size}/${nav.count} 页", onBack)
+    }
+}
+
+@Composable
+private fun ReaderOverlayBar(title: String, pageLabel: String, onBack: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .background(Color(0xAA000000))
+            .statusBarsPadding()
+            .height(44.dp)
+            .padding(horizontal = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier.size(40.dp).clickable(onClick = onBack),
+            contentAlignment = Alignment.Center,
+        ) { GlyphView(Glyph.BACK, Color.White, 20.dp) }
+        Text(
+            title.ifBlank { "阅读" },
+            color = Color.White,
+            fontSize = 13.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+        Text(pageLabel, color = Color(0xCCFFFFFF), fontSize = 11.5.sp, modifier = Modifier.padding(end = 10.dp))
     }
 }

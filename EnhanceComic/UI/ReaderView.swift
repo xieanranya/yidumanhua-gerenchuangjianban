@@ -1155,6 +1155,7 @@ struct ReaderView: View {
         let page = currentSourcePage
         guard updated.lastPage != page else { return }
         updated.lastPage = page
+        updated.lastReadAt = Date()
         store.update(updated)
     }
 

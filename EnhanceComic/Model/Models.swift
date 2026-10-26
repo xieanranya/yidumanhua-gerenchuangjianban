@@ -102,6 +102,8 @@ struct Book: Identifiable, Codable, Equatable {
     var coverName: String? = nil
     /// 原始容器名（"7Z" / "TAR"）：这两种格式导入时会解包成文件夹，书架上仍显示原格式。
     var sourceLabel: String = ""
+    /// 最后一次翻页的时间，首页「继续阅读」靠它排序。旧书库没有这个字段，解出来是 nil。
+    var lastReadAt: Date? = nil
 
     init(
         id: UUID = UUID(),
@@ -114,7 +116,8 @@ struct Book: Identifiable, Codable, Equatable {
         bookmarks: [Int] = [],
         bookmarkNames: [Int: String] = [:],
         coverName: String? = nil,
-        sourceLabel: String = ""
+        sourceLabel: String = "",
+        lastReadAt: Date? = nil
     ) {
         self.id = id
         self.title = title
@@ -127,12 +130,13 @@ struct Book: Identifiable, Codable, Equatable {
         self.bookmarkNames = bookmarkNames
         self.coverName = coverName
         self.sourceLabel = sourceLabel
+        self.lastReadAt = lastReadAt
     }
 
     // Hand-written coding so libraries saved by earlier builds (which had neither
     // bookmarkNames nor a few of the newer fields) still decode instead of being lost.
     enum CodingKeys: String, CodingKey {
-        case id, title, type, relativePath, pageCount, addedAt, lastPage, bookmarks, bookmarkNames, coverName, sourceLabel
+        case id, title, type, relativePath, pageCount, addedAt, lastPage, bookmarks, bookmarkNames, coverName, sourceLabel, lastReadAt
     }
 
     init(from decoder: Decoder) throws {
@@ -148,6 +152,7 @@ struct Book: Identifiable, Codable, Equatable {
         bookmarkNames = (try? c.decode([Int: String].self, forKey: .bookmarkNames)) ?? [:]
         coverName = try? c.decodeIfPresent(String.self, forKey: .coverName)
         sourceLabel = (try? c.decode(String.self, forKey: .sourceLabel)) ?? ""
+        lastReadAt = try? c.decodeIfPresent(Date.self, forKey: .lastReadAt)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -163,6 +168,7 @@ struct Book: Identifiable, Codable, Equatable {
         try c.encode(bookmarkNames, forKey: .bookmarkNames)
         try c.encodeIfPresent(coverName, forKey: .coverName)
         try c.encode(sourceLabel, forKey: .sourceLabel)
+        try c.encodeIfPresent(lastReadAt, forKey: .lastReadAt)
     }
 }
 

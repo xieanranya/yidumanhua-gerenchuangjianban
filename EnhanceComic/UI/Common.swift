@@ -1,0 +1,464 @@
+import SwiftUI
+import UIKit
+
+// ======================================================================= 本地书库的封面缓存
+
+/// 本地书封面在磁盘上；滚动书架时不能每次都重新解码 JPEG。
+enum CoverCache {
+    private static var storage: [String: UIImage] = [:]
+
+    static func image(at url: URL?) -> UIImage? {
+        guard let url else { return nil }
+        if let hit = storage[url.path] { return hit }
+        guard let image = UIImage(contentsOfFile: url.path) else { return nil }
+        storage[url.path] = image
+        return image
+    }
+
+    static func invalidate(_ url: URL) {
+        storage.removeValue(forKey: url.path)
+    }
+}
+
+enum CoverPalette {
+    static func typeLabel(_ type: BookType) -> String {
+        switch type {
+        case .zip: return "ZIP"
+        case .rar: return "RAR"
+        case .pdf: return "PDF"
+        case .folder: return "文件夹"
+        }
+    }
+
+    /// 7z / tar 解包成文件夹入库，书架上仍标原容器名，免得用户以为格式变了。
+    static func label(for book: Book) -> String {
+        book.sourceLabel.isEmpty ? typeLabel(book.type) : book.sourceLabel
+    }
+}
+
+func appVersionText() -> String {
+    let info = Bundle.main.infoDictionary
+    let version = info?["CFBundleShortVersionString"] as? String ?? "?"
+    let build = info?["CFBundleVersion"] as? String ?? "?"
+    return "v\(version) (\(build))"
+}
+
+// ================================================================================= 公共组件
+
+struct HLine: View {
+    @Environment(\.appColors) private var c
+    var body: some View {
+        Rectangle().fill(c.border).frame(height: 0.5)
+    }
+}
+
+/// 页面大标题。放在网格里时传 inset = false，避免和外层内边距叠成双份。
+struct BigTitle: View {
+    let text: String
+    var sub: String? = nil
+    var inset: Bool = true
+    @Environment(\.appColors) private var c
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(text)
+                .font(.system(size: 26, weight: .bold))
+                .foregroundColor(c.fg)
+                .tracking(-0.4)
+            if let sub, !sub.isEmpty {
+                Text(sub)
+                    .font(.system(size: 11.5))
+                    .foregroundColor(c.fg3)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, inset ? 18 : 0)
+        .padding(.top, 6)
+        .padding(.bottom, 12)
+    }
+}
+
+struct SearchStub: View {
+    let text: String
+    let onTap: () -> Void
+    var inset: Bool = true
+    @Environment(\.appColors) private var c
+
+    var body: some View {
+        Button(action: onTap) {
+            HStack(spacing: 8) {
+                GlyphView(glyph: .search, tint: c.fg3, size: 15, strokeWidth: 1.6)
+                Text(text).font(.system(size: 13)).foregroundColor(c.fg3)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 13)
+            .frame(height: 40)
+            .background(c.card2)
+            .overlay(
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .stroke(c.border, lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, inset ? 16 : 0)
+    }
+}
+
+struct SectionHeader: View {
+    let title: String
+    var more: String? = nil
+    var onMore: (() -> Void)? = nil
+    var inset: Bool = true
+    @Environment(\.appColors) private var c
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(title)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundColor(c.fg)
+                .lineLimit(1)
+                .layoutPriority(1)
+            Spacer(minLength: 0)
+            if let more {
+                Button {
+                    onMore?()
+                } label: {
+                    Text(more + " ›")
+                        .font(.system(size: 11))
+                        .foregroundColor(c.fg3)
+                        .lineLimit(1)
+                }
+                .buttonStyle(.plain)
+                .disabled(onMore == nil)
+            }
+        }
+        .padding(.horizontal, inset ? 18 : 0)
+        .padding(.top, 16)
+        .padding(.bottom, 9)
+    }
+}
+
+struct Pill: View {
+    let text: String
+    var tone: Tone = .neutral
+    var fontSize: CGFloat = 10
+
+    @Environment(\.appColors) private var c
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: fontSize, weight: .medium))
+            .foregroundColor(tone.fg(c))
+            .lineLimit(1)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 2.5)
+            .background(tone.bg(c))
+            .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+    }
+}
+
+struct MiniButton: View {
+    let text: String
+    var accent: Bool = false
+    var enabled: Bool = true
+    let action: () -> Void
+
+    @Environment(\.appColors) private var c
+
+    var body: some View {
+        Button(action: action) {
+            Text(text)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(accent ? c.accentInk : c.fg)
+                .padding(.horizontal, 13)
+                .padding(.vertical, 7)
+                .background(accent ? c.accent : c.chip)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(accent ? Color.clear : c.border, lineWidth: 1)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .opacity(enabled ? 1 : 0.4)
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+    }
+}
+
+struct Chip: View {
+    let text: String
+    let selected: Bool
+    let action: () -> Void
+
+    @Environment(\.appColors) private var c
+
+    var body: some View {
+        Button(action: action) {
+            Text(text)
+                .font(.system(size: 12, weight: selected ? .semibold : .regular))
+                .foregroundColor(selected ? c.accentInk : c.fg2)
+                .lineLimit(1)
+                .padding(.horizontal, 11)
+                .padding(.vertical, 6)
+                .background(selected ? c.accent : c.chip)
+                .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// 网络封面：先铺一个哈希色块，图到了盖上去。图挂了就留色块 + 书名首字。
+struct RemoteCover: View {
+    let url: String
+    let title: String
+    let seed: Int
+    var badge: String? = nil
+
+    @Environment(\.appColors) private var c
+
+    var body: some View {
+        ZStack {
+            coverGradient(seed: seed, dark: c.dark)
+            if let u = URL(string: url), !url.isEmpty {
+                AsyncImage(url: u) { phase in
+                    if let img = phase.image {
+                        img.resizable().scaledToFill()
+                    } else if phase.error != nil {
+                        initial
+                    } else {
+                        Color.clear
+                    }
+                }
+            } else {
+                initial
+            }
+        }
+        .clipped()
+        .overlay(alignment: .bottomTrailing) {
+            if let badge, !badge.isEmpty {
+                Text(badge)
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundColor(c.fg)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1.5)
+                    .background(c.bg.opacity(0.78))
+                    .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+                    .padding(5)
+            }
+        }
+    }
+
+    private var initial: some View {
+        Text(String(title.prefix(1)))
+            .font(.system(size: 22, weight: .bold))
+            .foregroundColor(placeholderInk(c.dark))
+    }
+}
+
+/// 三列网格里的一格：封面 + 书名 +（可选）副标题。
+struct ComicCell: View {
+    let title: String
+    let cover: String
+    var sub: String? = nil
+    var badge: String? = nil
+    let seed: Int
+
+    @Environment(\.appColors) private var c
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Color.clear
+                .aspectRatio(0.72, contentMode: .fit)
+                .overlay { RemoteCover(url: cover, title: title, seed: seed, badge: badge) }
+                .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .stroke(c.border, lineWidth: 0.5)
+                )
+            Text(title)
+                .font(.system(size: 11.5))
+                .foregroundColor(c.fg)
+                .lineLimit(2)
+                .multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if let sub, !sub.isEmpty {
+                Text(sub)
+                    .font(.system(size: 9.5))
+                    .foregroundColor(c.fg3)
+                    .lineLimit(1)
+            }
+        }
+    }
+}
+
+struct NoteBar: View {
+    let text: String
+    var tone: Tone = .neutral
+    var inset: Bool = true
+
+    @Environment(\.appColors) private var c
+
+    var body: some View {
+        HStack(spacing: 7) {
+            Circle()
+                .fill(tone.fg(c))
+                .frame(width: 5, height: 5)
+            Text(text)
+                .font(.system(size: 11))
+                .foregroundColor(c.fg2)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 11)
+        .padding(.vertical, 9)
+        .background(tone.bg(c))
+        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .padding(.horizontal, inset ? 18 : 0)
+    }
+}
+
+struct EmptyHint: View {
+    let title: String
+    let message: String
+    var glyph: Glyph = .search
+
+    @Environment(\.appColors) private var c
+
+    var body: some View {
+        VStack(spacing: 9) {
+            GlyphView(glyph: glyph, tint: c.fg3, size: 34, strokeWidth: 1.3)
+                .padding(.bottom, 2)
+            Text(title)
+                .font(.system(size: 14, weight: .medium))
+                .foregroundColor(c.fg)
+            Text(message)
+                .font(.system(size: 11.5))
+                .foregroundColor(c.fg3)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 40)
+        .padding(.vertical, 46)
+    }
+}
+
+struct LoadingBox: View {
+    var height: CGFloat = 120
+    @Environment(\.appColors) private var c
+
+    var body: some View {
+        ProgressView()
+            .tint(c.accent)
+            .frame(maxWidth: .infinity)
+            .frame(height: height)
+    }
+}
+
+/// 「继续阅读」横卡：本地书和在线记录共用一个样子。
+/// 本身不带点击（外面可能要用 NavigationLink 包一层），呼叫方自己决定怎么响应。
+struct ContinueCard: View {
+    let title: String
+    let meta: String
+    let label: String
+    let coverURL: String?
+    let localCover: UIImage?
+    let seed: Int
+
+    var inset: Bool = true
+
+    @Environment(\.appColors) private var c
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                coverGradient(seed: seed, dark: c.dark)
+                if let localCover {
+                    Image(uiImage: localCover).resizable().scaledToFill()
+                } else if let coverURL, let u = URL(string: coverURL), !coverURL.isEmpty {
+                    AsyncImage(url: u) { phase in
+                        if let img = phase.image {
+                            img.resizable().scaledToFill()
+                        } else {
+                            Color.clear
+                        }
+                    }
+                } else {
+                    Text(String(title.prefix(1)))
+                        .font(.system(size: 17, weight: .bold))
+                        .foregroundColor(placeholderInk(c.dark))
+                }
+            }
+            .frame(width: 52, height: 70)
+            .clipped()
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(label)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(c.accent)
+                Text(title)
+                    .font(.system(size: 13.5, weight: .medium))
+                    .foregroundColor(c.fg)
+                    .lineLimit(1)
+                Text(meta)
+                    .font(.system(size: 10.5))
+                    .foregroundColor(c.fg3)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 0)
+            GlyphView(glyph: .right, tint: c.fg3, size: 15, strokeWidth: 1.6)
+        }
+        .padding(10)
+        .background(c.card2)
+        .overlay(
+            RoundedRectangle(cornerRadius: 13, style: .continuous)
+                .stroke(c.border, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+        .contentShape(Rectangle())
+        .padding(.horizontal, inset ? 18 : 0)
+    }
+}
+
+/// 二级页的顶栏：返回箭头 + 标题 + 右侧操作。工程里所有导航都用自绘顶栏，
+/// 好处是颜色跟主题完全一致，不会突然冒出一条系统半透明导航条。
+struct SubHeader: View {
+    let title: String
+    var subtitle: String? = nil
+    let onBack: (() -> Void)?
+    var trailing: AnyView? = nil
+
+    @Environment(\.appColors) private var c
+
+    var body: some View {
+        HStack(spacing: 10) {
+            if let onBack {
+                Button(action: onBack) {
+                    GlyphView(glyph: .back, tint: c.fg, size: 19, strokeWidth: 1.8)
+                        .frame(width: 30, height: 30)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(c.fg)
+                    .lineLimit(1)
+                if let subtitle, !subtitle.isEmpty {
+                    Text(subtitle)
+                        .font(.system(size: 10.5))
+                        .foregroundColor(c.fg3)
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: 0)
+            if let trailing { trailing }
+        }
+        .padding(.horizontal, 14)
+        .padding(.top, 4)
+        .padding(.bottom, 8)
+    }
+}

@@ -15,28 +15,29 @@ struct Skin {
     let track: Color
     let accent: Color
 
+    /// 跟 App 界面同一套：纯黑打底 + PicaComic 粉，不再用旧版那个蓝色。
     static let dark = Skin(
-        chrome: Color(red: 0.063, green: 0.063, blue: 0.078),
-        bar: Color(red: 0.086, green: 0.086, blue: 0.106),
-        panel: Color(red: 0.102, green: 0.102, blue: 0.125),
-        menu: Color(red: 0.137, green: 0.137, blue: 0.161),
-        fg: Color(red: 0.929, green: 0.929, blue: 0.949),
-        dim: Color(red: 0.549, green: 0.549, blue: 0.592),
-        hair: Color(red: 0.169, green: 0.169, blue: 0.204),
-        track: Color.white.opacity(0.24),
-        accent: Color(red: 0.298, green: 0.616, blue: 0.965)
+        chrome: Color(hex: 0x000000),
+        bar: Color(hex: 0x000000),
+        panel: Color(hex: 0x0A0A0A),
+        menu: Color(hex: 0x171717),
+        fg: Color(hex: 0xFAFAFA),
+        dim: Color(hex: 0xA3A3A3),
+        hair: Color(hex: 0x262626),
+        track: Color.white.opacity(0.22),
+        accent: Color(hex: 0xFF6E9C)
     )
 
     static let light = Skin(
         chrome: .white,
         bar: .white,
-        panel: Color(red: 0.969, green: 0.973, blue: 0.980),
+        panel: Color(hex: 0xF7F7F7),
         menu: .white,
-        fg: Color(red: 0.169, green: 0.169, blue: 0.200),
-        dim: Color(red: 0.482, green: 0.482, blue: 0.529),
-        hair: Color(red: 0.894, green: 0.902, blue: 0.925),
-        track: Color.black.opacity(0.13),
-        accent: Color(red: 0.239, green: 0.545, blue: 0.937)
+        fg: Color(hex: 0x111111),
+        dim: Color(hex: 0x636363),
+        hair: Color(hex: 0xE2E2E2),
+        track: Color.black.opacity(0.12),
+        accent: Color(hex: 0xE0336E)
     )
 }
 
@@ -64,6 +65,8 @@ enum ReaderPanel: Equatable {
 enum Glyph {
     case gap, filter, turn, layout, bookmark, gear, list, theme
     case back, more, check, left, right, sun, crop, spark
+    // 底部四个 Tab 与搜索框用的图标，跟上面一套同样的细线风格
+    case home, discover, shelf, user, search
 }
 
 private struct GlyphInk {
@@ -243,6 +246,66 @@ private func glyphInk(_ glyph: Glyph, _ k: CGFloat) -> [GlyphInk] {
             p.addLine(to: point(3.8, 11.2))
             p.addLine(to: point(10.1, 9.4))
             p.closeSubpath()
+        }
+
+    case .home:
+        stroke { p in
+            p.move(to: point(3.4, 10.6))
+            p.addLine(to: point(12, 3.6))
+            p.addLine(to: point(20.6, 10.6))
+            p.move(to: point(5.9, 9.3))
+            p.addLine(to: point(5.9, 20.2))
+            p.addLine(to: point(18.1, 20.2))
+            p.addLine(to: point(18.1, 9.3))
+            p.move(to: point(10, 20.2))
+            p.addLine(to: point(10, 14.2))
+            p.addLine(to: point(14, 14.2))
+            p.addLine(to: point(14, 20.2))
+        }
+
+    case .discover:
+        ring(12, 12, 8.4)
+        stroke { p in
+            p.move(to: point(15.6, 8.4))
+            p.addLine(to: point(13.5, 13.5))
+            p.addLine(to: point(8.4, 15.6))
+            p.addLine(to: point(10.5, 10.5))
+            p.closeSubpath()
+        }
+
+    case .shelf:
+        stroke { p in
+            p.addRoundedRect(
+                in: CGRect(x: 3.8 * k, y: 4.6 * k, width: 4.6 * k, height: 14.8 * k),
+                cornerSize: CGSize(width: 1.2 * k, height: 1.2 * k)
+            )
+            p.addRoundedRect(
+                in: CGRect(x: 9.7 * k, y: 4.6 * k, width: 4.6 * k, height: 14.8 * k),
+                cornerSize: CGSize(width: 1.2 * k, height: 1.2 * k)
+            )
+            p.move(to: point(16.6, 5.8))
+            p.addLine(to: point(20.4, 6.8))
+            p.addLine(to: point(18.0, 19.6))
+            p.addLine(to: point(14.4, 18.6))
+            p.closeSubpath()
+        }
+
+    case .user:
+        ring(12, 8.4, 3.5)
+        stroke { p in
+            p.move(to: point(4.6, 20.4))
+            p.addCurve(
+                to: point(19.4, 20.4),
+                control1: point(5.4, 13.8),
+                control2: point(18.6, 13.8)
+            )
+        }
+
+    case .search:
+        ring(10.8, 10.8, 6.3)
+        stroke { p in
+            p.move(to: point(15.5, 15.5))
+            p.addLine(to: point(20.4, 20.4))
         }
     }
     return out

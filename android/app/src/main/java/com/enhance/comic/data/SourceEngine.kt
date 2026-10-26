@@ -360,7 +360,32 @@ class SourceEngine private constructor(private val app: Context) {
 
     // ---------------------------------------------------------------- HTTP
 
+    /**
+     * 真正的网络请求。**绝对不能跑在主线程**：JS 是同步桥，回调被 WebView 的 JS 线程
+     * （也就是主线程）调用，直接在这里 openConnection 会抛 NetworkOnMainThreadException。
+     * 所以把活儿丢到 netPool，主线程只等 Future。
+     */
+    private val netPool: java.util.concurrent.ExecutorService =
+        java.util.concurrent.Executors.newFixedThreadPool(8) { r ->
+            Thread(r, "src-net").apply { isDaemon = true }
+        }
+
     private fun http(msg: JSONObject): JSONObject {
+        val f = netPool.submit(java.util.concurrent.Callable { httpIO(msg) })
+        return try {
+            f.get(90, java.util.concurrent.TimeUnit.SECONDS)
+        } catch (e: java.util.concurrent.TimeoutException) {
+            f.cancel(true)
+            JSONObject().put("status", 0).put("headers", JSONObject()).put("body", "")
+                .put("error", "请求超时（90 秒）")
+        } catch (e: Throwable) {
+            val cause = (e as? java.util.concurrent.ExecutionException)?.cause ?: e
+            JSONObject().put("status", 0).put("headers", JSONObject()).put("body", "")
+                .put("error", cause.message ?: cause.toString())
+        }
+    }
+
+    private fun httpIO(msg: JSONObject): JSONObject {
         var rawUrl = msg.optString("url")
         // 源脚本常把中文选项值直接拼进 URL（如 o=mr-最新），原始字节会 400
         rawUrl = normalizeUrl(rawUrl)

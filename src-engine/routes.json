@@ -1,0 +1,61 @@
+{
+  "_readme": "域名别名表。源脚本里写死的主机如果国内打不开，就换成 to（首选）或 alts 里的备用域名。没有直连/VPN 之分，没有探测：请求发不通就自动换下一个域名重试一次，用户无感知。alts 最后一项可以留原域名（开代理时它才通）。rewrite:false 的源自己维护线路，不改。",
+  "version": "2026-10-26a",
+  "sources": [
+    {
+      "key": "jm",
+      "label": "禁漫天堂",
+      "rewrite": false,
+      "note": "禁漫自己在 init 里拉官方线路表（newsvr-2025.txt），比本地硬编码的新，不能改写。"
+    },
+    {
+      "key": "copy_manga",
+      "label": "拷贝漫画",
+      "note": "源脚本写死 www.2026copy.com（被墙）；copy5000 / copy2000 是同一套接口的镜像，国内直连。api.copy-manga.com 单独存在、能直连，规则不要包进来（改写到镜像会 404）。",
+      "map": [
+        {
+          "re": "^www\\.(2025|2026|2027)copy\\.com$|^www\\.copy20\\.com$|^www\\.mangacopy\\.com$|^www\\.copy-manga\\.com$|^www\\.copymanga\\.tv$|^www\\.copy2000\\.(site|online)$|^www\\.copy5000\\.com$",
+          "to": "www.copy5000.com",
+          "alts": ["www.copy2000.site", "www.copy20.com"]
+        }
+      ]
+    },
+    {
+      "key": "Komiic",
+      "label": "Komiic",
+      "note": "源脚本写死 komiic.com（被墙），komiic.cc 是同一套前端（data-v 版本号一致）。封面 CDN public.komiic.com 同样换成 public.komiic.cc。",
+      "map": [
+        {
+          "re": "^(www\\.)?komiic\\.com$",
+          "to": "komiic.cc",
+          "alts": ["komiic.com"]
+        },
+        {
+          "re": "^public\\.komiic\\.com$",
+          "to": "public.komiic.cc",
+          "alts": ["public.komiic.com"]
+        }
+      ]
+    },
+    {
+      "key": "noyacg",
+      "label": "NoyACG",
+      "note": "noy1.top 国内可达，图片 img.noy.asia / bucket.noy.asia 也通（403 是防盗链不是墙）。站点强制登录。"
+    },
+    {
+      "key": "picacg",
+      "label": "PicACG",
+      "note": "picaapi.picacomic.com 无国内可用镜像，只能开代理用。不做别名。"
+    },
+    {
+      "key": "ehentai",
+      "label": "E-Hentai",
+      "note": "主站与 API 全被墙，只能开代理用。不做别名。"
+    },
+    {
+      "key": "htmanga",
+      "label": "绅士漫画",
+      "note": "wnacg.com / wnacg.org 均被墙，只能开代理用。不做别名。"
+    }
+  ]
+}

@@ -280,6 +280,10 @@ final class SourceEngine {
             return "zh"
         case "log":
             return nil
+        case "jm_ui":
+            // 禁漫会问宿主「有没有原生 UI 增强」，回 false 让它用源自带的默认 UI。
+            // 不认这个方法会抛「未实现的宿主方法」，源的 ui getter 直接炸。
+            return false
         case "htmanga_state":
             let key = msg["key"] as? String ?? "htmanga"
             if let raw = defaults.string(forKey: "source_route_state"),

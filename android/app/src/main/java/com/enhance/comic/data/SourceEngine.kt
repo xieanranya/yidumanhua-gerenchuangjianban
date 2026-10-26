@@ -261,6 +261,9 @@ class SourceEngine private constructor(private val app: Context) {
         "getPlatform" -> "android"
         "getLocale" -> "zh"
         "log" -> null
+        // 禁漫会问宿主「有没有原生 UI 增强」，回 false 让它用源自带的默认 UI。
+        // 不认这个方法会抛「未实现的宿主方法」，源的 ui getter 直接炸。
+        "jm_ui" -> false
         "htmanga_state" -> {
             // 绅士漫画问「现在用哪个 API 域名」；回线路层里存下的 host，没有就让源用它的 fallback
             val saved = prefs.getString("route_state", null)

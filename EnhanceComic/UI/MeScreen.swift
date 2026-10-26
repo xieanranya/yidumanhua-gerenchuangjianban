@@ -295,14 +295,8 @@ struct HistoryView: View {
                                 HStack(spacing: 11) {
                                     ZStack {
                                         coverGradient(seed: rec.comicId.hashValue, dark: c.dark)
-                                        if let u = URL(string: rec.cover), !rec.cover.isEmpty {
-                                            AsyncImage(url: u) { phase in
-                                                if let img = phase.image {
-                                                    img.resizable().scaledToFill()
-                                                } else {
-                                                    Color.clear
-                                                }
-                                            }
+                                        if !rec.cover.isEmpty {
+                                            RemoteImage(url: rec.cover, contentMode: .fill, maxPixel: 240)
                                         }
                                     }
                                     .frame(width: 38, height: 50)

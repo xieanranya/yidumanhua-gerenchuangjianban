@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import ImageIO
 
 // ======================================================================= 本地书库的封面缓存
 
@@ -20,8 +21,240 @@ enum CoverCache {
     }
 }
 
-enum CoverPalette {
-    static func typeLabel(_ type: BookType) -> String {
+// ======================================================================= 网络图片（在线模块）
+
+/// 在线图片加载器。
+///
+/// 为什么不用 `AsyncImage`：它一个请求头都不带（不少站点要 UA、有些要 Referer），
+/// 也没有超时 —— 连不上的图会一直转圈，还看不到原因；更没有解码缓存，
+/// 同一页滚回来要重解一次。禁漫 / 拷贝的图挂在 CDN 上，丢包时就永远停在菊花上，
+/// 用户看到的正是「黑屏两个菊花，而且特别卡」。
+/// 这里自己发请求：带 UA、15 秒连接 / 25 秒总超时、解码后按显示尺寸下采样、
+/// NSCache 缓存、同一个 URL 的并发请求合并成一次，失败能立刻说话。
+final class RemoteImageLoader {
+    static let shared = RemoteImageLoader()
+
+    private let cache = NSCache<NSString, UIImage>()
+    private let lock = NSLock()
+    private var running: [String: Task<UIImage?, Never>] = [:]
+
+    private static let session: URLSession = {
+        let cfg = URLSessionConfiguration.default
+        cfg.timeoutIntervalForRequest = 15
+        cfg.timeoutIntervalForResource = 25
+        cfg.requestCachePolicy = .returnCacheDataElseLoad
+        cfg.httpMaximumConnectionsPerHost = 6
+        cfg.urlCache = URLCache(memoryCapacity: 16 << 20, diskCapacity: 128 << 20)
+        return URLSession(configuration: cfg)
+    }()
+
+    private static let ua =
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 " +
+        "(KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1"
+
+    private init() {
+        cache.countLimit = 240
+        cache.totalCostLimit = 96 << 20
+    }
+
+    func cached(_ url: String, maxPixel: CGFloat) -> UIImage? {
+        cache.object(forKey: Self.cacheKey(url, maxPixel) as NSString)
+    }
+
+    /// maxPixel 是物理像素上限：图再大也只解到这个尺寸（省内存也省 CPU）
+    func image(_ url: String, referer: String? = nil, maxPixel: CGFloat = 1200) async -> UIImage? {
+        guard !url.isEmpty else { return nil }
+        let key = Self.cacheKey(url, maxPixel)
+        if let hit = cache.object(forKey: key as NSString) { return hit }
+
+        lock.lock()
+        if let task = running[key] {
+            lock.unlock()
+            return await task.value
+        }
+        let task = Task<UIImage?, Never>.detached(priority: .userInitiated) { () -> UIImage? in
+            await RemoteImageLoader.fetch(
+                url,
+                referer: referer,
+                maxPixel: maxPixel,
+                session: RemoteImageLoader.session
+            )
+        }
+        running[key] = task
+        lock.unlock()
+
+        let image = await task.value
+
+        lock.lock()
+        running.removeValue(forKey: key)
+        lock.unlock()
+
+        if let image {
+            cache.setObject(image, forKey: key as NSString, cost: Self.cost(image))
+        }
+        return image
+    }
+
+    private static func cacheKey(_ url: String, _ maxPixel: CGFloat) -> String {
+        let bucket = Int(max(320, maxPixel) / 320)
+        return "\(bucket)|\(url)"
+    }
+
+    private static func cost(_ image: UIImage) -> Int {
+        guard let cg = image.cgImage else { return 4 << 20 }
+        return cg.bytesPerRow * cg.height
+    }
+
+    private static func fetch(
+        _ url: String,
+        referer: String?,
+        maxPixel: CGFloat,
+        session: URLSession
+    ) async -> UIImage? {
+        guard let u = URL(string: url) else { return nil }
+        var req = URLRequest(url: u)
+        req.timeoutInterval = 25
+        req.setValue(ua, forHTTPHeaderField: "User-Agent")
+        req.setValue("image/*,*/*;q=0.8", forHTTPHeaderField: "Accept")
+        req.setValue("zh-CN,zh;q=0.9", forHTTPHeaderField: "Accept-Language")
+        if let referer, !referer.isEmpty {
+            req.setValue(referer, forHTTPHeaderField: "Referer")
+        }
+        do {
+            let (data, resp) = try await session.data(for: req)
+            if let http = resp as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                return nil
+            }
+            guard !data.isEmpty else { return nil }
+            return downsample(data, maxPixel: maxPixel)
+        } catch {
+            return nil
+        }
+    }
+
+    private static func downsample(_ data: Data, maxPixel: CGFloat) -> UIImage? {
+        let srcOpts = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard let src = CGImageSourceCreateWithData(data as CFData, srcOpts) else { return nil }
+        let thumb: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: max(64, maxPixel),
+        ]
+        guard let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, thumb as CFDictionary) else {
+            return nil
+        }
+        return UIImage(cgImage: cg)
+    }
+}
+
+/// 一张网络图。封面这类位置不显示菊花（失败就留底下的色块），章节页要显示。
+struct RemoteImage: View {
+    let url: String
+    var referer: String? = nil
+    var contentMode: ContentMode = .fill
+    var maxPixel: CGFloat = 1200
+    var spinner: Bool = false
+
+    @State private var image: UIImage?
+    @State private var failed = false
+    @State private var attempt = 0
+
+    var body: some View {
+        ZStack {
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: contentMode)
+            } else if spinner && !failed {
+                ProgressView().tint(.white.opacity(0.55))
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .task(id: "\(url)|\(attempt)") { await load() }
+    }
+
+    private func load() async {
+        guard !url.isEmpty else {
+            failed = true
+            return
+        }
+        if let hit = RemoteImageLoader.shared.cached(url, maxPixel: maxPixel) {
+            image = hit
+            failed = false
+            return
+        }
+        let got = await RemoteImageLoader.shared.image(url, referer: referer, maxPixel: maxPixel)
+        if Task.isCancelled { return }
+        image = got
+        failed = (got == nil)
+    }
+}
+
+/// 在线章节的一页：尺寸未知时先按 0.72 的宽高比占位，图到了换成真实比例。
+/// 用固定 360pt 的占位块换真实高度，会让整条 LazyVStack 每来一张图就重排一次，
+/// 100 多页连着来就是「很卡」的来源。
+struct OnlinePageImage: View {
+    let url: String
+    let index: Int
+    var referer: String? = nil
+
+    @Environment(\.displayScale) private var scale
+    @State private var image: UIImage?
+    @State private var failed = false
+    @State private var attempt = 0
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .aspectRatio(
+                        image.size.width / max(image.size.height, 1),
+                        contentMode: .fit
+                    )
+            } else if failed {
+                VStack(spacing: 9) {
+                    Text("第 \(index + 1) 页没取到")
+                        .font(.system(size: 13))
+                        .foregroundColor(.white.opacity(0.72))
+                    Button {
+                        failed = false
+                        attempt += 1
+                    } label: {
+                        Text("点这里重试")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(Color(red: 1, green: 0.43, blue: 0.61))
+                    }
+                    .buttonStyle(.plain)
+                }
+                .frame(maxWidth: .infinity)
+                .frame(height: 260)
+            } else {
+                Color.black
+                    .aspectRatio(0.72, contentMode: .fit)
+                    .overlay(ProgressView().tint(.white.opacity(0.4)))
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .task(id: "\(url)|\(attempt)") { await load() }
+    }
+
+    private func load() async {
+        let width = UIScreen.main.bounds.width * max(scale, 2)
+        if let hit = RemoteImageLoader.shared.cached(url, maxPixel: width) {
+            image = hit
+            failed = false
+            return
+        }
+        let got = await RemoteImageLoader.shared.image(url, referer: referer, maxPixel: width)
+        if Task.isCancelled { return }
+        image = got
+        failed = (got == nil)
+    }
+}
+
+enum CoverPalette {    static func typeLabel(_ type: BookType) -> String {
         switch type {
         case .zip: return "ZIP"
         case .rar: return "RAR"
@@ -220,18 +453,10 @@ struct RemoteCover: View {
     var body: some View {
         ZStack {
             coverGradient(seed: seed, dark: c.dark)
-            if let u = URL(string: url), !url.isEmpty {
-                AsyncImage(url: u) { phase in
-                    if let img = phase.image {
-                        img.resizable().scaledToFill()
-                    } else if phase.error != nil {
-                        initial
-                    } else {
-                        Color.clear
-                    }
-                }
-            } else {
-                initial
+            // 首字一直垫在底下：图没来（或来不了）时它就是封面，图到了直接盖住。
+            initial
+            if !url.isEmpty {
+                RemoteImage(url: url, contentMode: .fill, maxPixel: 600)
             }
         }
         .clipped()
@@ -376,14 +601,8 @@ struct ContinueCard: View {
                 coverGradient(seed: seed, dark: c.dark)
                 if let localCover {
                     Image(uiImage: localCover).resizable().scaledToFill()
-                } else if let coverURL, let u = URL(string: coverURL), !coverURL.isEmpty {
-                    AsyncImage(url: u) { phase in
-                        if let img = phase.image {
-                            img.resizable().scaledToFill()
-                        } else {
-                            Color.clear
-                        }
-                    }
+                } else if let coverURL, !coverURL.isEmpty {
+                    RemoteImage(url: coverURL, contentMode: .fill, maxPixel: 320)
                 } else {
                     Text(String(title.prefix(1)))
                         .font(.system(size: 17, weight: .bold))

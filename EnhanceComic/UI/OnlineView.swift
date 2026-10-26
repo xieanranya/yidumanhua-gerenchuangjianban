@@ -292,18 +292,12 @@ struct DetailView: View {
         HStack(alignment: .top, spacing: 12) {
             ZStack {
                 coverGradient(seed: work.norm.hashValue, dark: c.dark)
-                if let u = URL(string: cover), !cover.isEmpty {
-                    AsyncImage(url: u) { phase in
-                        if let img = phase.image {
-                            img.resizable().scaledToFill()
-                        } else {
-                            Color.clear
-                        }
-                    }
-                } else {
+                if cover.isEmpty {
                     Text(String(title.prefix(1)))
                         .font(.system(size: 24, weight: .bold))
                         .foregroundColor(placeholderInk(c.dark))
+                } else {
+                    RemoteImage(url: cover, contentMode: .fill, maxPixel: 420)
                 }
             }
             .frame(width: 84, height: 114)
@@ -803,153 +797,166 @@ struct ReadingPayload: Identifiable {
     var lazy: LazyRef? = nil
 }
 
-/// 在线章节阅读：竖向连续，跟本地阅读器的习惯一致
+/// 在线章节阅读：竖向无缝连续（跟本地阅读器一个习惯）。
+///
+/// 页图走 RemoteImageLoader（带 UA / 15s 超时 / 解码缓存），取不到会直接说哪一页没取到，
+/// 而不是留一个永远转的菊花 —— 之前的版本就是「黑屏两个菊花、还特别卡」。
 struct ReaderSheet: View {
     let payload: ReadingPayload
 
     var body: some View {
-        if let lz = payload.lazy {
-            LazyReaderSheet(payload: payload, ref: lz)
-        } else {
-            PlainReaderSheet(payload: payload)
-        }
+        OnlineReader(payload: payload)
     }
 }
 
-/// 惰性阅读：翻到哪解到哪，另加一页预取
-struct LazyReaderSheet: View {
+struct OnlineReader: View {
+
     let payload: ReadingPayload
-    let ref: LazyRef
+
     @Environment(\.dismiss) private var dismiss
-    @State private var urls: [Int: String] = [:]
+
+    @State private var urls: [Int: String]
     @State private var fails: [Int: String] = [:]
     @State private var loading: Set<Int> = []
+    @State private var current = 0
     @State private var showBar = true
+
+    init(payload: ReadingPayload) {
+        self.payload = payload
+        var seed: [Int: String] = [:]
+        for (i, u) in payload.urls.enumerated() where !u.isEmpty { seed[i] = u }
+        _urls = State(initialValue: seed)
+    }
+
+    private var total: Int { payload.lazy?.count ?? payload.urls.count }
 
     var body: some View {
         ZStack(alignment: .top) {
             Color.black.ignoresSafeArea()
-            ScrollView {
+
+            ScrollView(.vertical, showsIndicators: false) {
                 LazyVStack(spacing: 0) {
-                    ForEach(0..<ref.count, id: \.self) { i in
-                        Group {
-                            if let u = urls[i] {
-                                AsyncImage(url: URL(string: u)) { phase in
-                                    if let img = phase.image {
-                                        img.resizable().scaledToFit()
-                                    } else if phase.error != nil {
-                                        retryText(i, phase.error?.localizedDescription ?? "加载失败")
-                                    } else {
-                                        Color.black.frame(height: 360)
-                                            .overlay(ProgressView().tint(.white))
-                                    }
-                                }
-                            } else if let f = fails[i] {
-                                retryText(i, f)
-                            } else {
-                                Color.black.frame(height: 360)
-                                    .overlay(ProgressView().tint(.white))
-                            }
-                        }
-                        .frame(maxWidth: .infinity)
-                        .task {
-                            await load(i)
-                            await load(i + 1)   // 预取下一页
-                        }
+                    ForEach(0..<max(total, 0), id: \.self) { i in
+                        cell(i)
+                            .frame(maxWidth: .infinity)
+                            .onAppear { if current != i { current = i } }
                     }
                 }
             }
             .ignoresSafeArea()
+            .simultaneousGesture(
+                SpatialTapGesture().onEnded { _ in toggleBar() }
+            )
 
-            if showBar {
-                HStack {
-                    Button { dismiss() } label: {
-                        Image(systemName: "chevron.left").foregroundStyle(.white)
-                    }
-                    Text(payload.title).foregroundStyle(.white).font(.system(size: 13)).lineLimit(1)
-                    Spacer()
-                    Text("\(urls.count)/\(ref.count) 页")
-                        .foregroundStyle(.white.opacity(0.7)).font(.system(size: 12))
-                }
-                .padding(.horizontal, 16).padding(.vertical, 10)
-                .background(.black.opacity(0.55))
-            }
+            if showBar { bar }
         }
-        .statusBarHidden()
-        .onTapGesture { showBar.toggle() }
+        .statusBarHidden(!showBar)
     }
 
-    private func retryText(_ i: Int, _ msg: String) -> some View {
-        Text("第 \(i + 1) 页没取到：\(msg)\n点这里重试")
-            .font(.system(size: 12))
-            .multilineTextAlignment(.center)
-            .foregroundStyle(.white.opacity(0.85))
-            .frame(maxWidth: .infinity)
-            .frame(height: 200)
-            .contentShape(Rectangle())
-            .onTapGesture {
-                fails[i] = nil
-                Task { await load(i) }
-            }
+    // MARK: 一页
+
+    @ViewBuilder
+    private func cell(_ i: Int) -> some View {
+        if let u = urls[i] {
+            OnlinePageImage(url: u, index: i)
+                .task(id: u) { prefetch(i) }
+        } else if let f = fails[i] {
+            failCell(i, f)
+        } else {
+            Color.black
+                .aspectRatio(0.72, contentMode: .fit)
+                .overlay(ProgressView().tint(.white.opacity(0.4)))
+                .task(id: "fetch-\(i)") { await ensure(i) }
+        }
     }
+
+    private func failCell(_ i: Int, _ message: String) -> some View {
+        VStack(spacing: 9) {
+            Text("第 \(i + 1) 页没取到：\(message)")
+                .font(.system(size: 12.5))
+                .multilineTextAlignment(.center)
+                .foregroundColor(.white.opacity(0.75))
+            Button {
+                fails[i] = nil
+                Task { await ensure(i) }
+            } label: {
+                Text("点这里重试")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(Color(red: 1, green: 0.43, blue: 0.61))
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 24)
+        .frame(maxWidth: .infinity)
+        .frame(height: 220)
+    }
+
+    private var bar: some View {
+        HStack(spacing: 8) {
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(.white)
+                    .frame(width: 34, height: 34)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            Text(payload.title)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(.white)
+                .lineLimit(1)
+
+            Spacer(minLength: 0)
+
+            Text(total > 0 ? "\(min(current + 1, total)) / \(total) 页" : "0 页")
+                .font(.system(size: 12))
+                .foregroundColor(.white.opacity(0.7))
+        }
+        .padding(.horizontal, 10)
+        .padding(.top, 6)
+        .padding(.bottom, 8)
+        .background(Color.black.opacity(0.55))
+    }
+
+    private func toggleBar() {
+        withAnimation(.easeInOut(duration: 0.16)) { showBar.toggle() }
+    }
+
+    // MARK: 惰性取图
 
     @MainActor
-    private func load(_ i: Int) async {
-        if i < 0 || i >= ref.count { return }
-        if urls[i] != nil || fails[i] != nil || loading.contains(i) { return }
+    private func ensure(_ i: Int) async {
+        guard i >= 0, i < total else { return }
+        guard urls[i] == nil, fails[i] == nil, !loading.contains(i) else { return }
+        guard let lz = payload.lazy else { return }
         loading.insert(i)
         let r = await SourceEngine.shared.pageImage(
-            key: ref.key, comicId: ref.comicId, epId: ref.epId, index: i)
+            key: lz.key,
+            comicId: lz.comicId,
+            epId: lz.epId,
+            index: i
+        )
         loading.remove(i)
         if (r["ok"] as? Bool) == true,
            let d = r["data"] as? [String: Any],
-           let u = d["url"] as? String, !u.isEmpty {
+           let u = d["url"] as? String,
+           !u.isEmpty {
             urls[i] = u
         } else {
             fails[i] = r["error"] as? String ?? "取图失败"
         }
     }
-}
 
-struct PlainReaderSheet: View {
-    let payload: ReadingPayload
-    @Environment(\.dismiss) private var dismiss
-    @State private var showBar = true
-
-    var body: some View {
-        ZStack(alignment: .top) {
-            Color.black.ignoresSafeArea()
-            ScrollView {
-                LazyVStack(spacing: 0) {
-                    ForEach(payload.urls.indices, id: \.self) { i in
-                        AsyncImage(url: URL(string: payload.urls[i])) { phase in
-                            if let img = phase.image {
-                                img.resizable().scaledToFit()
-                            } else {
-                                Color.black.frame(height: 360)
-                                    .overlay(ProgressView().tint(.white))
-                            }
-                        }
-                        .frame(maxWidth: .infinity)
-                    }
-                }
-            }
-            .ignoresSafeArea()
-
-            if showBar {
-                HStack {
-                    Button { dismiss() } label: {
-                        Image(systemName: "chevron.left").foregroundStyle(.white)
-                    }
-                    Text(payload.title).foregroundStyle(.white).font(.system(size: 13)).lineLimit(1)
-                    Spacer()
-                    Text("\(payload.urls.count) 页").foregroundStyle(.white.opacity(0.7)).font(.system(size: 12))
-                }
-                .padding(.horizontal, 16).padding(.vertical, 10)
-                .background(.black.opacity(0.55))
-            }
+    /// 下一张顺手解出来，快速往下划的时候不至于每页都等
+    private func prefetch(_ i: Int) {
+        guard payload.lazy != nil else { return }
+        let next = i + 1
+        guard next < total, urls[next] == nil, fails[next] == nil, !loading.contains(next) else {
+            return
         }
-        .statusBarHidden()
-        .onTapGesture { showBar.toggle() }
+        Task { await ensure(next) }
     }
 }

@@ -60,11 +60,11 @@ fun HomeScreen(
 
     LaunchedEffect(Unit) {
         runCatching {
-            rows = buildRows(engine.sources(), engine.routeStatus())
-            // 直连优先，最多试三个源；合起来聚一次，同一本在多个源出现就显示「N 源」
+            rows = buildRows(engine.sources())
+            // 取前三个源合起来聚一次，同一本在多个源出现就显示「N 源」
             val pool = mutableListOf<ComicRow>()
             var hit = 0
-            for (s in pickableSources(rows).take(3)) {
+            for (s in rows.take(3)) {
                 // 单个源等太久就把首页拖死了，给 15 秒上限然后换下一个
                 val r = kotlinx.coroutines.withTimeoutOrNull(15_000) { engine.explore(s.key, 0) }
                     ?: continue
@@ -147,7 +147,7 @@ fun HomeScreen(
                 QuickEntry(
                     glyph = Glyph.GEAR,
                     label = "源管理",
-                    sub = if (rows.isEmpty()) "检测中" else "${rows.count { it.picked && !it.offline }} 个可用",
+                    sub = if (rows.isEmpty()) "读取中" else "${rows.size} 个源",
                     onClick = onSourceManager,
                     modifier = Modifier.weight(1f),
                 )
@@ -175,13 +175,13 @@ fun HomeScreen(
         }
 
         item(span = { GridItemSpan(maxLineSpan) }) {
-            SectionHeader("源状态", more = "管理", onMore = onSourceManager, inset = false)
+            SectionHeader("漫画源", more = "管理", onMore = onSourceManager, inset = false)
         }
         item(span = { GridItemSpan(maxLineSpan) }) {
             Column {
                 NoteBar(
-                    text = if (rows.isEmpty()) "正在读取源列表…" else routeSummary(rows),
-                    tone = routeTone(rows),
+                    text = sourceSummary(rows),
+                    tone = Tone.PLAIN,
                     inset = false,
                 )
                 Spacer(Modifier.height(8.dp))

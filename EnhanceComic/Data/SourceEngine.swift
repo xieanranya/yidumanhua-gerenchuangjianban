@@ -127,10 +127,6 @@ final class SourceEngine {
         (await syncCall("sources") as? [[String: Any]]) ?? []
     }
 
-    func routeStatus() async -> [[String: Any]] {
-        (await syncCall("routeStatus") as? [[String: Any]]) ?? []
-    }
-
     func search(key: String, keyword: String, options: String, page: Int) async -> [String: Any] {
         await asyncCall("search", [jsLiteral(key), jsLiteral(keyword), jsLiteral(options), "\(page)"])
     }
@@ -163,84 +159,6 @@ final class SourceEngine {
     /// 账号页：登录态 + 源自己声明的信息项（account.infoItems）
     func account(key: String) async -> [String: Any] {
         await asyncCall("account", [jsLiteral(key)])
-    }
-
-    func setHost(key: String, host: String) async {
-        _ = await syncCall("setHost", [jsLiteral(key), jsLiteral(host)])
-    }
-
-    /// 上次线路探测时间。从源里退回列表页不该再等一遍探测，5 分钟内复用上次结果
-    private static var lastProbeAt = Date.distantPast
-    private static let probeTTL: TimeInterval = 5 * 60
-
-    /// 原生侧并发探测线路（JS 侧同步 http 只能串行，会很慢）
-    ///
-    /// 按源分组：一个源的所有 host（直连 + VPN）一起并发打，再按通道顺序取第一条通的。
-    /// 三种结果都要写回引擎——探到 host / 全不通（offline）/ 结束标记，
-    /// 少写一种，源列表就会出现「标着直连其实不通」。
-    func probeRoutes(force: Bool = false) async {
-        if !force && Date().timeIntervalSince(Self.lastProbeAt) < Self.probeTTL { return }
-        let cands = (await syncCall("routeCandidates") as? [[String: Any]]) ?? []
-        struct Cand: Sendable { let key: String; let ci: Int; let host: String; let path: String }
-        var byKey: [String: [Cand]] = [:]
-        var order: [String] = []
-        for c in cands {
-            guard let key = c["key"] as? String, !key.isEmpty,
-                  let ci = c["ci"] as? Int,
-                  let hosts = c["hosts"] as? [String] else { continue }
-            var path = (c["probe"] as? String) ?? ""
-            if path.isEmpty { path = "/" }
-            if byKey[key] == nil { byKey[key] = []; order.append(key) }
-            for h in hosts where !h.isEmpty {
-                byKey[key]?.append(Cand(key: key, ci: ci, host: h, path: path))
-            }
-        }
-
-        for key in order {
-            guard let list = byKey[key], !list.isEmpty else { continue }
-            _ = await syncCall("routeBeginProbe", [jsLiteral(key)])
-            var hits: [Cand] = []
-            await withTaskGroup(of: Optional<Cand>.self) { group in
-                for c in list {
-                    group.addTask {
-                        let ok = await Self.probe(host: c.host, path: c.path)
-                        return ok ? c : nil
-                    }
-                }
-                for await r in group {
-                    if let hit = r { hits.append(hit) }
-                }
-            }
-            // 直连通了就不走 VPN：按通道序号挑最靠前的命中项
-            let pick = hits.min { a, b in
-                if a.ci != b.ci { return a.ci < b.ci }
-                return (list.firstIndex { $0.host == a.host } ?? 0) < (list.firstIndex { $0.host == b.host } ?? 0)
-            }
-            if let pick = pick {
-                _ = await syncCall("routeApply", [jsLiteral(key), "\(pick.ci)", jsLiteral(pick.host)])
-            } else {
-                _ = await syncCall("routeApply", [jsLiteral(key), "0", jsLiteral("")])
-            }
-            _ = await syncCall("routeMarkProbed", [jsLiteral(key)])
-        }
-        Self.lastProbeAt = Date()
-    }
-
-    private static func probe(host: String, path: String = "/") async -> Bool {
-        let p = path.hasPrefix("/") ? path : "/" + path
-        guard let url = URL(string: "https://\(host)\(p)") else { return false }
-        var req = URLRequest(url: url)
-        req.timeoutInterval = 4
-        req.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 " +
-                     "(KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1", forHTTPHeaderField: "User-Agent")
-        do {
-            let (_, resp) = try await URLSession.shared.data(for: req)
-            let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
-            // 2xx~4xx 说明 TCP/TLS/HTTP 全通；403 是风控页但线路本身可达
-            return code >= 200 && code <= 499
-        } catch {
-            return false
-        }
     }
 
     // MARK: - 调 JS

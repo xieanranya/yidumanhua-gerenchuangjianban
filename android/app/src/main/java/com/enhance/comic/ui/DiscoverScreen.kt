@@ -80,11 +80,11 @@ fun DiscoverScreen(
         works = emptyList()
         sections = emptyList()
         runCatching {
-            if (rows.isEmpty()) rows = buildRows(engine.sources(), engine.routeStatus())
+            if (rows.isEmpty()) rows = buildRows(engine.sources())
         }
 
         if (selected.isBlank()) {
-            val targets = pickableSources(rows).take(8)
+            val targets = rows.take(8)
             if (targets.isEmpty()) {
                 busy = false
                 err = "没有可用的源，先去源管理点「重新检测」"
@@ -202,18 +202,7 @@ fun DiscoverScreen(
         ) {
             item { Chip("全部", selected.isBlank()) { selected = "" } }
             items(rows, key = { it.key }) { r ->
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (r.offline) {
-                        Box(
-                            Modifier
-                                .padding(end = 5.dp)
-                                .width(5.dp)
-                                .height(5.dp)
-                                .background(c.bad, RoundedCornerShape(3.dp)),
-                        )
-                    }
-                    Chip(r.name, selected == r.key) { selected = r.key }
-                }
+                Chip(r.name, selected == r.key) { selected = r.key }
             }
         }
         Spacer(Modifier.height(10.dp))

@@ -67,7 +67,7 @@ struct HomeScreen: View {
                 } else if hot.isEmpty {
                     EmptyHint(
                         title: "还没有推荐",
-                        message: "可能是线路都不通。去「我的 → 源管理」点「重新检测」看看哪个源能用。",
+                        message: "这些源这次都没给出内容，回头再刷一次试试。",
                         glyph: .discover
                     )
                 } else {
@@ -91,15 +91,15 @@ struct HomeScreen: View {
                 }
 
                 SectionHeader(
-                    title: "源状态",
+                    title: "漫画源",
                     more: "管理",
                     onMore: onSources,
                     inset: false
                 )
                 .padding(.horizontal, 18)
                 NoteBar(
-                    text: hub.rows.isEmpty ? "正在读取源列表…" : routeSummary(hub.rows),
-                    tone: routeTone(hub.rows),
+                    text: sourceSummary(hub.rows),
+                    tone: .neutral,
                     inset: false
                 )
                 .padding(.horizontal, 18)
@@ -200,7 +200,7 @@ struct HomeScreen: View {
 
     private func loadHot() async {
         await hub.load()
-        let targets = Array(pickableSources(hub.rows).prefix(3))
+        let targets = Array(hub.rows.prefix(3))
         if targets.isEmpty {
             hotBusy = false
             return

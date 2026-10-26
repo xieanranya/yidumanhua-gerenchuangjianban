@@ -194,35 +194,22 @@ private fun SourcesScreen(
     var rows by remember { mutableStateOf<List<SourceRow>>(emptyList()) }
     var busy by remember { mutableStateOf(true) }
     var err by remember { mutableStateOf<String?>(null) }
-    var tick by remember { mutableStateOf(0) }
-    var probed by remember { mutableStateOf(false) }
 
-    LaunchedEffect(tick) {
+    LaunchedEffect(Unit) {
         busy = rows.isEmpty()
-        // 先把源列表显示出来（不等探测），探测结果回来再刷新
-        runCatching { rows = buildRows(engine.sources(), engine.routeStatus()) }
+        runCatching { rows = buildRows(engine.sources()) }
             .onFailure { err = it.message }
         busy = false
-        if (!probed) {
-            probed = true
-            runCatching {
-                // tick>0 说明是用户主动点「重新检测」，必须重新探
-                engine.probeRoutes(force = tick > 0)
-                rows = buildRows(engine.sources(), engine.routeStatus())
-            }
-        }
     }
 
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
-        SubTopBar("漫画源", onBack, action = {
-            MiniButton("重新检测", onClick = { probed = false; tick++ })
-        })
+        SubTopBar("漫画源", onBack)
         if (busy && rows.isEmpty()) {
             LoadingBox(220.dp)
         } else {
             LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 20.dp)) {
                 item {
-                    SectionHeader("全部源", more = routeSummary(rows))
+                    SectionHeader("全部源", more = "${rows.size} 个")
                 }
                 items(rows, key = { it.key }) { r ->
                     SourceRowItem(
@@ -233,8 +220,8 @@ private fun SourcesScreen(
                 }
                 item {
                     Text(
-                        "「直连」= 这台机器能直接打开；「需 VPN」= 要开代理；" +
-                            "「不通」= 两条线路都没探通，开关代理后点「重新检测」。",
+                        "内容直接来自各源自己的站点，某个域名打不开会自动换备用域名重试。" +
+                            "E-Hentai / 绅士漫画 / PicACG 这类站点国内仍需自备代理。",
                         color = LocalColors.current.fg3,
                         fontSize = 10.5.sp,
                         lineHeight = 16.sp,
@@ -291,12 +278,10 @@ private fun SourceRowItem(r: SourceRow, onClick: () -> Unit, onLogin: () -> Unit
                 overflow = TextOverflow.Ellipsis,
             )
             val sub = when {
-                r.offline -> "两条线路都没探通"
                 r.needLogin && !r.logged -> "登录后才能看内容"
                 r.canLogin && !r.logged -> "需要账号 · 点右边登录"
                 r.logged -> "已登录"
-                r.note.isNotBlank() -> r.note
-                else -> r.host.ifBlank { "公开内容可直接看" }
+                else -> "公开内容可直接看"
             }
             Spacer(Modifier.height(2.dp))
             Text(
@@ -306,13 +291,6 @@ private fun SourceRowItem(r: SourceRow, onClick: () -> Unit, onLogin: () -> Unit
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-        }
-        when {
-            r.offline -> Pill("不通", Tone.BAD)
-            !r.picked -> Pill("检测中", Tone.PLAIN)
-            r.line == "direct" -> Pill("直连", Tone.OK)
-            r.line == "proxy" -> Pill("需 VPN", Tone.WARN)
-            else -> Pill("未探", Tone.PLAIN)
         }
         if (r.canLogin) {
             Spacer(Modifier.width(7.dp))
@@ -833,7 +811,6 @@ private fun AccountScreen(
     val scope = rememberCoroutineScope()
     val uri = LocalUriHandler.current
     var info by remember { mutableStateOf<JSONObject?>(null) }
-    var route by remember { mutableStateOf<JSONObject?>(null) }
     var busy by remember { mutableStateOf(true) }
     var err by remember { mutableStateOf<String?>(null) }
     var user by remember { mutableStateOf("") }
@@ -852,16 +829,6 @@ private fun AccountScreen(
             if (saved.isNotBlank() && user.isBlank()) user = saved
         } else {
             err = r.optString("error", "账号信息读取失败")
-        }
-        runCatching {
-            val st = engine.routeStatus()
-            for (i in 0 until st.length()) {
-                val o = st.optJSONObject(i) ?: continue
-                if (o.optString("key") == key) {
-                    route = o
-                    break
-                }
-            }
         }
     }
 
@@ -887,8 +854,8 @@ private fun AccountScreen(
                 val code = r.optString("code")
                 val raw = r.optString("error", "账号或密码不对")
                 loginErr = when (code) {
-                    "net" -> "登录失败：连不上这个源（当前线路不通）。确认代理开关后，" +
-                        "回源列表点「重新检测」再试。"
+                    "net" -> "登录失败：连不上这个源。先确认网站本身能打开；" +
+                        "E-Hentai / 绅士漫画 / PicACG 这类站点国内要开代理。"
                     "forbidden" -> "登录失败：站点拒绝了请求（403），多半是云防护拦了，开/关代理后重试。"
                     else -> "登录失败：$raw"
                 }
@@ -902,9 +869,6 @@ private fun AccountScreen(
     val canWeb = info?.optBoolean("canWebLogin") == true
     val registerUrl = info?.optString("registerUrl").orEmpty()
     val webUrl = info?.optString("loginWebUrl").orEmpty()
-    val line = route?.optString("line").orEmpty()
-    val routePick = route?.optBoolean("pick") == true
-    val routeOffline = route?.optBoolean("offline") == true
 
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
         SubTopBar("账号", onBack)
@@ -929,20 +893,8 @@ private fun AccountScreen(
                     Text(name, color = c.fg, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
                     Spacer(Modifier.height(3.dp))
                     Text(
-                        buildString {
-                            append(
-                                when {
-                                    routeOffline -> "线路不通"
-                                    !routePick -> "检测中"
-                                    line == "direct" -> "直连"
-                                    line == "proxy" -> "需 VPN"
-                                    else -> "线路未检测"
-                                },
-                            )
-                            append(" · ")
-                            append(if (logged) "已登录" else if (canLogin) "未登录" else "无需登录")
-                        },
-                        color = if (routeOffline) c.bad else c.fg3,
+                        if (logged) "已登录" else if (canLogin) "未登录" else "无需登录",
+                        color = if (logged) c.fg3 else c.fg3,
                         fontSize = 10.5.sp,
                     )
                 }

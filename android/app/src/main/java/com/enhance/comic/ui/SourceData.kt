@@ -3,21 +3,19 @@ package com.enhance.comic.ui
 import org.json.JSONArray
 import org.json.JSONObject
 
-/** 一个源在界面上的状态：线路、登录、是否探通。 */
+/**
+ * 一个源在界面上的状态。
+ *
+ * 只有登录相关——**没有线路这个概念**。域名不通会自动换别名重试一次，
+ * 用户不需要知道「直连还是 VPN」，就像普通聚合软件那样。
+ */
 data class SourceRow(
     val key: String,
     val name: String,
-    val host: String,
-    val line: String,
-    val label: String,
-    val note: String,
+    val note: String = "",
     val canLogin: Boolean = false,
     val logged: Boolean = false,
     val needLogin: Boolean = false,
-    /** 探测确认所有通道都不通 */
-    val offline: Boolean = false,
-    /** 探测选中过（false = 还在检测中） */
-    val picked: Boolean = false,
 )
 
 data class ComicRow(
@@ -90,82 +88,33 @@ fun parseComics(
     return out
 }
 
-fun buildRows(srcs: JSONArray, st: JSONArray): List<SourceRow> {
-    val byKey = HashMap<String, JSONObject>()
-    for (i in 0 until st.length()) st.optJSONObject(i)?.let { byKey[it.optString("key")] = it }
+fun buildRows(srcs: JSONArray): List<SourceRow> {
     val out = mutableListOf<SourceRow>()
     for (i in 0 until srcs.length()) {
         val s = srcs.optJSONObject(i) ?: continue
         val key = s.optString("key")
-        val r = byKey[key]
-        val line = r?.optString("line") ?: ""
-        // pick=false 说明 ci/host 还只是线路表里的默认值，不是探测结果。
-        // 旧代码直接把默认值当「直连」显示，于是出现「标着直连、其实打的是被墙域名」。
-        val picked = r?.optBoolean("pick") == true
-        val offline = r?.optBoolean("offline") == true
+        if (key.isBlank()) continue
         out += SourceRow(
             key = key,
             name = s.optString("name", key),
-            host = r?.optString("host") ?: "",
-            line = line,
-            label = when {
-                offline -> "不通"
-                !picked -> "检测中"
-                line == "direct" -> "直连"
-                line == "proxy" -> "需 VPN"
-                else -> ""
-            },
-            note = r?.optString("note") ?: "",
+            note = s.optString("note"),
             canLogin = s.optBoolean("canLogin"),
             logged = s.optBoolean("logged"),
             needLogin = s.optBoolean("needLogin"),
-            offline = offline,
-            picked = picked,
         )
     }
     return out
 }
 
-/** 按状态给一行中文小结，首页/我的页直接用。 */
-fun routeSummary(rows: List<SourceRow>): String {
-    if (rows.isEmpty()) return "还没有源数据"
-    val direct = rows.count { it.picked && !it.offline && it.line == "direct" }
-    val proxy = rows.count { it.picked && !it.offline && it.line == "proxy" }
-    val off = rows.count { it.offline }
-    val probing = rows.count { !it.picked && !it.offline }
+/** 源小结：只说数量，不提线路（已经不存在这个概念）。 */
+fun sourceSummary(rows: List<SourceRow>): String {
+    if (rows.isEmpty()) return "正在读取源列表…"
+    val logged = rows.count { it.logged }
     return buildString {
-        append("$direct 个直连")
-        if (proxy > 0) append(" · $proxy 个需 VPN")
-        if (off > 0) append(" · $off 个不通")
-        if (probing > 0) append(" · $probing 个检测中")
+        append("${rows.size} 个源")
+        if (logged > 0) append(" · $logged 个已登录")
     }
 }
-
-fun routeTone(rows: List<SourceRow>): Tone = when {
-    rows.isEmpty() -> Tone.PLAIN
-    rows.count { it.offline } >= rows.size -> Tone.BAD
-    rows.count { it.picked && !it.offline } >= rows.size - rows.count { it.offline } -> Tone.OK
-    else -> Tone.WARN
-}
-
-/**
- * 选来请求内容的源。
- *
- * 还没探测过的源也要放进来（排最后）：新装第一次打开时线路表里本来就是直连默认值，
- * 这时候如果不给请求，发现页会空白，用户会以为整个 App 坏了。
- * 探测只影响「排序」和「标不通就跳过」，不影响可用性。
- */
-fun pickableSources(rows: List<SourceRow>): List<SourceRow> =
-    rows.filter { !it.offline }
-        .sortedBy {
-            // sortedBy 是稳定排序，同档内保持 routes.json 里的原顺序
-            when {
-                it.picked && it.line == "direct" -> 0
-                it.picked && it.line == "proxy" -> 1
-                it.picked -> 2
-                else -> 3
-            }
-        }
 
 /** 源抛出来的网络错误太生硬（"HTTP 0"），换成用户能照做的说法。 */
 fun friendlyError(e: String): String {
@@ -173,8 +122,7 @@ fun friendlyError(e: String): String {
     return when {
         low.contains("status code: 0") || e.contains("HTTP 0") ||
             low.contains("请求失败: 0") || low.contains("timed out") || low.contains("timeout") ->
-            "连不上这个源。回源管理点「重新检测」，看它标「直连」还是「需 VPN」——" +
-                "标「需 VPN」就要先开代理。"
+            "连不上这个源。先确认网站本身能打开；E-Hentai / 绅士漫画 / PicACG 这类站点国内要开代理。"
         else -> e
     }
 }

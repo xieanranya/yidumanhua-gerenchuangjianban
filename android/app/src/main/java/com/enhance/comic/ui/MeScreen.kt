@@ -58,7 +58,7 @@ fun MeScreen(
     var about by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
-        runCatching { rows = buildRows(engine.sources(), engine.routeStatus()) }
+        runCatching { rows = buildRows(engine.sources()) }
     }
 
     LazyColumn(
@@ -97,7 +97,7 @@ fun MeScreen(
                     Text(
                         buildString {
                             append("本地 ${books.size} 本")
-                            if (rows.isNotEmpty()) append(" · ").append(routeSummary(rows))
+                            if (rows.isNotEmpty()) append(" · ").append(sourceSummary(rows))
                         },
                         color = c.fg3,
                         fontSize = 10.5.sp,
@@ -115,7 +115,7 @@ fun MeScreen(
                 SettingRow(
                     glyph = Glyph.DISCOVER,
                     title = "漫画源管理",
-                    desc = if (rows.isEmpty()) "正在读取…" else routeSummary(rows),
+                    desc = sourceSummary(rows),
                     value = null,
                     onClick = onSourceManager,
                 )

@@ -133,7 +133,7 @@ struct BrowseView: View {
             await MainActor.run {
                 busy = false
                 sections = []
-                error = "等了 25 秒没响应。多半是线路不通，回源管理重新检测，或者先开代理。"
+                error = "等了 25 秒没响应。这个站点可能暂时打不开，稍后再试，或者先开代理。"
             }
             return
         }
@@ -763,7 +763,7 @@ struct AccountView: View {
             await MainActor.run {
                 switch code {
                 case "net":
-                    loginError = "连不上这个源（当前线路不通）。回源管理确认它标「直连」还是「需 VPN」，开了代理再点右上角重新检测。"
+                    loginError = "连不上这个源。先确认网站本身能打开；E-Hentai / 绅士漫画 / PicACG 这类站点国内要开代理。"
                 case "forbidden":
                     loginError = "站点拒绝了请求（403），多半是云防护拦了。开或关代理后重试。"
                 default:

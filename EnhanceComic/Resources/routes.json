@@ -1,135 +1,61 @@
 {
-  "_readme": "线路表。一个源可以有多个通道（channel），按顺序优选：直连优先，不通再走 VPN。map 里的 to 为空表示用该通道探测出的最优 host。改这里不用改源脚本，三端共用。",
-  "version": "2026-10-25c",
-  "probe": {
-    "timeoutMs": 3000,
-    "okStatusMax": 499,
-    "cacheHours": 12
-  },
+  "_readme": "域名别名表。源脚本里写死的主机如果国内打不开，就换成 to（首选）或 alts 里的备用域名。没有直连/VPN 之分，没有探测：请求发不通就自动换下一个域名重试一次，用户无感知。alts 最后一项可以留原域名（开代理时它才通）。rewrite:false 的源自己维护线路，不改。",
+  "version": "2026-10-26a",
   "sources": [
     {
       "key": "jm",
       "label": "禁漫天堂",
       "rewrite": false,
-      "note": "官方 newsvr-2025.txt 解出 5 条线路，全部国内直连可达；封面 CDN（cdn-msp.jmapiproxy3.cc）也直连，图片域名由 baseUrl 的 /setting 接口下发，跟着线路走。",
-      "channels": [
-        {
-          "line": "direct",
-          "name": "直连",
-          "hosts": ["www.cdngwc.net", "www.cdnutc.me", "www.cdnhjk.net", "www.cdnutc.cc", "www.cdnsha.org", "www.cdnntr.cc"],
-          "map": [
-            { "re": "^www\\.cdn[a-z0-9]+\\.(org|cc|net|club|me)$", "to": "" }
-          ]
-        },
-        {
-          "line": "proxy",
-          "name": "VPN",
-          "hosts": ["www.cdntwice.org", "www.cdnaspa.cc"],
-          "map": [
-            { "re": "^www\\.cdn[a-z0-9]+\\.(org|cc|net|club|me)$", "to": "" }
-          ]
-        }
-      ]
+      "note": "禁漫自己在 init 里拉官方线路表（newsvr-2025.txt），比本地硬编码的新，不能改写。"
     },
     {
       "key": "copy_manga",
       "label": "拷贝漫画",
-      "note": "copy5000 是官方 system/network2 接口下发的 share 域名，首页 97KB 真站、/comics 返回 HTML，与脚本 webAPI 解析兼容；静态资源 s3.mangafunb.fun 也直连。",
-      "channels": [
+      "note": "源脚本写死 www.2026copy.com（被墙）；copy5000 / copy2000 是同一套接口的镜像，国内直连。api.copy-manga.com 单独存在、能直连，规则不要包进来（改写到镜像会 404）。",
+      "map": [
         {
-          "line": "direct",
-          "name": "直连",
-          "hosts": ["www.copy5000.com"],
-          "map": [
-            { "re": "^www\\.(2025|2026|2027)copy\\.com$|^www\\.copy20\\.com$|^www\\.mangacopy\\.com$|^www\\.copy-manga\\.com$|^www\\.copymanga\\.tv$|^www\\.copy2000\\.(site|online)$|^www\\.copy5000\\.com$", "to": "" }
-          ]
-        },
-        {
-          "line": "proxy",
-          "name": "VPN",
-          "hosts": ["www.2026copy.com", "www.copy20.com", "www.mangacopy.com"],
-          "map": [
-            { "re": "^www\\.(2025|2026|2027)copy\\.com$|^www\\.copy20\\.com$|^www\\.mangacopy\\.com$|^www\\.copy-manga\\.com$|^www\\.copymanga\\.tv$|^www\\.copy2000\\.(site|online)$|^www\\.copy5000\\.com$", "to": "" }
-          ]
+          "re": "^www\\.(2025|2026|2027)copy\\.com$|^www\\.copy20\\.com$|^www\\.mangacopy\\.com$|^www\\.copy-manga\\.com$|^www\\.copymanga\\.tv$|^www\\.copy2000\\.(site|online)$|^www\\.copy5000\\.com$",
+          "to": "www.copy5000.com",
+          "alts": ["www.copy2000.site", "www.copy20.com"]
         }
       ]
     },
     {
       "key": "Komiic",
       "label": "Komiic",
-      "note": "komiic.cc 是同一套前端（data-v 版本号一致），/api/query GraphQL 直连 200；封面 CDN public.komiic.com 被墙，但 public.komiic.cc 有同样的对象路径，直连 200。",
-      "channels": [
+      "note": "源脚本写死 komiic.com（被墙），komiic.cc 是同一套前端（data-v 版本号一致）。封面 CDN public.komiic.com 同样换成 public.komiic.cc。",
+      "map": [
         {
-          "line": "direct",
-          "name": "直连",
-          "hosts": ["komiic.cc"],
-          "map": [
-            { "re": "^(www\\.)?komiic\\.com$", "to": "komiic.cc" },
-            { "re": "^public\\.komiic\\.com$", "to": "public.komiic.cc" }
-          ]
+          "re": "^(www\\.)?komiic\\.com$",
+          "to": "komiic.cc",
+          "alts": ["komiic.com"]
         },
         {
-          "line": "proxy",
-          "name": "VPN",
-          "hosts": ["komiic.com"],
-          "map": [
-            { "re": "^(www\\.)?komiic\\.com$|^komiic\\.cc$", "to": "komiic.com" },
-            { "re": "^public\\.komiic\\.cc$", "to": "public.komiic.com" }
-          ]
+          "re": "^public\\.komiic\\.com$",
+          "to": "public.komiic.cc",
+          "alts": ["public.komiic.com"]
         }
       ]
     },
     {
       "key": "noyacg",
       "label": "NoyACG",
-      "note": "noy1.top 国内可达，图片 img.noy.asia / bucket.noy.asia 也通（403 是防盗链不是墙）。站点强制登录。",
-      "channels": [
-        {
-          "line": "direct",
-          "name": "直连",
-          "hosts": ["noy1.top", "img.noy.asia"],
-          "map": []
-        }
-      ]
+      "note": "noy1.top 国内可达，图片 img.noy.asia / bucket.noy.asia 也通（403 是防盗链不是墙）。站点强制登录。"
     },
     {
       "key": "picacg",
       "label": "PicACG",
-      "note": "picaapi.picacomic.com 无国内可用镜像，必须走 VPN。",
-      "channels": [
-        {
-          "line": "proxy",
-          "name": "VPN",
-          "hosts": ["picaapi.picacomic.com"],
-          "map": []
-        }
-      ]
+      "note": "picaapi.picacomic.com 无国内可用镜像，只能开代理用。不做别名。"
     },
     {
       "key": "ehentai",
       "label": "E-Hentai",
-      "note": "主站与 API 全被墙，必须走 VPN。",
-      "channels": [
-        {
-          "line": "proxy",
-          "name": "VPN",
-          "hosts": ["e-hentai.org", "api.e-hentai.org"],
-          "map": []
-        }
-      ]
+      "note": "主站与 API 全被墙，只能开代理用。不做别名。"
     },
     {
       "key": "htmanga",
       "label": "绅士漫画",
-      "note": "wnacg.com / wnacg.org 均被墙，wnacg.date 只跳到 wmlink.ru 且被 reset，必须走 VPN。",
-      "channels": [
-        {
-          "line": "proxy",
-          "name": "VPN",
-          "hosts": ["www.wnacg.com"],
-          "map": []
-        }
-      ]
+      "note": "wnacg.com / wnacg.org 均被墙，只能开代理用。不做别名。"
     }
   ]
 }

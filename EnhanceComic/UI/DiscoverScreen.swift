@@ -101,7 +101,7 @@ struct DiscoverScreen: View {
                 }
                 ForEach(hub.rows) { row in
                     Chip(
-                        text: row.name + (row.offline ? " · 不通" : ""),
+                        text: row.name,
                         selected: picked == row.key
                     ) {
                         picked = picked == row.key ? "" : row.key
@@ -213,13 +213,13 @@ struct DiscoverScreen: View {
         let q = query
 
         if picked.isEmpty {
-            let targets = Array(pickableSources(rows).prefix(8))
+            let targets = Array(rows.prefix(8))
             if targets.isEmpty {
                 await MainActor.run {
                     works = []
                     sections = []
                     busy = false
-                    error = "没有可用的源。去「我的 → 源管理」点「重新检测」看看哪个源能用。"
+                    error = "没有可用的源。去「我的 → 源管理」看看源列表是不是空的。"
                 }
                 return
             }
@@ -263,7 +263,7 @@ struct DiscoverScreen: View {
                 busy = false
                 if grouped.isEmpty {
                     error = q.isEmpty
-                        ? "这些源这次都没返回内容。可能是线路刚被墙，回「源管理」重新检测一次。"
+                        ? "这些源这次都没返回内容。可能是网站临时抽风，回头再刷一次。"
                         : "换个关键词试试，或者只选一个源搜。"
                 }
             }

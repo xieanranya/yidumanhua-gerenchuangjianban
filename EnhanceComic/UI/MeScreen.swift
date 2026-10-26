@@ -25,8 +25,8 @@ struct MeScreen: View {
                         row(
                             glyph: .list,
                             title: "源管理",
-                            sub: hub.rows.isEmpty ? "读取中…" : "\(hub.rows.count) 个源 · \(routeSummary(hub.rows))",
-                            tone: routeTone(hub.rows)
+                            sub: sourceSummary(hub.rows),
+                            tone: .neutral
                         )
                     }
                     .buttonStyle(.plain)
@@ -172,27 +172,9 @@ struct SourceManagerView: View {
         VStack(spacing: 0) {
             SubHeader(
                 title: "源管理",
-                subtitle: routeSummary(hub.rows),
+                subtitle: sourceSummary(hub.rows),
                 onBack: { dismiss() },
-                trailing: AnyView(
-                    Button {
-                        Task { await hub.reprobe() }
-                    } label: {
-                        HStack(spacing: 5) {
-                            if hub.loading {
-                                ProgressView().scaleEffect(0.6).frame(width: 14, height: 14)
-                            }
-                            Text(hub.loading ? "检测中" : "重新检测")
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundColor(c.accent)
-                        }
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(c.accent.opacity(0.12))
-                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
-                )
+                trailing: nil
             )
             HLine()
 
@@ -217,7 +199,7 @@ struct SourceManagerView: View {
                                         Text(row.name)
                                             .font(.system(size: 13.5, weight: .medium))
                                             .foregroundColor(c.fg)
-                                        Text(row.host.isEmpty ? "未检测" : row.host)
+                                        Text(row.logged ? "已登录" : (row.needLogin ? "登录后才能看内容" : "公开内容可直接看"))
                                             .font(.system(size: 10))
                                             .foregroundColor(c.fg3)
                                             .lineLimit(1)
@@ -228,7 +210,6 @@ struct SourceManagerView: View {
                             }
                             .buttonStyle(.plain)
 
-                            Pill(text: row.label, tone: row.tone)
                             if row.canLogin {
                                 Button {
                                     account = row
@@ -250,8 +231,8 @@ struct SourceManagerView: View {
                     }
 
                     NoteBar(
-                        text: "「直连」= 探测确认这台机器的网络能直接打开；「需 VPN」= 要开代理；"
-                            + "「检测中」= 还没探到；「不通」= 两条线路都打不开，开代理后点右上角重新检测。",
+                        text: "内容直接来自各源自己的站点，某个域名打不开会自动换备用域名重试。"
+                            + "E-Hentai / 绅士漫画 / PicACG 这类站点国内仍需自备代理。",
                         tone: .neutral,
                         inset: false
                     )

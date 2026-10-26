@@ -2,98 +2,38 @@ import SwiftUI
 
 // =========================================================================== 源的界面状态
 
-/// 一个源在界面上的状态：线路、登录、是否探通。
+/// 一个源在界面上的状态。
+///
+/// 只有登录相关——**没有线路这个概念**。域名打不开会自动换别名重试一次，
+/// 用户不需要知道「直连还是 VPN」，就像普通聚合软件那样。
 struct SourceRow: Identifiable, Equatable {
     let key: String
     let name: String
-    let host: String
-    let line: String
     let canLogin: Bool
     let logged: Bool
     let needLogin: Bool
-    /// 探测确认所有通道都不通
-    let offline: Bool
-    /// 探测选中过（false = 还在检测中）
-    let picked: Bool
 
     var id: String { key }
 
-    var label: String {
-        if offline { return "不通" }
-        if !picked { return "检测中" }
-        if line == "direct" { return "直连" }
-        if line == "proxy" { return "需 VPN" }
-        return ""
-    }
-
-    var tone: Tone {
-        if offline { return .bad }
-        if !picked { return .neutral }
-        if line == "direct" { return .ok }
-        if line == "proxy" { return .warn }
-        return .neutral
-    }
-
-    static func build(sources: [[String: Any]], routes: [String: [String: Any]]) -> [SourceRow] {
+    static func build(sources: [[String: Any]]) -> [SourceRow] {
         sources.compactMap { s in
             guard let key = s["key"] as? String, !key.isEmpty else { return nil }
-            let r = routes[key]
-            let line = r?["line"] as? String ?? ""
-            // pick=false 说明 ci/host 还只是线路表里的默认值，不是探测结果。
-            let picked = (r?["pick"] as? Bool) == true
-            let offline = (r?["offline"] as? Bool) == true
             return SourceRow(
                 key: key,
                 name: s["name"] as? String ?? key,
-                host: r?["host"] as? String ?? "",
-                line: line,
                 canLogin: (s["canLogin"] as? Bool) == true,
                 logged: (s["logged"] as? Bool) == true,
-                needLogin: (s["needLogin"] as? Bool) == true,
-                offline: offline,
-                picked: picked
+                needLogin: (s["needLogin"] as? Bool) == true
             )
         }
     }
 }
 
-/// 按状态给一行中文小结，首页/我的页直接用。
-func routeSummary(_ rows: [SourceRow]) -> String {
-    if rows.isEmpty { return "还没有源数据" }
-    let direct = rows.filter { $0.picked && !$0.offline && $0.line == "direct" }.count
-    let proxy = rows.filter { $0.picked && !$0.offline && $0.line == "proxy" }.count
-    let off = rows.filter { $0.offline }.count
-    let probing = rows.filter { !$0.picked && !$0.offline }.count
-    var parts = ["\(direct) 个直连"]
-    if proxy > 0 { parts.append("\(proxy) 个需 VPN") }
-    if off > 0 { parts.append("\(off) 个不通") }
-    if probing > 0 { parts.append("\(probing) 个检测中") }
-    return parts.joined(separator: " · ")
-}
-
-func routeTone(_ rows: [SourceRow]) -> Tone {
-    if rows.isEmpty { return .neutral }
-    let off = rows.filter { $0.offline }.count
-    if off >= rows.count { return .bad }
-    let ok = rows.filter { $0.picked && !$0.offline }.count
-    if ok >= rows.count - off { return .ok }
-    return .warn
-}
-
-/// 选来请求内容的源。
-///
-/// 还没探测过的源也要放进来（排最后）：新装第一次打开时线路表里本来就是直连默认值，
-/// 这时候如果不给请求，发现页会空白，用户会以为整个 App 坏了。
-func pickableSources(_ rows: [SourceRow]) -> [SourceRow] {
-    rows.filter { !$0.offline }
-        .sorted { a, b in rank(a) < rank(b) }
-}
-
-private func rank(_ r: SourceRow) -> Int {
-    if r.picked && r.line == "direct" { return 0 }
-    if r.picked && r.line == "proxy" { return 1 }
-    if r.picked { return 2 }
-    return 3
+/// 源小结：只说数量，不提线路（已经不存在这个概念）。
+func sourceSummary(_ rows: [SourceRow]) -> String {
+    if rows.isEmpty { return "正在读取源列表…" }
+    let logged = rows.filter { $0.logged }.count
+    return logged > 0 ? "\(rows.count) 个源 · \(logged) 个已登录" : "\(rows.count) 个源"
 }
 
 /// 源抛出来的网络错误太生硬（"HTTP 0"），换成用户能照做的说法。
@@ -101,7 +41,7 @@ func friendlyError(_ e: String) -> String {
     let low = e.lowercased()
     if low.contains("status code: 0") || e.contains("HTTP 0")
         || low.contains("请求失败: 0") || low.contains("timed out") || low.contains("timeout") {
-        return "连不上这个源。回「我的 → 源管理」点「重新检测」，看它标「直连」还是「需 VPN」——标「需 VPN」就要先开代理。"
+        return "连不上这个源。先确认网站本身能打开；E-Hentai / 绅士漫画 / PicACG 这类站点国内要开代理。"
     }
     return e
 }
@@ -240,11 +180,10 @@ func groupWorks(_ comics: [ComicRow]) -> [Work] {
 
 // ============================================================================ 源的共享状态
 
-/// 源列表 + 线路状态。首页、发现、我的三个页面共用一份，避免每次切 Tab 都重探。
+/// 源列表。首页、发现、我的三个页面共用一份，避免每次切 Tab 都重新读一遍。
 final class SourceHub: ObservableObject {
     @Published private(set) var rows: [SourceRow] = []
     @Published private(set) var loading = false
-    @Published private(set) var probed = false
 
     static let shared = SourceHub()
 
@@ -255,32 +194,12 @@ final class SourceHub: ObservableObject {
         _ = await SourceEngine.shared.start()
         await refreshRows()
         await MainActor.run { loading = false }
-        if force || !probed {
-            await SourceEngine.shared.probeRoutes(force: force)
-            await refreshRows()
-            await MainActor.run { probed = true }
-        }
-    }
-
-    func reprobe() async {
-        await MainActor.run { loading = true }
-        await SourceEngine.shared.probeRoutes(force: true)
-        await refreshRows()
-        await MainActor.run {
-            loading = false
-            probed = true
-        }
     }
 
     /// 登录后刷新「已登录」标记
     func refreshRows() async {
         let srcs = await SourceEngine.shared.sources()
-        let st = await SourceEngine.shared.routeStatus()
-        var map: [String: [String: Any]] = [:]
-        for r in st {
-            if let k = r["key"] as? String { map[k] = r }
-        }
-        let built = SourceRow.build(sources: srcs, routes: map)
+        let built = SourceRow.build(sources: srcs)
         await MainActor.run { rows = built }
     }
 }

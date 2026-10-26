@@ -48,6 +48,8 @@ data class Book(
     val pageCount: Int = 0,
     val addedAt: Long = System.currentTimeMillis(),
     val lastPage: Int = 0,
+    /** 最后一次退出阅读器的时间，首页「继续阅读」按它排序，没有就跟 addedAt 走。 */
+    val lastReadAt: Long = 0,
     val bookmarks: List<Int> = emptyList(),
     /** Optional user-given name per bookmarked source page index. */
     val bookmarkNames: Map<Int, String> = emptyMap(),
@@ -64,6 +66,7 @@ data class Book(
         put("pageCount", pageCount)
         put("addedAt", addedAt)
         put("lastPage", lastPage)
+        put("lastReadAt", lastReadAt)
         put("bookmarks", JSONArray(bookmarks))
         put("bookmarkNames", JSONObject().apply {
             bookmarkNames.forEach { (page, name) -> put(page.toString(), name) }
@@ -81,6 +84,7 @@ data class Book(
             pageCount = o.optInt("pageCount"),
             addedAt = o.optLong("addedAt"),
             lastPage = o.optInt("lastPage"),
+            lastReadAt = o.optLong("lastReadAt"),
             bookmarks = buildList {
                 val arr = o.optJSONArray("bookmarks") ?: JSONArray()
                 for (i in 0 until arr.length()) add(arr.getInt(i))

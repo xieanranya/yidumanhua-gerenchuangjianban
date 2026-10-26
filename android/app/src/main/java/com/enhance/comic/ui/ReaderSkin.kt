@@ -74,32 +74,33 @@ internal data class Skin(
     val hair: Color,
     val track: Color,
     val accent: Color,
-) {
-    val onAccent: Color get() = Color.White
-}
+    val onAccent: Color = Color.White,
+)
 
 internal val DarkSkin = Skin(
-    chrome = Color(0xFF101014),
-    bar = Color(0xFF16161B),
-    panel = Color(0xFF1A1A20),
-    menu = Color(0xFF232329),
-    fg = Color(0xFFEDEDF2),
-    dim = Color(0xFF8C8C97),
-    hair = Color(0xFF2B2B34),
-    track = Color(0x3DFFFFFF),
-    accent = Color(0xFF4C9DF6),
+    chrome = Color(0xFF000000),
+    bar = Color(0xFF0A0A0A),
+    panel = Color(0xFF0F0F0F),
+    menu = Color(0xFF111111),
+    fg = Color(0xFFFAFAFA),
+    dim = Color(0xFFA3A3A3),
+    hair = Color(0xFF262626),
+    track = Color(0x33FFFFFF),
+    accent = Color(0xFFFF6E9C),
+    onAccent = Color(0xFF14060C),
 )
 
 internal val LightSkin = Skin(
     chrome = Color(0xFFFFFFFF),
     bar = Color(0xFFFFFFFF),
-    panel = Color(0xFFF7F8FA),
+    panel = Color(0xFFF7F7F7),
     menu = Color(0xFFFFFFFF),
-    fg = Color(0xFF2B2B33),
-    dim = Color(0xFF7B7B87),
-    hair = Color(0xFFE4E6EC),
+    fg = Color(0xFF111111),
+    dim = Color(0xFF636363),
+    hair = Color(0xFFE2E2E2),
     track = Color(0x22000000),
-    accent = Color(0xFF3D8BEF),
+    accent = Color(0xFFE0336E),
+    onAccent = Color(0xFFFFFFFF),
 )
 
 internal fun skinFor(light: Boolean): Skin = if (light) LightSkin else DarkSkin
@@ -112,6 +113,8 @@ internal enum class ReaderPanel { NONE, GAP, FILTER, TURN, LAYOUT, BOOKMARK, SET
 internal enum class Glyph {
     GAP, FILTER, TURN, LAYOUT, BOOKMARK, GEAR, LIST, THEME,
     BACK, MORE, CHECK, LEFT, RIGHT, SUN, CROP, SPARK,
+    /** 底部四个 Tab 与通用图标 */
+    HOME, DISCOVER, SHELF, USER, SEARCH,
 }
 
 /**
@@ -268,6 +271,49 @@ internal fun GlyphView(
                 p.lineTo(10.1f * k, 9.4f * k)
                 p.close()
                 drawPath(p, tint, style = Stroke(width = s, join = StrokeJoin.Round))
+            }
+
+            Glyph.HOME -> {
+                path(3.4f, 10.2f, 12f, 3.4f, 20.6f, 10.2f)
+                path(5.9f, 9.2f, 5.9f, 20.4f, 18.1f, 20.4f, 18.1f, 9.2f)
+                line(10.2f, 20.4f, 10.2f, 14.6f)
+                line(13.8f, 20.4f, 13.8f, 14.6f)
+            }
+
+            Glyph.DISCOVER -> {
+                ring(12f, 12f, 8.4f)
+                path(15.6f, 8.4f, 13.2f, 13.2f, 8.4f, 15.6f, 10.8f, 10.8f, close = true)
+            }
+
+            Glyph.SHELF -> {
+                drawRoundRect(
+                    color = tint,
+                    topLeft = pt(3.8f, 4.4f),
+                    size = Size(6.6f * k, 15.2f * k),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(1.2f * k, 1.2f * k),
+                    style = Stroke(width = s),
+                )
+                drawRoundRect(
+                    color = tint,
+                    topLeft = pt(13.6f, 4.4f),
+                    size = Size(6.6f * k, 15.2f * k),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(1.2f * k, 1.2f * k),
+                    style = Stroke(width = s),
+                )
+            }
+
+            Glyph.USER -> {
+                ring(12f, 8.2f, 3.7f)
+                val p = Path()
+                p.moveTo(4.4f * k, 20.6f * k)
+                p.cubicTo(5f * k, 16.4f * k, 8.1f * k, 14.4f * k, 12f * k, 14.4f * k)
+                p.cubicTo(15.9f * k, 14.4f * k, 19f * k, 16.4f * k, 19.6f * k, 20.6f * k)
+                drawPath(p, tint, style = Stroke(width = s, cap = StrokeCap.Round))
+            }
+
+            Glyph.SEARCH -> {
+                ring(10.8f, 10.8f, 6.3f)
+                line(15.4f, 15.4f, 20.2f, 20.2f)
             }
         }
     }

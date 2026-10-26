@@ -92,19 +92,40 @@ class CopyManga extends ComicSource {
         this.refreshAppApi().catch(() => { })
     }
 
+    /// 字符串 → UTF-8 字节（密码里有中文/emoji 时，逐 charCodeAt 会算错）
+    _utf8Bytes(str) {
+        const s = String(str)
+        const out = []
+        for (let i = 0; i < s.length; i++) {
+            let c = s.charCodeAt(i)
+            if (c >= 0xD800 && c <= 0xDBFF && i + 1 < s.length) {
+                const d = s.charCodeAt(i + 1)
+                if (d >= 0xDC00 && d <= 0xDFFF) {
+                    c = 0x10000 + ((c - 0xD800) << 10) + (d - 0xDC00)
+                    i++
+                }
+            }
+            if (c < 0x80) out.push(c)
+            else if (c < 0x800) out.push(0xC0 | (c >> 6), 0x80 | (c & 63))
+            else if (c < 0x10000) out.push(0xE0 | (c >> 12), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63))
+            else out.push(0xF0 | (c >> 18), 0x80 | ((c >> 12) & 63), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63))
+        }
+        return out
+    }
+
     _encodeBase64(str) {
         const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+        const src = this._utf8Bytes(str)
         let result = ''
-        let i = 0
-        while (i < str.length) {
-            const a = str.charCodeAt(i++)
-            const b = i < str.length ? str.charCodeAt(i++) : 0
-            const c = i < str.length ? str.charCodeAt(i++) : 0
+        for (let i = 0; i < src.length; i += 3) {
+            const a = src[i]
+            const b = i + 1 < src.length ? src[i + 1] : 0
+            const c = i + 2 < src.length ? src[i + 2] : 0
             const bitmap = (a << 16) | (b << 8) | c
             result += chars.charAt((bitmap >> 18) & 63)
             result += chars.charAt((bitmap >> 12) & 63)
-            result += (i > str.length + 1) ? '=' : chars.charAt((bitmap >> 6) & 63)
-            result += (i > str.length) ? '=' : chars.charAt(bitmap & 63)
+            result += (i + 1 < src.length) ? chars.charAt((bitmap >> 6) & 63) : '='
+            result += (i + 2 < src.length) ? chars.charAt(bitmap & 63) : '='
         }
         return result
     }
@@ -155,7 +176,7 @@ class CopyManga extends ComicSource {
                         `username=${encodeURIComponent(account)}&password=${encodeURIComponent(base64)}&salt=${salt}&platform=2&version=2025.12.10&source=freeSite`
                     );
 
-                    if (res.status === 200) {
+                    if (res.status === 200 || res.status === 210) {
                         let data = JSON.parse(res.body)
                         if (data.code === 200) {
                             let token = data.results.token
@@ -173,7 +194,10 @@ class CopyManga extends ComicSource {
 
                             return "ok"
                         } else {
-                            throw data.message || '登录失败'
+                            // 站点自己的文案才是有用的：210 是「错误的密码」，
+                            // 以前只看 status===200，210 被当成网络错误，最后统一抛
+                            // 「登录失败」，密码错了也看不出来。
+                            lastError = data.message || '登录失败'
                         }
                     }
                 } catch (e) {
@@ -2108,10 +2132,14 @@ class CopyManga extends ComicSource {
     async refreshAppApi() {
         const url = "https://api.copy-manga.com/api/v3/system/network2?platform=2"
         const res = await fetch(url, { headers: this.webApiHeaders });
+        // 原来这里写 this.settings.base_url = data.results.api[0][0]，等于把「设置项结构」
+        // 覆盖成一个字符串：之后 loadSetting('base_url') 取不到 default，apiUrl 变成
+        // https://undefined，整个源（连登录）一起废掉。节点选择交给 routes.json 的域名别名，
+        // 这里不再动设置。
         if (res.status === 200) {
-            let data = await res.json();
-            this.settings.base_url = data.results.api[0][0];
+            return true
         }
+        return false
     }
 
     async runSpeedTest() {

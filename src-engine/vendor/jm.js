@@ -29,6 +29,15 @@ class JM extends ComicSource {
         "www.cdnntr.cc",
     ];
 
+    // 内置一份域名，刷新失败/还没刷新完时 baseUrl 也是合法的。
+    // 以前这里没有初值，构造函数一取 baseUrl 就是 apiDomains[NaN] → 直接抛异常。
+    static apiDomains = [
+        "www.cdntwice.org",
+        "www.cdnsha.org",
+        "www.cdnaspa.cc",
+        "www.cdnntr.cc",
+    ]
+
     static imageUrl = "https://cdn-msp.jmapinodeudzn.net"
 
     // cache parsed comment replies, format: comicId -> { commentId: [Comment] }
@@ -142,8 +151,13 @@ class JM extends ComicSource {
     }
 
     async init() {
-        if (this.loadSetting('refreshDomainsOnStart')) await this.refreshApiDomains(false)
-        this.refreshImgUrl(false)
+        // 这两个都是「顺手更新一下」的网络动作，绝对不能 await：
+        // 官方域名表放在墙外对象存储，国内拉它要等到超时，登录按钮会一直转圈。
+        // 内置域名已经能用了，刷到了就替换，刷不到就用内置的。
+        if (this.loadSetting('refreshDomainsOnStart')) {
+            this.refreshApiDomains(false).catch(() => { })
+        }
+        this.refreshImgUrl(false).catch(() => { })
     }
 
     /**

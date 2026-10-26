@@ -1086,11 +1086,22 @@ class ComicSource {
      * @returns {any}
      */
     loadSetting(key) {
-        return sendMessage({
+        let v = sendMessage({
             method: 'load_setting',
             key: this.key,
             setting_key: key
         })
+        // 没存过就回落源自己声明的默认值（Venera 官方行为，之前漏了）。
+        // 少了这一步：禁漫的 apiDomain 拿到 null → apiDomains[NaN] → 抛
+        // 「Cannot read properties of undefined (reading 'NaN')」；
+        // 拷贝的 base_url 拿到 null → https://null → 所有请求全挂。
+        // 表现就是「首页能看，但登录一定失败」，而 Node 里因为存过值反而查不出来。
+        if (v === null || v === undefined) {
+            let st = this.settings ? this.settings[key] : undefined
+            if (st && typeof st === 'object' && 'default' in st) return st.default
+            if (st !== undefined && typeof st !== 'object') return st
+        }
+        return v
     }
 
     /**

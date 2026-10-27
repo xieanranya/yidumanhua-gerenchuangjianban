@@ -424,12 +424,32 @@ class SourceEngine private constructor(private val app: Context) {
         JSONObject(prefs.getString("cookies", "{}") ?: "{}")
     }.getOrElse { JSONObject() }
 
+    /**
+     * Cookie 表按 host 存，但源给的 domain 常是 `.e-hentai.org` 这种父域，
+     * 实际请求却发到 forums.e-hentai.org。所以取的时候必须做后缀匹配，
+     * 不然「填了 Cookie 却一个都没带上」，校验永远失败。
+     */
+    private fun hostMatch(host: String, jarKey: String): Boolean {
+        val h = host.lowercase().trim()
+        val k = jarKey.lowercase().trim().trimStart('.')
+        if (h.isEmpty() || k.isEmpty()) return false
+        return h == k || h.endsWith(".$k")
+    }
+
     private fun cookiesFor(host: String): List<Pair<String, String>> {
-        val arr = cookieJar.optJSONArray(host) ?: return emptyList()
         val out = mutableListOf<Pair<String, String>>()
-        for (i in 0 until arr.length()) {
-            val o = arr.optJSONObject(i) ?: continue
-            out += o.optString("name") to o.optString("value")
+        val seen = mutableSetOf<String>()
+        // 更精确的 host 排前面，同名 Cookie 以它为准
+        val keys = cookieJar.keys().asSequence().filter { hostMatch(host, it) }.sortedByDescending { it.length }
+        for (key in keys) {
+            val arr = cookieJar.optJSONArray(key) ?: continue
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                val name = o.optString("name")
+                if (name.isEmpty()) continue
+                if (!seen.add(name)) continue
+                out += name to o.optString("value")
+            }
         }
         return out
     }
@@ -465,12 +485,55 @@ class SourceEngine private constructor(private val app: Context) {
                 }
                 return arr
             }
-            "set", "delete" -> {
-                // 简化：由真实响应里的 Set-Cookie 维护，这里清空或覆盖
-                if (msg.optString("function") == "delete") {
-                    cookieJar.remove(host)
-                    prefs.edit().putString("cookies", cookieJar.toString()).apply()
+            // 源会自己塞 Cookie：E-Hentai 校验前先 setCookies 把 4 个值写进来，
+            // 拷贝登录成功也把 token/name/user_id 写进来。这里以前是空实现，
+            // 等于把这些 Cookie 直接扔掉——表现就是「填对了也提示 Cookie 无效」。
+            "set" -> {
+                val list = msg.optJSONArray("cookies") ?: JSONArray()
+                val put = mutableListOf<JSONObject>()
+                for (i in 0 until list.length()) {
+                    val o = list.optJSONObject(i) ?: continue
+                    val name = o.optString("name")
+                    if (name.isEmpty()) continue
+                    put += JSONObject()
+                        .put("name", name)
+                        .put("value", o.optString("value"))
+                        .put("domain", o.optString("domain").ifBlank { host })
                 }
+                val names = put.map { it.optString("name") }.toSet()
+                val next = JSONArray()
+                val old = cookieJar.optJSONArray(host) ?: JSONArray()
+                for (i in 0 until old.length()) {
+                    val o = old.optJSONObject(i) ?: continue
+                    if (o.optString("name") in names) continue
+                    next.put(o)
+                }
+                put.forEach { next.put(it) }
+                cookieJar.put(host, next)
+                prefs.edit().putString("cookies", cookieJar.toString()).apply()
+                return null
+            }
+            "delete" -> {
+                val namesArr = msg.optJSONArray("names")
+                val drop = if (namesArr != null && namesArr.length() > 0) {
+                    (0 until namesArr.length()).map { namesArr.optString(it) }.toSet()
+                } else emptySet()
+                for (key in cookieJar.keys().asSequence().toList()) {
+                    if (!hostMatch(host, key)) continue
+                    if (drop.isEmpty()) {
+                        cookieJar.remove(key)
+                        continue
+                    }
+                    val old = cookieJar.optJSONArray(key) ?: continue
+                    val next = JSONArray()
+                    var changed = false
+                    for (i in 0 until old.length()) {
+                        val o = old.optJSONObject(i) ?: continue
+                        if (o.optString("name") in drop) changed = true else next.put(o)
+                    }
+                    if (changed) cookieJar.put(key, next)
+                }
+                prefs.edit().putString("cookies", cookieJar.toString()).apply()
                 return null
             }
         }
@@ -483,20 +546,32 @@ class SourceEngine private constructor(private val app: Context) {
         val type = msg.optString("type").lowercase()
         val encode = msg.optBoolean("isEncode", false)
         val value = msg.opt("value")
+        /**
+         * 入参 → 字节。引擎把 Uint8Array 打包成 {"__b64":"..."}，偶尔也会是普通数组。
+         * 只有 String 走 UTF-8，别的必须当真字节看——以前 base64 编码用 optString 取，
+         * 二进制就被当成了字符串，编出来是一串 JSON 文本的 base64（全错）。
+         */
         fun bytes(v: Any?): ByteArray = when (v) {
+            null, JSONObject.NULL -> ByteArray(0)
+            is ByteArray -> v
             is String -> v.toByteArray(Charsets.UTF_8)
-            // 引擎把 Uint8Array 打包成 {"__b64":"..."} 传下来
             is JSONObject -> {
                 val b = v.optString("__b64", "")
-                if (b.isNotEmpty()) Base64.decode(b, Base64.DEFAULT) else v.toString().toByteArray(Charsets.UTF_8)
+                if (b.isNotEmpty()) Base64.decode(b, Base64.NO_WRAP) else v.toString().toByteArray(Charsets.UTF_8)
             }
+            is JSONArray -> ByteArray(v.length()) { i -> v.optInt(i).toByte() }
             else -> v.toString().toByteArray(Charsets.UTF_8)
         }
+        val raw = bytes(value)
         return when (type) {
-            "utf8" -> if (encode) String(bytes(value), Charsets.UTF_8) else value?.toString() ?: ""
-            "gbk" -> if (encode) bytes(value) else String(bytes(value), charset("GBK"))
-            "base64" -> if (encode) Base64.encodeToString(bytes(msg.optString("value")), Base64.NO_WRAP)
-            else Base64.decode(msg.optString("value"), Base64.DEFAULT)
+            // isEncode=true 是「字符串 → 字节」（源拿去做 AES/hmac 的 key），
+            // false 是「字节 → 字符串」。以前两种都返回字符串，禁漫的
+            // convertData 解出来是 {"__b64":"..."} 这层壳，JSON.parse 之后没有 uid，
+            // 于是密码对也报「账号或密码不对」——安卓上禁漫所有接口都受这个影响。
+            "utf8" -> if (encode) raw else String(raw, Charsets.UTF_8)
+            "gbk" -> if (encode) raw else String(raw, charset("GBK"))
+            "base64" -> if (encode) Base64.encodeToString(raw, Base64.NO_WRAP)
+            else Base64.decode(String(raw, Charsets.UTF_8).trim(), Base64.DEFAULT)
             "md5" -> MessageDigest.getInstance("MD5").digest(bytes(value))
             "sha1" -> MessageDigest.getInstance("SHA-1").digest(bytes(value))
             "sha256" -> MessageDigest.getInstance("SHA-256").digest(bytes(value))

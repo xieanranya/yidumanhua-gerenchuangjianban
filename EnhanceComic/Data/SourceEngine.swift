@@ -391,8 +391,31 @@ final class SourceEngine {
         (defaults.dictionary(forKey: "source_cookies") as? [String: [String: String]]) ?? [:]
     }
 
+    /// Cookie 表按 host 存，但源给的 domain 常是 `.e-hentai.org` 这种父域，
+    /// 请求却发到 forums.e-hentai.org，所以取的时候必须做后缀匹配。
+    private func hostMatch(_ host: String, _ jarKey: String) -> Bool {
+        let h = host.lowercased().trimmingCharacters(in: .whitespaces)
+        var k = jarKey.lowercased().trimmingCharacters(in: .whitespaces)
+        while k.hasPrefix(".") { k.removeFirst() }
+        if h.isEmpty || k.isEmpty { return false }
+        return h == k || h.hasSuffix(".\(k)")
+    }
+
     private func cookies(for host: String) -> [String: String] {
-        cookieStore()[host] ?? [:]
+        var out: [String: String] = [:]
+        let store = cookieStore()
+        // 更精确的 host 先写入，父域后写、不覆盖
+        for key in store.keys.sorted(by: { $0.count > $1.count }) where hostMatch(host, key) {
+            for (n, v) in store[key] ?? [:] where out[n] == nil { out[n] = v }
+        }
+        // 站点用 Set-Cookie 下发的（拷贝登录页的 csrftoken 这种）不在我们的表里，
+        // 由 URLSession 存在 HTTPCookieStorage。getCookies 必须能看见它们，
+        // 否则源拿不到 csrftoken，登录 POST 会被站点拒。
+        if let url = URL(string: "https://\(host)/"),
+           let shared = HTTPCookieStorage.shared.cookies(for: url) {
+            for c in shared where out[c.name] == nil { out[c.name] = c.value }
+        }
+        return out
     }
 
     private func saveCookie(host: String, setCookie: String) {
@@ -413,10 +436,56 @@ final class SourceEngine {
         switch msg["function"] as? String ?? "" {
         case "get":
             return cookies(for: host).map { ["name": $0.key, "value": $0.value, "domain": host] }
+        // 源会自己塞 Cookie：E-Hentai 校验前先 setCookies 写入 4 个值，拷贝登录成功
+        // 也写 token/name/user_id。这里以前没有 set 分支，等于把这些 Cookie 丢掉，
+        // 表现就是「Cookie 填对了也提示无效」。
+        case "set":
+            var store = cookieStore()
+            var jar = store[host] ?? [:]
+            for c in (msg["cookies"] as? [[String: Any]]) ?? [] {
+                guard let n = c["name"] as? String, !n.isEmpty else { continue }
+                let v = (c["value"] as? String) ?? ""
+                jar[n] = v
+                // 同时写进 URLSession 的 Cookie 存储：http() 里我们只塞 Cookie 头，
+                // 但重定向/后续请求走的是 URLSession，两边得一致。
+                var d = (c["domain"] as? String) ?? host
+                if d.isEmpty { d = host }
+                if !d.hasPrefix(".") { d = ".\(d)" }
+                let props: [HTTPCookiePropertyKey: Any] = [
+                    .name: n, .value: v, .domain: d, .path: "/",
+                ]
+                if let hc = HTTPCookie(properties: props) {
+                    HTTPCookieStorage.shared.setCookie(hc)
+                }
+            }
+            store[host] = jar
+            defaults.set(store, forKey: "source_cookies")
+            return nil
         case "delete":
             var store = cookieStore()
-            store.removeValue(forKey: host)
+            let names = (msg["names"] as? [Any])?.compactMap { $0 as? String } ?? []
+            for key in store.keys.filter({ hostMatch(host, $0) }) {
+                if names.isEmpty {
+                    store.removeValue(forKey: key)
+                } else {
+                    var jar = store[key] ?? [:]
+                    for n in names { jar.removeValue(forKey: n) }
+                    store[key] = jar
+                }
+            }
             defaults.set(store, forKey: "source_cookies")
+            // URLSession 那份也要清，否则「退出登录」之后请求还带着旧 Cookie
+            if let all = HTTPCookieStorage.shared.cookies {
+                for c in all {
+                    var d = c.domain.lowercased()
+                    while d.hasPrefix(".") { d.removeFirst() }
+                    let hit = hostMatch(host, d) || hostMatch(d, host)
+                    if !hit { continue }
+                    if names.isEmpty || names.contains(c.name) {
+                        HTTPCookieStorage.shared.deleteCookie(c)
+                    }
+                }
+            }
             return nil
         default:
             return nil

@@ -283,7 +283,9 @@ struct DetailView: View {
         .background(c.bg.ignoresSafeArea())
         .toolbar(.hidden, for: .navigationBar)
         .task { await load(0) }
-        .sheet(item: $reading) { payload in
+        // 用 fullScreenCover 而不是 sheet：sheet 是个卡片，顶部会露出上一页，
+        // 看起来就不是全屏阅读（本地阅读器一直是 fullScreenCover）。
+        .fullScreenCover(item: $reading) { payload in
             ReaderSheet(payload: payload)
         }
     }

@@ -2,6 +2,7 @@ package com.enhance.comic.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -1338,6 +1339,8 @@ private fun OnlineReader(urls: List<String>, referer: String?, title: String, on
     val refHeaders = remember(referer) {
         if (referer.isNullOrBlank()) null else mapOf("Referer" to referer)
     }
+    var showBar by remember { mutableStateOf(true) }
+    ImmersiveFullscreen()
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         LazyColumn(Modifier.fillMaxSize()) {
             items(urls.size) { idx ->
@@ -1348,14 +1351,17 @@ private fun OnlineReader(urls: List<String>, referer: String?, title: String, on
                         if (j < urls.size) prefetchPage(urls[j], refHeaders, 0, targetPx)
                     }
                 }
-                RemotePageImage(
-                    url = urls[idx],
-                    headers = refHeaders,
-                    modifier = Modifier.fillMaxWidth().aspectRatio(0.7f),
-                )
+                Box(
+                    Modifier.fillMaxWidth().clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                    ) { showBar = !showBar },
+                ) {
+                    RemotePageImage(url = urls[idx], headers = refHeaders, modifier = Modifier.fillMaxWidth())
+                }
             }
         }
-        ReaderOverlayBar(title, "${urls.size} 页", onBack)
+        if (showBar) ReaderOverlayBar(title, "${urls.size} 页", onBack)
     }
 }
 
@@ -1373,6 +1379,7 @@ private fun OnlineLazyReader(engine: SourceEngine, nav: Nav.ReadLazy, onBack: ()
     val pages = remember { mutableStateMapOf<Int, PageRef>() }
     val fails = remember { mutableStateMapOf<Int, String>() }
     val inflight = remember { mutableSetOf<Int>() }
+    var showBar by remember { mutableStateOf(true) }
 
     fun load(idx: Int) {
         if (idx < 0 || idx >= nav.count) return
@@ -1410,6 +1417,7 @@ private fun OnlineLazyReader(engine: SourceEngine, nav: Nav.ReadLazy, onBack: ()
         }
     }
 
+    ImmersiveFullscreen()
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         LazyColumn(Modifier.fillMaxSize()) {
             items(nav.count) { idx ->
@@ -1419,15 +1427,25 @@ private fun OnlineLazyReader(engine: SourceEngine, nav: Nav.ReadLazy, onBack: ()
                 }
                 val page = pages[idx]
                 val f = fails[idx]
-                Box(Modifier.fillMaxWidth().aspectRatio(0.7f), contentAlignment = Alignment.Center) {
-                    when {
-                        page != null -> RemotePageImage(
+                when {
+                    page != null -> Box(
+                        Modifier.fillMaxWidth().clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                        ) { showBar = !showBar },
+                    ) {
+                        RemotePageImage(
                             url = page.url,
                             headers = page.headers,
                             descramble = page.num,
-                            modifier = Modifier.fillMaxSize(),
+                            modifier = Modifier.fillMaxWidth(),
                         )
-                        f != null -> Text(
+                    }
+                    f != null -> Box(
+                        Modifier.fillMaxWidth().aspectRatio(0.7f),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
                             "第 ${idx + 1} 页没取到：$f\n点这里重试",
                             color = Color(0xCCFFFFFF),
                             fontSize = 12.sp,
@@ -1438,7 +1456,12 @@ private fun OnlineLazyReader(engine: SourceEngine, nav: Nav.ReadLazy, onBack: ()
                                 }
                                 .padding(14.dp),
                         )
-                        else -> CircularProgressIndicator(
+                    }
+                    else -> Box(
+                        Modifier.fillMaxWidth().aspectRatio(0.7f),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        CircularProgressIndicator(
                             color = Color(0xCCFF6E9C),
                             strokeWidth = 2.dp,
                             modifier = Modifier.size(22.dp),
@@ -1447,7 +1470,7 @@ private fun OnlineLazyReader(engine: SourceEngine, nav: Nav.ReadLazy, onBack: ()
                 }
             }
         }
-        ReaderOverlayBar(nav.title, "${pages.size}/${nav.count} 页", onBack)
+        if (showBar) ReaderOverlayBar(nav.title, "${pages.size}/${nav.count} 页", onBack)
     }
 }
 

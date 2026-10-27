@@ -11,7 +11,9 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.CircularProgressIndicator
@@ -256,17 +258,22 @@ fun RemotePageImage(
         if (got != null) bmp = got else failed = true
     }
 
-    Box(modifier = modifier) {
+    // 整页按**图片自己的宽高比**铺满屏幕宽度，页与页之间无缝。
+    // 以前外面套一个写死的 0.7 比例框、图在里面 Fit —— 比例不完全一致就留黑边，
+    // 看起来就是「没全屏、四周有黑框」。
+    Box(modifier = modifier.fillMaxWidth()) {
         val cur = bmp
         when {
             cur != null -> Image(
                 bitmap = cur.asImageBitmap(),
                 contentDescription = null,
-                modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Fit,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(cur.width.toFloat() / maxOf(cur.height, 1)),
+                contentScale = ContentScale.FillWidth,
             )
             failed -> Box(
-                Modifier.fillMaxSize().background(Color(0xFF141414)),
+                Modifier.fillMaxWidth().aspectRatio(0.7f).background(Color(0xFF141414)),
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
@@ -276,11 +283,12 @@ fun RemotePageImage(
                     modifier = Modifier.clickable { attempt++ }.padding(12.dp),
                 )
             }
-            else -> CircularProgressIndicator(
-                color = Color(0xCCFF6E9C),
-                strokeWidth = 2.dp,
-                modifier = Modifier.size(22.dp).align(Alignment.Center),
-            )
+            else -> Box(
+                Modifier.fillMaxWidth().aspectRatio(0.7f),
+                contentAlignment = Alignment.Center,
+            ) {
+                CircularProgressIndicator(color = Color(0xCCFF6E9C), strokeWidth = 2.dp, modifier = Modifier.size(22.dp))
+            }
         }
     }
 }

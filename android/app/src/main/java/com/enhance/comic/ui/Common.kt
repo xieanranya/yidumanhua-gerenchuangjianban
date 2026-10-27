@@ -484,3 +484,42 @@ fun rememberAppVersion(): String {
         }.getOrDefault("")
     }
 }
+
+/**
+ * 阅读页的真正全屏：把状态栏和导航栏一起收起来，从边缘上滑才临时出现。
+ *
+ * 以前阅读页只是「盖住了页面」，系统栏还在 —— 顶上一条时间/电量、底下一条手势条，
+ * 看着就不像全屏阅读。进来隐藏、退出还原，两个阅读器（本地/在线）共用。
+ */
+@Composable
+fun ImmersiveFullscreen(enabled: Boolean = true) {
+    val view = androidx.compose.ui.platform.LocalView.current
+    val context = androidx.compose.ui.platform.LocalContext.current
+    androidx.compose.runtime.DisposableEffect(enabled, view) {
+        val window = (context as? android.app.Activity)?.window
+        if (!enabled || window == null) {
+            onDispose { }
+        } else if (android.os.Build.VERSION.SDK_INT >= 30) {
+            val controller = window.insetsController
+            val oldBehavior = controller?.systemBarsBehavior
+            controller?.systemBarsBehavior =
+                android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            controller?.hide(android.view.WindowInsets.Type.systemBars())
+            onDispose {
+                controller?.show(android.view.WindowInsets.Type.systemBars())
+                if (oldBehavior != null) controller.systemBarsBehavior = oldBehavior
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            val old = view.systemUiVisibility
+            @Suppress("DEPRECATION")
+            view.systemUiVisibility = android.view.View.SYSTEM_UI_FLAG_FULLSCREEN or
+                android.view.View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+                android.view.View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+            onDispose {
+                @Suppress("DEPRECATION")
+                view.systemUiVisibility = old
+            }
+        }
+    }
+}

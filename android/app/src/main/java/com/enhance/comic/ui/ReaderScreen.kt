@@ -80,6 +80,8 @@ fun ReaderScreen(
 ) {
     val context = LocalContext.current as? Activity
     val appContext = LocalContext.current
+    // 本地阅读也走真全屏：状态栏/导航栏收起，边缘上滑才临时出现
+    ImmersiveFullscreen()
 
     var prefs by remember { mutableStateOf(store.readerPrefs) }
     var enhance by remember { mutableStateOf(store.enhance) }

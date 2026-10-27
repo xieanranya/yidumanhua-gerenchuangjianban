@@ -1054,7 +1054,7 @@ struct OnlineReader: View {
         }
     }
 
-    /// 后面两页顺手解出来 + 图先下好，快速往下划的时候不至于每页都等
+    /// 后面两页顺手解出来，并且把图先下好 —— 往下划的时候直接命中缓存
     private func prefetch(_ i: Int) {
         guard payload.lazy != nil else { return }
         for k in 1...2 {
@@ -1062,7 +1062,14 @@ struct OnlineReader: View {
             guard next < total, pages[next] == nil, fails[next] == nil, !loading.contains(next) else {
                 continue
             }
-            Task { await ensure(next) }
+            Task { @MainActor in
+                await ensure(next)
+                guard let p = pages[next] else { return }
+                let width = UIScreen.main.bounds.width * 3
+                _ = await RemoteImageLoader.shared.image(
+                    p.url, headers: p.headers, num: p.num, maxPixel: width
+                )
+            }
         }
     }
 }

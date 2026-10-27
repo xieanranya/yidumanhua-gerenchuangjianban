@@ -33,6 +33,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
@@ -63,6 +64,12 @@ object RemoteImageCache {
 
 /** 同时在飞的图片请求数。太多会把带宽和线程池抢光，反而更慢。 */
 private val imageGate = Semaphore(4)
+
+/** 同一个 URL 只下一次：预取和当前页几乎同时发起，不去重就会白下一遍 */
+private val imageScope = kotlinx.coroutines.CoroutineScope(
+    Dispatchers.IO + kotlinx.coroutines.SupervisorJob()
+)
+private val inflight = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.Deferred<Bitmap?>>()
 
 private fun cacheKey(url: String, descramble: Int, targetWidth: Int): String {
     val bucket = if (targetWidth <= 0) 0 else ((targetWidth + 159) / 160) * 160
@@ -123,56 +130,74 @@ suspend fun loadRemoteBitmap(
     val key = cacheKey(url, descramble, targetWidth)
     RemoteImageCache.get(key)?.let { return it }
 
-    return imageGate.withPermit {
-        RemoteImageCache.get(key)?.let { return@withPermit it }
-        withContext(Dispatchers.IO) {
-            runCatching {
-                val conn = URL(url).openConnection() as HttpURLConnection
-                conn.connectTimeout = 12_000
-                conn.readTimeout = 20_000
-                conn.instanceFollowRedirects = true
-                conn.setRequestProperty(
-                    "User-Agent",
-                    "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 " +
-                            "(KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36"
-                )
-                conn.setRequestProperty("Accept", "image/*,*/*;q=0.8")
-                conn.setRequestProperty("Accept-Language", "zh-CN,zh;q=0.9")
-                var hasReferer = false
-                headers?.forEach { (k, v) ->
-                    val lk = k.lowercase()
-                    if (lk == "referer") hasReferer = true
-                    if (v.isNotBlank() && lk != "accept-encoding" && lk != "connection" && lk != "host") {
-                        conn.setRequestProperty(k, v)
-                    }
-                }
-                // 源没声明 Referer 的（封面/缩略图走不到 onThumbnailLoad 的部分），
-                // 用图片自己的站做 Referer —— 绝大多数防盗链只校验「同站」，这样就不会白板。
-                if (!hasReferer) {
-                    runCatching {
-                        val u = URL(url)
-                        conn.setRequestProperty("Referer", "${u.protocol}://${u.host}/")
-                    }
-                }
-                val bytes = conn.inputStream.use { it.readBytes() }
-                conn.disconnect()
-                if (bytes.isEmpty()) return@runCatching null
-
-                // 先量尺寸，再按需降采样 —— 别把原图整张吃进内存
-                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-                val opts = BitmapFactory.Options().apply {
-                    inSampleSize = sampleSizeFor(bounds.outWidth, bounds.outHeight, targetWidth)
-                    inPreferredConfig = Bitmap.Config.ARGB_8888
-                }
-                val raw = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts) ?: return@runCatching null
-                val fixed = if (descramble > 1) descramble(raw, descramble) else raw
-                RemoteImageCache.put(key, fixed)
-                fixed
-            }.getOrNull()
+    // 已经在下的直接等同一个任务，别重复开连接
+    inflight[key]?.let { return it.await() }
+    val job = imageScope.async(start = kotlinx.coroutines.CoroutineStart.LAZY) {
+        imageGate.withPermit {
+            RemoteImageCache.get(key)?.let { return@withPermit it }
+            withContext(Dispatchers.IO) { downloadAndDecode(url, headers, descramble, targetWidth, key) }
         }
     }
+    val prev = inflight.putIfAbsent(key, job)
+    if (prev != null) { job.cancel(); return prev.await() }
+    job.start()
+    return try {
+        job.await()
+    } finally {
+        inflight.remove(key, job)
+    }
 }
+
+private fun downloadAndDecode(
+    url: String,
+    headers: Map<String, String>?,
+    descramble: Int,
+    targetWidth: Int,
+    key: String,
+): Bitmap? = runCatching {
+    val conn = URL(url).openConnection() as HttpURLConnection
+    conn.connectTimeout = 12_000
+    conn.readTimeout = 20_000
+    conn.instanceFollowRedirects = true
+    conn.setRequestProperty(
+        "User-Agent",
+        "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 " +
+                "(KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36"
+    )
+    conn.setRequestProperty("Accept", "image/*,*/*;q=0.8")
+    conn.setRequestProperty("Accept-Language", "zh-CN,zh;q=0.9")
+    var hasReferer = false
+    headers?.forEach { (k, v) ->
+        val lk = k.lowercase()
+        if (lk == "referer") hasReferer = true
+        if (v.isNotBlank() && lk != "accept-encoding" && lk != "connection" && lk != "host") {
+            conn.setRequestProperty(k, v)
+        }
+    }
+    // 源没声明 Referer 的（封面/缩略图走不到 onThumbnailLoad 的部分），
+    // 用图片自己的站做 Referer —— 绝大多数防盗链只校验「同站」，这样就不会白板。
+    if (!hasReferer) {
+        runCatching {
+            val u = URL(url)
+            conn.setRequestProperty("Referer", "${u.protocol}://${u.host}/")
+        }
+    }
+    val bytes = conn.inputStream.use { it.readBytes() }
+    conn.disconnect()
+    if (bytes.isEmpty()) return@runCatching null
+
+    // 先量尺寸，再按需降采样 —— 别把原图整张吃进内存
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+    val opts = BitmapFactory.Options().apply {
+        inSampleSize = sampleSizeFor(bounds.outWidth, bounds.outHeight, targetWidth)
+        inPreferredConfig = Bitmap.Config.ARGB_8888
+    }
+    val raw = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts) ?: return@runCatching null
+    val fixed = if (descramble > 1) descramble(raw, descramble) else raw
+    RemoteImageCache.put(key, fixed)
+    fixed
+}.getOrNull()
 
 @Composable
 fun RemoteImage(

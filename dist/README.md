@@ -2,11 +2,70 @@
 
 | 平台 | 文件 | 大小 | 要求 |
 |---|---|---|---|
-| Android | `EnhanceComic-Android-v1.9.16.apk` | 14.4 MB | Android 8.0 (API 26) 及以上，直接覆盖安装 |
-| iOS | `EnhanceComic-iOS-v1.9.16.ipa` | 约 1.2 MB | iOS 16.0 及以上，**未签名**，需 Sideloadly / AltStore 签名 |
+| Android | `EnhanceComic-Android-v1.9.17.apk` | 14.4 MB | Android 8.0 (API 26) 及以上，直接覆盖安装 |
+| iOS | `EnhanceComic-iOS-v1.9.17.ipa` | 约 1.2 MB | iOS 16.0 及以上，**未签名**，需 Sideloadly / AltStore 签名 |
 
-版本：**两端统一 `1.9.16 (27)`**。装完在首页/我的页能看到版本号，两端显示一致就是同一版。
+版本：**两端统一 `1.9.17 (28)`**。装完在首页/我的页能看到版本号，两端显示一致就是同一版。
 签名没变（`d5084caf…`），Android 可以直接覆盖安装，书库和登录态都保留。
+
+## v1.9.17：删掉 5 个源、发现页不再干等、E-Hentai 能登录了
+
+### ① 删掉 5 个源
+
+按你的要求去掉了包子漫画、再漫画、comick、漫小肆、GoDa漫画。脚本没删，只是从打包清单里拿掉、
+移到 `src-engine/vendor/_unused/`，以后想要回来加一行就行。现在源列表是 8 个：
+
+| 源 | 国内是否直连 | 登录方式 |
+|---|---|---|
+| 禁漫天堂 | 直连 | 账号密码 |
+| 拷贝漫画 | 直连（别名 copy5000） | 账号密码 |
+| Komiic | 直连（别名 komiic.cc） | 账号密码 |
+| NoyACG | 直连 | 账号密码 |
+| PicACG | 需代理 | 账号密码 |
+| E-Hentai | 需代理 | **Cookie（新增）** |
+| 绅士漫画 | 需代理 | 账号密码 |
+| 18漫画 | 直连 | 免登录 |
+
+### ② 发现页「要等好久」的真因
+
+不是网络慢，是**请求只能排队**。源引擎的 JS 跑在 WebView 里，跟原生之间是同步桥：
+一个源的 HTTP 请求没回来，JS 线程就一直堵在那儿，下一个源的请求根本发不出去。
+再叠上被墙域名「不发 RST、只是没响应」，只能靠超时结束——安卓原来 connect 等 15 秒、
+iOS 等 30 秒，三个被墙源串下来就是一分钟以上。
+
+四处一起改：
+
+1. **流式上屏**：哪个源先回来就先画出来，不再等最慢的那个。第一个源 1～3 秒就有内容，
+   后面的陆续补进来（流式过程中不重排，避免整片格子跳；全部到齐再排一次）。
+2. **连接超时收紧**：安卓 15 秒 → 6 秒、iOS 30 秒 → 15 秒。国内正常站点握手都在 1 秒内，
+   6 秒还连不上的基本可以判定这次不通。
+3. **3 分钟缓存**：首页「热门推荐」和发现页「全部源」都缓存，切 Tab 回来直接显示上次结果，
+   不再重新打一遍网络。改了源开关或顺序会自动作废。
+4. **首页也改成并发**：原来首页是串行 for 循环取前 3 个源，最坏要等 45 秒，现在是并发的。
+
+### ③ E-Hentai 的登录方式本来就是 Cookie
+
+它的源脚本里没有 `account.login(账号, 密码)`，只有 `account.loginWithCookies`
+（4 个字段：`ipb_member_id` / `ipb_pass_hash` / `igneous` / `star`），
+而引擎只会认前一种，所以账号页一直显示「这个源不用登录/只能网页登录」。
+
+现在引擎认两种：`loginMode` 是 `cookie` 的源，账号页会按源声明的字段数长出对应数量的输入框，
+填完调 `loginWithCookies.validate()` 校验。`igneous` / `star` 允许空着。
+
+取法：浏览器登录 e-hentai.org → 开发者工具 → Application → Cookies → 逐个复制。
+校验时会访问它的论坛页，国内要挂代理才能过。
+
+### 两端校验
+
+| 检查项 | 结果 |
+|---|---|
+| Android versionCode / versionName | `28` / `1.9.17` |
+| Android 签名 SHA-256 | `d5084caf…`（未变，可覆盖安装） |
+| Android 网络权限 | `android.permission.INTERNET` 在 |
+| 包内 `bundle.js` md5（两端） | `20da70d5…`，与 `src-engine/bundle.js` 一致 |
+| 包内 `routes.json` md5（两端） | `dad3a912…` |
+| 源数量（引擎实测） | 8 个；E-Hentai `canLogin=true` / `loginMode=cookie` / 4 字段 |
+| iOS CFBundleShortVersionString / CFBundleVersion | `1.9.17` / `28` |
 
 ## v1.9.16：源可以关了、也能调顺序
 

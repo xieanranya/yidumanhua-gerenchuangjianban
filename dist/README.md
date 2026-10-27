@@ -2,11 +2,56 @@
 
 | 平台 | 文件 | 大小 | 要求 |
 |---|---|---|---|
-| Android | `EnhanceComic-Android-v1.9.19.apk` | 14.4 MB | Android 8.0 (API 26) 及以上，直接覆盖安装 |
-| iOS | `EnhanceComic-iOS-v1.9.19.ipa` | 约 1.2 MB | iOS 16.0 及以上，**未签名**，需 Sideloadly / AltStore 签名 |
+| Android | `EnhanceComic-Android-v1.9.20.apk` | 14.4 MB | Android 8.0 (API 26) 及以上，直接覆盖安装 |
+| iOS | `EnhanceComic-iOS-v1.9.20.ipa` | 约 1.2 MB | iOS 16.0 及以上，**未签名**，需 Sideloadly / AltStore 签名 |
 
-版本：**两端统一 `1.9.19 (30)`**。装完在首页/我的页能看到版本号，两端显示一致就是同一版。
+版本：**两端统一 `1.9.20 (31)`**。装完在首页/我的页能看到版本号，两端显示一致就是同一版。
 签名没变（`d5084caf…`），Android 可以直接覆盖安装，书库和登录态都保留。
+
+## v1.9.20：点开一本漫画一直转圈 —— 同步桥把主线程冻住了
+
+### ① 根因：WebView 建在主线程，每次网络等待都在冻 UI
+
+安卓的源引擎是「JS 同步桥」：源脚本里的 `sendMessage({method:'http'})` 会**一直等到请求结束**才返回。
+而 WebView 建在哪个线程，`@JavascriptInterface` 就在哪个线程执行 —— 以前是**主线程**。
+
+于是任何一个源不响应（被墙、镜像挂了、被云防护卡住），主线程就跟着卡：
+connect 6 秒 → read 20 秒 → prelude 换备用域名再试一次 → **最坏 50 秒**。
+这段时间里转圈动画、返回按钮、整个界面全冻住 —— 看起来就是「点一本漫画一直在转圈，根本没法用」。
+
+现在 WebView 和整条同步桥都跑在独立的 `src-engine-js` Looper 线程上：
+
+- 网络再慢也只卡引擎，UI 照常响应，转圈照常转、返回随时能点；
+- 30 秒拿不到详情就给出明确失败，而不是无限等；
+- 万一某些机型不允许在后台线程建 WebView，会自动退回主线程（老行为），不会白屏。
+
+### ② 所有「转圈」都补了收口
+
+详情、章节、搜索、探索首屏、账号页原来是 `busy = true … busy = false` 直线写下来，
+中间任何一个异常都会跳过收尾 —— 那就是「永远在转」。现在全部 `try/finally`，
+并且把异常原因原样显示出来，配一个重试。
+
+### ③ 详情 30 秒硬超时（两端）
+
+原来 45 秒才放弃，现在是 30 秒：没结果就明确说「超时」，可以重试或换源看。
+
+### 验证方式
+
+- 用真引擎 + 真网络跑完整链路（首页 → 点开一本 → 详情 → 章节 → 取图）：
+  拷贝漫画详情 2.2 秒返回；jm 当前镜像 404、mh18 解析失败，**都在 5 秒内返回明确错误**，没有无限等待。
+- 引擎回归四件套（convert / 禁漫登录 / Cookie 登录 / 取图）全绿。
+
+### 两端校验
+
+| 检查项 | 结果 |
+|---|---|
+| Android versionCode / versionName | `31` / `1.9.20` |
+| Android 签名 SHA-256 | `d5084caf…`（未变，可覆盖安装） |
+| Android 网络权限 | `android.permission.INTERNET` 在 |
+| 包内 `bundle.js` md5（两端） | `9dbedade…`，与 `src-engine/bundle.js` 一致 |
+| iOS CFBundleShortVersionString / CFBundleVersion | `1.9.20` / `31` |
+| iOS ATS / 文件共享键 | 均在 |
+| iOS CI | 一次通过 |
 
 ## v1.9.19：登录之后「漫画加载很慢 / 有的根本看不了」
 

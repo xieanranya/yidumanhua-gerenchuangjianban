@@ -2,11 +2,73 @@
 
 | 平台 | 文件 | 大小 | 要求 |
 |---|---|---|---|
-| Android | `EnhanceComic-Android-v1.9.18.apk` | 14.4 MB | Android 8.0 (API 26) 及以上，直接覆盖安装 |
-| iOS | `EnhanceComic-iOS-v1.9.18.ipa` | 约 1.2 MB | iOS 16.0 及以上，**未签名**，需 Sideloadly / AltStore 签名 |
+| Android | `EnhanceComic-Android-v1.9.19.apk` | 14.4 MB | Android 8.0 (API 26) 及以上，直接覆盖安装 |
+| iOS | `EnhanceComic-iOS-v1.9.19.ipa` | 约 1.2 MB | iOS 16.0 及以上，**未签名**，需 Sideloadly / AltStore 签名 |
 
-版本：**两端统一 `1.9.18 (29)`**。装完在首页/我的页能看到版本号，两端显示一致就是同一版。
+版本：**两端统一 `1.9.19 (30)`**。装完在首页/我的页能看到版本号，两端显示一致就是同一版。
 签名没变（`d5084caf…`），Android 可以直接覆盖安装，书库和登录态都保留。
+
+## v1.9.19：登录之后「漫画加载很慢 / 有的根本看不了」
+
+登录通了，卡在看图。查下来是三处硬伤叠两处性能问题，都是「Node 里正常、真机不行」那一类。
+
+### ① 图片的请求头从来没传给图片加载器（Komiic / NoyACG / 绅士漫画 直接 403）
+
+引擎的 `pages()` 原来只要发现地址像 URL，就跳过 `onImageLoad` —— 可「这张图要带什么 Referer」
+**只有** `onImageLoad` 知道：
+
+| 源 | 图片需要的头 | 不给的后果 |
+|---|---|---|
+| Komiic | `referer: komiic.com/comic/{id}/chapter/{ep}/images/all` | 403，图出不来 |
+| NoyACG | `Referer: https://noy1.top/` | 同上 |
+| 绅士漫画 | 站点声明的 headers | 同上 |
+| 禁漫 | UA + `Referer` + `X-Requested-With` | 部分图 403 + 下面第 ③ 条 |
+
+现在只要源声明了 `onImageLoad` 就一律逐页解。这些源的 `onImageLoad` 是纯计算、不发请求，
+逐页解的开销可以忽略，换来的是每张图都带上该带的头。
+
+### ② `pageImage()` 把地址清空
+
+源经常只回 `{headers}` 表示「地址不变」，而旧代码只认 `r.url`，没 url 就当空串 →
+界面显示「服务端没给地址」，整页白。现在沿用原地址。
+
+### ③ 禁漫正文是打乱的，没人还原（整页变成错位横条）
+
+禁漫把一页按高度切成 `num` 段再倒序拼回去。原版 Venera 用 `modifyImage` 传一段 JS 让宿主执行，
+我们的引擎**不执行源里的 JS**（也执行不了，要像素级 ImageData），于是整页就是上下错位的横条，
+看着像图片坏了 —— 这是「有的根本看不了」的主要来源。
+
+现在源改回**纯数据** `descramble: {num}`，两端原生按「第 num-1 段放最上、第 0 段放最下」还原，
+段划分跟原算法一致（最后一段吃掉余数）。
+
+### ④ 安卓看图提速（iOS 本来就降采样，只补了请求头与还原）
+
+| 问题 | 原来 | 现在 |
+|---|---|---|
+| 解码尺寸 | 整张原图（禁漫常见 1200×1700 ≈ 8MB/张） | 按屏幕像素宽降采样，一张约 1/4 内存 |
+| 并发 | 同时几十个请求抢带宽 | 上限 4 |
+| 预取 | 只解当前页 | 当前页 + 后两页 |
+| 缓存 | 24MB（约 3 张就挤爆） | 48MB，key 带「段数/目标宽度」，不会串图 |
+| 失败提示 | 无限菊花 | 「这一页没加载出来 + 点一下重试」 |
+
+### ⑤ 顺带
+
+没显式 Referer 的图（封面、缩略图、书架记录），自动用图片自己站点的 origin 做 Referer —— 
+防盗链绝大多数只校验「同站」，这样封面就不会白板。
+
+### 两端校验
+
+| 检查项 | 结果 |
+|---|---|
+| Android versionCode / versionName | `30` / `1.9.19` |
+| Android 签名 SHA-256 | `d5084caf…`（未变，可覆盖安装） |
+| Android 网络权限 | `android.permission.INTERNET` 在 |
+| 包内 `bundle.js` md5（两端） | `9dbedade…`，与 `src-engine/bundle.js` 一致 |
+| 包内 `routes.json` md5（两端） | `dad3a912…` |
+| iOS CFBundleShortVersionString / CFBundleVersion | `1.9.19` / `30` |
+| iOS ATS / 文件共享键 | 均在 |
+| iOS CI | 一次通过 |
+| 引擎回归 | 4 个脚本全绿（convert 14 项、禁漫登录、Cookie 登录、取图 10 项）|
 
 ## v1.9.18：安卓登录全挂 —— 两个宿主层的 bug
 

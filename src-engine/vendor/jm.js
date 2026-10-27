@@ -912,37 +912,18 @@ class JM extends ComicSource {
                 let remainder = charCode % 10
                 num = remainder * 2 + 2
             }
+            // 禁漫正文是「按高度切成 num 段再倒序排列」的，原版 Venera 用
+            // modifyImage 传一段 JS 让宿主执行，我们的引擎不执行源里的 JS
+            // （也执行不了：要 ImageData 级别的像素操作）。这里改成回纯数据，
+            // 由两端原生按 num 还原——参数一样，效果一样。
+            // 不还原的表现：整页变成上下错位的横条，看着像图片坏了。
             if (num <= 1) {
-                return {}
+                return { headers: this.getImgHeaders() }
             }
             return {
                 headers: this.getImgHeaders(),
-                // gif 图片不需要修改
-                modifyImage: url.endsWith(".gif") ? null : `
-                    let modifyImage = (image) => {
-                        const num = ${num}
-                        let blockSize = Math.floor(image.height / num)
-                        let remainder = image.height % num
-                        let blocks = []
-                        for(let i = 0; i < num; i++) {
-                            let start = i * blockSize
-                            let end = start + blockSize + (i !== num - 1 ? 0 : remainder)
-                            blocks.push({
-                                start: start,
-                                end: end
-                            })
-                        }
-                        let res = Image.empty(image.width, image.height)
-                        let y = 0
-                        for(let i = blocks.length - 1; i >= 0; i--) {
-                            let block = blocks[i]
-                            let currentHeight = block.end - block.start
-                            res.fillImageRangeAt(0, y, image, 0, block.start, image.width, currentHeight)
-                            y += currentHeight
-                        }
-                        return res
-                    }
-                `,
+                // gif 图片不需要还原
+                descramble: url.endsWith(".gif") ? null : { num: num },
             }
         },
         /**

@@ -309,12 +309,13 @@
         await ensureInit(s, key);
         var ep = await s.comic.loadEp(comicId, epId);
         var images = (ep && ep.images) || [];
-        // 有的源 loadEp 只给页码，真地址要逐张过 onImageLoad（E-Hentai 就是）。
-        // 一页一次 API + 1.5 秒，165 页预解要十几分钟——所以这里只登记页数，
-        // 真地址由 pageImage 逐页解（原生按需拉 + 预取）。
+        // 只要源声明了 onImageLoad，就一律逐页解——哪怕 images 已经是真地址。
+        // 因为「每张图要带什么请求头」「这张图是不是被打乱了」只有 onImageLoad 知道：
+        //   Komiic / NoyACG 靠它给 Referer（不给就是 403，图根本出不来）
+        //   禁漫靠它给分块乱序的参数（不给就是错位的横条，看着像文件坏了）
+        // 这些源的 onImageLoad 是纯计算，不发请求，逐页解的开销可以忽略。
         var onLoad = s.comic && s.comic.onImageLoad;
-        var looksLikeUrl = images.length && /^https?:\/\//i.test(String(images[0]));
-        if (typeof onLoad === 'function' && images.length && !looksLikeUrl) {
+        if (typeof onLoad === 'function' && images.length) {
           LAZY[String(key) + '|' + String(comicId) + '|' + String(epId)] = {
             key: key, s: s, comicId: comicId, epId: epId, images: images, nl: null
           };
@@ -324,7 +325,10 @@
       });
     },
 
-    /** 惰性取图：解第 index 页的真地址。原生可以乱序/并发调，nl 只做锦上添花。 */
+    /**
+     * 惰性取图：解第 index 页的真地址 + 请求头 + 是否需要还原打乱。
+     * 原生可以乱序/并发调，nl 只做锦上添花。
+     */
     pageImage: function (key, comicId, epId, index) {
       return run(async function () {
         var s = inst(key);
@@ -338,16 +342,22 @@
         }
         var i = Number(index) || 0;
         if (i < 0 || i >= st.images.length) throw new Error('页码越界: ' + i);
-        var r = await st.s.comic.onImageLoad(st.images[i], comicId, epId, st.nl);
-        var url = '', headers = null;
-        if (r && typeof r === 'object') {
-          url = r.url ? String(r.url) : '';
-          headers = r.headers || null;
-          if (r.nl) st.nl = r.nl;
-        } else if (typeof r === 'string') {
+        var raw = st.images[i];
+        var r = await st.s.comic.onImageLoad(raw, comicId, epId, st.nl);
+        // onImageLoad 常常只回一个 {headers}（不改地址），这时必须沿用原地址。
+        // 以前只认 r.url，没 url 就是空串，界面显示「服务端没给地址」——图全白。
+        var url = typeof raw === 'string' ? String(raw) : '';
+        var headers = null, descramble = null;
+        if (typeof r === 'string') {
           url = r;
+        } else if (r && typeof r === 'object') {
+          if (r.url) url = String(r.url);
+          headers = r.headers || null;
+          // 打乱参数是纯数据（{num:n}），不执行源里的 JS：两端原生直接按参数还原。
+          if (r.descramble && typeof r.descramble === 'object') descramble = r.descramble;
+          if (r.nl) st.nl = r.nl;
         }
-        return { index: i, url: url, headers: headers };
+        return { index: i, url: url, headers: headers, descramble: descramble };
       });
     },
 

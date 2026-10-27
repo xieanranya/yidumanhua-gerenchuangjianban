@@ -2,11 +2,86 @@
 
 | 平台 | 文件 | 大小 | 要求 |
 |---|---|---|---|
-| Android | `EnhanceComic-Android-v1.9.17.apk` | 14.4 MB | Android 8.0 (API 26) 及以上，直接覆盖安装 |
-| iOS | `EnhanceComic-iOS-v1.9.17.ipa` | 约 1.2 MB | iOS 16.0 及以上，**未签名**，需 Sideloadly / AltStore 签名 |
+| Android | `EnhanceComic-Android-v1.9.18.apk` | 14.4 MB | Android 8.0 (API 26) 及以上，直接覆盖安装 |
+| iOS | `EnhanceComic-iOS-v1.9.18.ipa` | 约 1.2 MB | iOS 16.0 及以上，**未签名**，需 Sideloadly / AltStore 签名 |
 
-版本：**两端统一 `1.9.17 (28)`**。装完在首页/我的页能看到版本号，两端显示一致就是同一版。
+版本：**两端统一 `1.9.18 (29)`**。装完在首页/我的页能看到版本号，两端显示一致就是同一版。
 签名没变（`d5084caf…`），Android 可以直接覆盖安装，书库和登录态都保留。
+
+## v1.9.18：安卓登录全挂 —— 两个宿主层的 bug
+
+上一版修的是「引擎拿不到设置项默认值」，这一版查出来的是**宿主实现和引擎契约对不上**。
+共同点是：在 Node 调试宿主里全都正常，装到手机上才炸。
+
+### ① 安卓：`convert` 的 utf8 编解码方向写反了（禁漫必挂）
+
+引擎的 `Convert.encodeUtf8 / decodeUtf8` 约定是：
+
+| 调用 | `isEncode` | 宿主该返回什么 |
+|---|---|---|
+| `encodeUtf8(str)` | `true` | **字节**（拿去当 AES/hmac 的 key） |
+| `decodeUtf8(bytes)` | `false` | **字符串**（把解出来的字节变回文本） |
+
+安卓实现两种都返回了字符串，而且 decode 那次直接 `value.toString()` —— 拿到的是
+`{"__b64":"..."}` 这层壳的 JSON 文本。禁漫**每一个接口**的返回都是
+`AES-ECB(JSON)` → base64，全靠 `decodeUtf8` 还原，于是：
+
+- 解包后 `JSON.parse` 得到的是 `{__b64: "..."}`，里面没有 `uid`；
+- 源脚本据此判定「站点没给 uid」，抛「账号或密码不对」。
+
+也就是说：**密码是对的，但界面永远说密码错**。首页/搜索/详情在安卓上其实也一起是坏的
+（同样走这条路），只是登录时才会看到明确的失败提示。
+
+顺带修了同一函数的 `base64` 编码：原来用 `optString` 取参数，二进制被当成字符串，
+编出来是「JSON 文本的 base64」，全错。
+
+### ② 两端：`cookie set` 是空实现（E-Hentai 必挂）
+
+E-Hentai 的登录是 Cookie 式，它的 `validate()` 流程是：
+
+```
+Network.getCookies(保留非登录 Cookie) → deleteCookies → setCookies(4 个值 + 保留项)
+→ GET forums.e-hentai.org → 页面里有没有用户名节点
+```
+
+而两端宿主的 `cookie` 只实现了 `get` 和 `delete`，`set` 直接 `return null` ——
+相当于**把这 4 个 Cookie 原地扔掉**，后面的 GET 一个 Cookie 都没带，站点返回游客页，
+校验恒为 false。界面提示「Cookie 无效或已过期」，其实 Cookie 是对的。
+
+现在 `set` 真写进本地 Cookie 表，并且加了**父域后缀匹配**：
+源给的 domain 是 `.e-hentai.org`，请求却发到 `forums.e-hentai.org`，
+不匹配就一个都带不上。`delete` 也支持按名字删（`names` 参数）。
+
+### ③ iOS：`getCookies` 看不到 URLSession 自己收的 Cookie
+
+iOS 的 `getCookies` 原来只读我们自己的表，而站点用 `Set-Cookie` 下发的
+（拷贝漫画登录页的 `csrftoken` 就是）都存在 `HTTPCookieStorage` 里 —— 源拿不到 csrftoken，
+登录 POST 会被站点拒。现在两份合并读取，`set` / `delete` 也同步写 `HTTPCookieStorage`。
+
+### ④ 三个回归测试（本地就能复现旧行为）
+
+新增在 `src-engine/node/`，跑法 `node test_xxx.js`，都是「旧实现必须失败、新实现必须成功」：
+
+| 脚本 | 复现的现象 |
+|---|---|
+| `test_convert_contract.js` | 14 条 convert / cookie 契约断言，旧实现 3 条不过 |
+| `test_android_login.js` | 真引擎 + 安卓宿主语义打禁漫登录：旧 → 「账号或密码不对」，新 → 登录成功 |
+| `test_cookie_login.js` | 真引擎 + E-Hentai Cookie 登录：旧 → 「Cookie 无效或已过期」，新 → 登录成功 |
+
+宿主模拟在 `host_android_sim.js`，按 `SourceEngine.kt` 的行为写，改宿主代码时先跑这三个。
+
+### 两端校验
+
+| 检查项 | 结果 |
+|---|---|
+| Android versionCode / versionName | `29` / `1.9.18` |
+| Android 签名 SHA-256 | `d5084caf…`（未变，可覆盖安装） |
+| Android 网络权限 | `android.permission.INTERNET` 在 |
+| 包内 `bundle.js` md5（两端） | `20da70d5…`，与 `src-engine/bundle.js` 一致（这一版没动引擎） |
+| 包内 `routes.json` md5（两端） | `dad3a912…` |
+| iOS CFBundleShortVersionString / CFBundleVersion | `1.9.18` / `29` |
+| iOS ATS / 文件共享键 | 均在 |
+| iOS CI | 一次通过 |
 
 ## v1.9.17：删掉 5 个源、发现页不再干等、E-Hentai 能登录了
 

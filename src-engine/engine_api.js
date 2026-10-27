@@ -43,6 +43,24 @@
 
   var R = null;
 
+  /**
+   * 源的登录方式。
+   * - 'account'：account.login(username, password)，绝大多数源
+   * - 'cookie' ：account.loginWithCookies.fields + validate(values)，E-Hentai 这种
+   * - ''       ：不支持登录
+   */
+  function loginModeOf(acc) {
+    if (!acc) return '';
+    if (acc.login) return 'account';
+    if (acc.loginWithCookies && acc.loginWithCookies.fields) return 'cookie';
+    return '';
+  }
+
+  function loginFieldsOf(acc) {
+    if (loginModeOf(acc) !== 'cookie') return [];
+    return (acc.loginWithCookies.fields || []).map(function (f) { return String(f); });
+  }
+
   function inst(key) {
     if (!loaded[key]) throw new Error('源未加载: ' + key);
     return loaded[key];
@@ -135,17 +153,20 @@
         var s = loaded[k];
         var logged = false;
         try { logged = !!sendMessage({ method: 'load_data', key: k, data_key: '__logged' }); } catch (e) { }
+        var acc = s.account || null;
         return {
           key: k,
           name: s.name || k,
           version: s.version || '',
-          canLogin: !!(s.account && s.account.login),
+          canLogin: !!(acc && (acc.login || acc.loginWithCookies)),
           logged: logged,
-          registerUrl: (s.account && s.account.registerWebsite) || '',
+          loginMode: loginModeOf(acc),
+          loginFields: loginFieldsOf(acc),
+          registerUrl: (acc && acc.registerWebsite) || '',
           canSearch: !!(s.search && (s.search.load || s.search.loadNext)),
           canExplore: !!s.explore,
           canFavorites: !!s.favorites,
-          needLogin: !!(s.account && s.account.login && s.settings && s.settings.loginRequired)
+          needLogin: !!(acc && (acc.login || acc.loginWithCookies) && s.settings && s.settings.loginRequired)
         };
       });
     },
@@ -187,11 +208,13 @@
           version: s.version || '',
           logged: !!saved,
           savedAccount: (saved && saved.account) || '',
-          canLogin: !!(acc && acc.login),
+          canLogin: !!(acc && (acc.login || acc.loginWithCookies)),
+          loginMode: loginModeOf(acc),
+          loginFields: loginFieldsOf(acc),
           canWebLogin: !!(acc && acc.loginWithWebview),
           loginWebUrl: (acc && acc.loginWithWebview && acc.loginWithWebview.url) || '',
           registerUrl: (acc && acc.registerWebsite) || '',
-          needLogin: !!(acc && acc.login && s.settings && s.settings.loginRequired),
+          needLogin: !!(acc && (acc.login || acc.loginWithCookies) && s.settings && s.settings.loginRequired),
           items: items
         };
       });
@@ -328,12 +351,49 @@
       });
     },
 
+    /**
+     * 登录。
+     * - 账号密码源：login(key, 账号, 密码)
+     * - Cookie 源（E-Hentai）：login(key, '["值1","值2",...]', '')，值的顺序同 account.loginFields
+     */
     login: function (key, account, password) {
       return run(async function () {
         var s = inst(key);
-        if (!s.account || !s.account.login) throw new Error('该源不支持登录');
+        var acc = s.account || null;
+        var mode = loginModeOf(acc);
+        if (!mode) throw new Error('该源不支持登录');
         await ensureInit(s, key);
-        var r = await s.account.login(account, password);
+
+        if (mode === 'cookie') {
+          var fields = loginFieldsOf(acc);
+          var vals = [];
+          try {
+            var parsed = JSON.parse(String(account == null ? '' : account));
+            if (Array.isArray(parsed)) vals = parsed.map(function (x) { return String(x == null ? '' : x).trim(); });
+          } catch (e) { vals = []; }
+          if (vals.length !== fields.length) {
+            throw new Error('需要填 ' + fields.length + ' 项（' + fields.join(' / ') + '）');
+          }
+          var empty = fields.filter(function (f, i) { return !vals[i] && f !== 'igneous' && f !== 'star'; });
+          if (empty.length) throw new Error('这几项不能空: ' + empty.join(' / '));
+          var okc = false;
+          try {
+            okc = await acc.loginWithCookies.validate(vals);
+          } catch (e) {
+            throw new Error('Cookie 校验请求失败：' + (e && e.message ? e.message : String(e)));
+          }
+          if (!okc) throw new Error('Cookie 无效或已过期，重新从浏览器复制一次');
+          try {
+            sendMessage({
+              method: 'save_data', key: key, data_key: '__logged',
+              data: { at: Date.now(), account: 'cookies' }
+            });
+          } catch (e) { }
+          return { ok: true, account: 'cookies' };
+        }
+
+        if (!acc.login) throw new Error('该源不支持登录');
+        var r = await acc.login(account, password);
         if (!r) throw new Error('账号或密码不对');
         try {
           sendMessage({

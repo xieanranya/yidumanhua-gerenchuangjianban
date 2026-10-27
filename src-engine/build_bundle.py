@@ -17,14 +17,11 @@ FIXED = [
     ("ehentai", "ehentai.js"),
     ("htmanga", "wnacg.js"),
 ]
-# 可选源：用户可以在「源仓库」里手动添加
+# 可选源：和固定源一样会注册进来（UI 里能开关/排序）
+# 1.9.17 按用户要求删掉 baozi(包子漫画)/zaimanhua(再漫画)/comick/mxs(漫小肆)/goda(GoDa漫画)，
+# 脚本移到 vendor/_unused/，不打包也就不会出现在源列表里。
 EXTRA = [
-    ("baozi", "baozi.js"),
-    ("zaimanhua", "zaimanhua.js"),
-    ("comick", "comick.js"),
     ("mh18", "mh18.js"),
-    ("mxs", "mxs.js"),
-    ("goda", "goda.js"),
 ]
 
 

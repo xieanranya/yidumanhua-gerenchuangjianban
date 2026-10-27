@@ -313,7 +313,9 @@ final class SourceEngine {
         }
         var req = URLRequest(url: url)
         req.httpMethod = (msg["http_method"] as? String ?? "GET").uppercased()
-        req.timeoutInterval = 30
+        // 被墙的域名是「不发 RST、直接没响应」，只能靠超时结束。多个源在 JS 里是排队跑的，
+        // 30 秒 × 几个源 = 发现页要等一分多钟，所以收到 15 秒（正常站点握手都在 1 秒内）。
+        req.timeoutInterval = 15
 
         if let headers = msg["headers"] as? [String: Any] {
             for (k, v) in headers {

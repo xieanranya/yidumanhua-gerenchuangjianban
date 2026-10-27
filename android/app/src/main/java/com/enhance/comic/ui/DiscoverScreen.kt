@@ -45,6 +45,7 @@ import com.enhance.comic.data.SourceEngine
 import com.enhance.comic.data.UiStore
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 
 /**
  * 发现页：搜索 + 选源 + 三列网格。
@@ -104,6 +105,15 @@ fun DiscoverScreen(
 
         if (selected.isBlank()) {
             val targets = onRows.take(8)
+            // 3 分钟内刚拉过同一批源、同一个关键词：直接用上次的结果
+            ExploreCache.get("v|" + query + "|" + targets.joinToString(",") { it.key })?.let { hit ->
+                works = hit.works
+                okCount = hit.ok
+                failures = hit.fail
+                busy = false
+                err = null
+                return@LaunchedEffect
+            }
             if (targets.isEmpty()) {
                 busy = false
                 err = if (rows.isEmpty()) {
@@ -113,11 +123,17 @@ fun DiscoverScreen(
                 }
                 return@LaunchedEffect
             }
-            val hits: List<List<ComicRow>?> = coroutineScope {
-                targets.map { s ->
-                    async {
-                        // 一个源卡住不能拖住整页：20 秒拿不到就先显示其它源的结果
-                        kotlinx.coroutines.withTimeoutOrNull(20_000) {
+            // 流式：哪个源先回来就先上屏，不等最慢的那个。
+            // 引擎的 JS 是同步桥，多个源其实在同一个线程上排队，
+            // 「等全部跑完再画」= 等所有源依次跑完，用户就以为卡死了。
+            val acc = ArrayList<ComicRow>()
+            val cacheSig = "v|" + query + "|" + targets.joinToString(",") { it.key }
+            var done = 0
+            coroutineScope {
+                targets.forEach { s ->
+                    launch {
+                        // 15 秒拿不到就放弃这个源，别让它一个人占着线程
+                        val got = kotlinx.coroutines.withTimeoutOrNull(15_000) {
                             if (query.isBlank()) {
                                 val r = engine.explore(s.key, 0)
                                 if (!r.optBoolean("ok")) {
@@ -140,18 +156,30 @@ fun DiscoverScreen(
                                 }
                             }
                         }
+                        done += 1
+                        if (got != null) {
+                            okCount += 1
+                            acc.addAll(got)
+                            // sort=false：先按到达顺序摆，否则每来一个源整片格子都重排一次，看着在跳
+                            works = groupWorks(acc.toList(), sort = false)
+                            if (busy) busy = false
+                        } else {
+                            failures += 1
+                        }
+                        if (done == targets.size) {
+                            works = groupWorks(acc.toList())
+                            busy = false
+                            ExploreCache.put(cacheSig, works, okCount, failures)
+                            if (works.isEmpty()) {
+                                err = if (query.isNotBlank()) {
+                                    "没有找到「$query」"
+                                } else {
+                                    "这些源这次都没返回内容。可能是网站本身暂时打不开，" +
+                                        "换个时间再试，或者只留几个快的源。"
+                                }
+                            }
+                        }
                     }
-                }.map { it.await() }
-            }
-            okCount = hits.count { it != null }
-            failures = hits.count { it == null }
-            works = groupWorks(hits.filterNotNull().flatten())
-            busy = false
-            if (works.isEmpty()) {
-                err = if (query.isNotBlank()) {
-                    "没有找到「$query」"
-                } else {
-                    "这些源这次都没返回内容。可能是网站本身暂时打不开，换个时间再试，或者只留几个快的源。"
                 }
             }
         } else {
@@ -161,7 +189,7 @@ fun DiscoverScreen(
                 err = "这个源不在列表里了"
                 return@LaunchedEffect
             }
-            val secs = kotlinx.coroutines.withTimeoutOrNull(25_000) {
+            val secs = kotlinx.coroutines.withTimeoutOrNull(18_000) {
                 if (query.isBlank()) {
                     val r = engine.explore(row.key, 0)
                     if (r.optBoolean("ok")) {

@@ -35,6 +35,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.enhance.comic.data.SourceEngine
+import kotlinx.coroutines.launch
 import com.enhance.comic.data.UiStore
 import com.enhance.comic.model.Book
 
@@ -66,21 +67,47 @@ fun HomeScreen(
         runCatching {
             rows = buildRows(engine.sources(), ui.disabledSources(), ui.sourceOrder())
             // 取前三个**开着的**源合起来聚一次，同一本在多个源出现就显示「N 源」
+            val targets = rows.filter { it.enabled }.take(3)
+            val sig = "home|" + targets.joinToString(",") { it.key }
+
+            // 3 分钟内刚拉过同一批源：直接用上次的，切回首页不再等一遍
+            val cached = ExploreCache.get(sig)
+            if (cached != null) {
+                hot = cached.works.take(12)
+                hotLabel = if (cached.ok > 0) "${cached.ok} 个源" else ""
+                hotBusy = false
+                return@runCatching
+            }
+
+            // 流式：哪个源先回来就先上屏，别为最慢的那个把整页按住
             val pool = mutableListOf<ComicRow>()
             var hit = 0
-            for (s in rows.filter { it.enabled }.take(3)) {
-                // 单个源等太久就把首页拖死了，给 15 秒上限然后换下一个
-                val r = kotlinx.coroutines.withTimeoutOrNull(15_000) { engine.explore(s.key, 0) }
-                    ?: continue
-                if (!r.optBoolean("ok")) continue
-                val secs = parseSections(r.optJSONObject("data"), s.key, s.name)
-                val list = secs.flatMap { it.comics }
-                if (list.isEmpty()) continue
-                hit += 1
-                pool += list
+            var done = 0
+            kotlinx.coroutines.coroutineScope {
+                targets.forEach { s ->
+                    launch {
+                        val got = kotlinx.coroutines.withTimeoutOrNull(12_000) { engine.explore(s.key, 0) }
+                        done += 1
+                        if (got != null && got.optBoolean("ok")) {
+                            val secs = parseSections(got.optJSONObject("data"), s.key, s.name)
+                            val list = secs.flatMap { it.comics }
+                            if (list.isNotEmpty()) {
+                                hit += 1
+                                pool += list
+                                hot = groupWorks(pool.toList(), sort = false).take(12)
+                                hotLabel = "$hit 个源"
+                                if (hotBusy) hotBusy = false
+                            }
+                        }
+                        if (done == targets.size) {
+                            hot = groupWorks(pool.toList()).take(12)
+                            hotLabel = if (hit > 0) "$hit 个源" else ""
+                            hotBusy = false
+                            ExploreCache.put(sig, groupWorks(pool.toList()), hit, targets.size - hit)
+                        }
+                    }
+                }
             }
-            hot = groupWorks(pool).take(12)
-            hotLabel = if (hit > 0) "$hit 个源" else ""
         }
         hotBusy = false
     }

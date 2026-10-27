@@ -315,8 +315,11 @@ class SourceEngine private constructor(private val app: Context) {
         rawUrl = normalizeUrl(rawUrl)
         val method = msg.optString("http_method", "GET").uppercase()
         val conn = (URL(rawUrl).openConnection() as HttpURLConnection)
-        conn.connectTimeout = 15_000
-        conn.readTimeout = 30_000
+        // 被墙的域名是「不发 RST、直接没响应」，connects 只能靠超时结束。
+        // 15 秒 × 好几个源串行排队 = 发现页要等一分钟，所以收到 6 秒：
+        // 国内正常的站点握手都在 300ms 内，6 秒还连不上的基本可以判定这次不通。
+        conn.connectTimeout = 6_000
+        conn.readTimeout = 20_000
         conn.requestMethod = method
         conn.instanceFollowRedirects = true
         conn.doInput = true

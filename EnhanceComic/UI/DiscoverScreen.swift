@@ -223,6 +223,18 @@ struct DiscoverScreen: View {
                 }
                 return
             }
+            let cacheSig = "v|" + q + "|" + targets.map { $0.key }.joined(separator: ",")
+            if let hit = ExploreCache.get(cacheSig) {
+                await MainActor.run {
+                    works = hit.works
+                    sections = []
+                    okSources = hit.ok
+                    failedSources = hit.fail
+                    busy = false
+                    error = nil
+                }
+                return
+            }
             var all: [ComicRow] = []
             var ok = 0
             var bad = 0
@@ -230,14 +242,14 @@ struct DiscoverScreen: View {
                 for s in targets {
                     group.addTask {
                         if q.isEmpty {
-                            guard let r = await exploreWithTimeout(key: s.key, seconds: 20),
+                            guard let r = await exploreWithTimeout(key: s.key, seconds: 15),
                                   (r["ok"] as? Bool) == true,
                                   let d = r["data"] as? [String: Any] else { return nil }
                             let secs = ExploreSection.parse(d, sourceKey: s.key, sourceName: s.name)
                             let comics = secs.flatMap { $0.comics }
                             return comics.isEmpty ? nil : comics
                         } else {
-                            guard let r = await searchWithTimeout(key: s.key, keyword: q, seconds: 20),
+                            guard let r = await searchWithTimeout(key: s.key, keyword: q, seconds: 15),
                                   (r["ok"] as? Bool) == true,
                                   let d = r["data"] as? [String: Any] else { return nil }
                             let comics = parseSearchComics(d, sourceKey: s.key, sourceName: s.name)
@@ -245,22 +257,36 @@ struct DiscoverScreen: View {
                         }
                     }
                 }
+                // 哪个源先回来就先上屏，不等最慢的那个
                 for await result in group {
                     if let list = result {
                         all.append(contentsOf: list)
                         ok += 1
+                        let snapshot = groupWorks(all, sort: false)
+                        let okNow = ok
+                        let badNow = bad
+                        await MainActor.run {
+                            works = snapshot
+                            sections = []
+                            okSources = okNow
+                            failedSources = badNow
+                            if busy { busy = false }
+                        }
                     } else {
                         bad += 1
                     }
                 }
             }
             let grouped = groupWorks(all)
+            let okFinal = ok
+            let badFinal = bad
             await MainActor.run {
                 works = grouped
                 sections = []
-                okSources = ok
-                failedSources = bad
+                okSources = okFinal
+                failedSources = badFinal
                 busy = false
+                ExploreCache.put(cacheSig, grouped, okFinal, badFinal)
                 if grouped.isEmpty {
                     error = q.isEmpty
                         ? "这些源这次都没返回内容。可能是网站临时抽风，回头再刷一次。"
@@ -278,7 +304,7 @@ struct DiscoverScreen: View {
             var secs: [ExploreSection] = []
             var fail: String?
             if q.isEmpty {
-                if let r = await exploreWithTimeout(key: row.key, seconds: 25),
+                if let r = await exploreWithTimeout(key: row.key, seconds: 18),
                    (r["ok"] as? Bool) == true,
                    let d = r["data"] as? [String: Any] {
                     secs = ExploreSection.parse(d, sourceKey: row.key, sourceName: row.name)
@@ -286,7 +312,7 @@ struct DiscoverScreen: View {
                     fail = "这个源没返回首页内容。"
                 }
             } else {
-                if let r = await searchWithTimeout(key: row.key, keyword: q, seconds: 25),
+                if let r = await searchWithTimeout(key: row.key, keyword: q, seconds: 18),
                    (r["ok"] as? Bool) == true,
                    let d = r["data"] as? [String: Any] {
                     let comics = parseSearchComics(d, sourceKey: row.key, sourceName: row.name)

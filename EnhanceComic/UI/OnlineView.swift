@@ -534,6 +534,8 @@ struct AccountView: View {
     @State private var busy = false
     @State private var loginError: String?
     @State private var notice: String?
+    /// Cookie 登录（E-Hentai 这类）按源声明的字段数填，比如 ipb_member_id / ipb_pass_hash / igneous / star
+    @State private var cookieVals: [String] = []
 
     private var name: String {
         let n = info["name"] as? String ?? ""
@@ -545,6 +547,8 @@ struct AccountView: View {
     private var registerUrl: String { info["registerUrl"] as? String ?? "" }
     private var webUrl: String { info["loginWebUrl"] as? String ?? "" }
     private var savedAccount: String { info["savedAccount"] as? String ?? "" }
+    private var loginMode: String { info["loginMode"] as? String ?? "" }
+    private var loginFields: [String] { info["loginFields"] as? [String] ?? [] }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -571,7 +575,9 @@ struct AccountView: View {
                     } else if canLogin {
                         if logged {
                             groupCard {
-                                Text(savedAccount.isEmpty ? "（该源未回传账号名）" : savedAccount)
+                                Text(savedAccount == "cookies"
+                                     ? "Cookie 登录"
+                                     : (savedAccount.isEmpty ? "（该源未回传账号名）" : savedAccount))
                                     .font(.system(size: 14, weight: .medium))
                                     .foregroundColor(c.fg)
                                 if let notice {
@@ -588,6 +594,59 @@ struct AccountView: View {
                             .padding(.horizontal, 18)
                             .padding(.top, 12)
                             Text("退出后这个源要重新登录才能搜索和看图。")
+                                .font(.system(size: 10))
+                                .foregroundColor(c.fg3)
+                                .padding(.horizontal, 18)
+                                .padding(.top, 6)
+                        } else if loginMode == "cookie" {
+                            groupCard {
+                                Text("Cookie 登录")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundColor(c.fg)
+                                Text("在浏览器里登录 \(name)，打开开发者工具 → Application → Cookies，" +
+                                     "把下面这 \(loginFields.count) 项逐个复制过来。填一次就不用再管。")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(c.fg2)
+                                    .padding(.top, 4)
+                                ForEach(loginFields.indices, id: \.self) { i in
+                                    HLine().padding(.vertical, 2)
+                                    TextField(loginFields[i], text: Binding(
+                                        get: { i < cookieVals.count ? cookieVals[i] : "" },
+                                        set: { v in
+                                            while cookieVals.count <= i { cookieVals.append("") }
+                                            cookieVals[i] = v
+                                        }
+                                    ))
+                                    .font(.system(size: 12.5))
+                                    .foregroundColor(c.fg)
+                                    .textInputAutocapitalization(.never)
+                                    .autocorrectionDisabled()
+                                    .accentColor(c.accent)
+                                    .padding(.vertical, 6)
+                                }
+                                Text("igneous / star 可以为空（没有就空着）。")
+                                    .font(.system(size: 10))
+                                    .foregroundColor(c.fg3)
+                                    .padding(.top, 6)
+                            }
+                            if let loginError {
+                                NoteBar(text: loginError, tone: .bad, inset: false)
+                                    .padding(.horizontal, 18)
+                                    .padding(.top, 10)
+                            }
+                            HStack(spacing: 9) {
+                                MiniButton(
+                                    text: busy ? "验证中…" : "登录",
+                                    accent: true,
+                                    enabled: !busy && cookieVals.contains { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+                                ) {
+                                    Task { await loginCookies() }
+                                }
+                                Spacer(minLength: 0)
+                            }
+                            .padding(.horizontal, 18)
+                            .padding(.top, 12)
+                            Text("Cookie 只存在本机。E-Hentai 校验时会访问它的论坛页，国内需要代理。")
                                 .font(.system(size: 10))
                                 .foregroundColor(c.fg3)
                                 .padding(.horizontal, 18)
@@ -719,10 +778,14 @@ struct AccountView: View {
         let r = await SourceEngine.shared.account(key: key)
         if (r["ok"] as? Bool) == true, let d = r["data"] as? [String: Any] {
             let saved = d["savedAccount"] as? String ?? ""
+            let fields = d["loginFields"] as? [String] ?? []
             await MainActor.run {
                 info = d
                 loadError = nil
-                if !saved.isEmpty && user.isEmpty { user = saved }
+                if !saved.isEmpty && saved != "cookies" && user.isEmpty { user = saved }
+                if !fields.isEmpty && cookieVals.count != fields.count {
+                    cookieVals = Array(repeating: "", count: fields.count)
+                }
                 loading = false
             }
         } else {
@@ -764,6 +827,30 @@ struct AccountView: View {
                     loginError = "登录失败：" + raw
                 }
             }
+        }
+    }
+
+    private func loginCookies() async {
+        await MainActor.run {
+            busy = true
+            loginError = nil
+            notice = nil
+        }
+        let vals = cookieVals.map { $0.trimmingCharacters(in: .whitespaces) }
+        let json = (try? JSONSerialization.data(withJSONObject: vals)).flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
+        let r = await SourceEngine.shared.login(key: key, user: json, password: "")
+        let ok = (r["ok"] as? Bool) == true
+        let raw = r["error"] as? String ?? "Cookie 无效"
+        await MainActor.run { busy = false }
+        if ok {
+            await MainActor.run {
+                cookieVals = cookieVals.map { _ in "" }
+                notice = "登录成功"
+            }
+            await SourceHub.shared.refreshRows()
+            await refresh()
+        } else {
+            await MainActor.run { loginError = "登录失败：" + raw }
         }
     }
 

@@ -165,7 +165,9 @@ func normalizeTitle(_ raw: String) -> String {
 }
 
 /// 把多个源的列表按标题指纹聚合。顺序按「多少源有这本书」降序、其次首次出现顺序。
-func groupWorks(_ comics: [ComicRow]) -> [Work] {
+/// 跨源聚合。`sort = false` 时不做「多源优先」重排，只按首次出现顺序摆——
+/// 发现页是流式上屏的，每来一个源都重排会让整片格子跳。
+func groupWorks(_ comics: [ComicRow], sort: Bool = true) -> [Work] {
     var index: [String: Int] = [:]
     var out: [Work] = []
     for c in comics {
@@ -188,6 +190,7 @@ func groupWorks(_ comics: [ComicRow]) -> [Work] {
             out.append(Work(norm: norm, title: c.title, cover: c.cover, entries: [entry]))
         }
     }
+    if !sort { return out }
     // 稳定排序：多源优先，其余保持原顺序
     var multi: [Work] = []
     var single: [Work] = []
@@ -256,6 +259,8 @@ final class SourceHub: ObservableObject {
             r.enabled = !next.contains(r.key)
             return r
         }
+        // 源集合变了，首页/发现页那份「刚拉过的结果」就不对应当前这批源了
+        ExploreCache.clear()
     }
 
     /// 把某个源上移（-1）或下移（+1）。
@@ -270,6 +275,7 @@ final class SourceHub: ObservableObject {
         UserDefaults.standard.set(next, forKey: Keys.order)
         let byKey = Dictionary(uniqueKeysWithValues: rows.map { ($0.key, $0) })
         rows = next.compactMap { byKey[$0] }
+        ExploreCache.clear()
     }
 }
 
@@ -303,5 +309,48 @@ func searchWithTimeout(key: String, keyword: String, seconds: Double = 20) async
         let first = await group.next() ?? nil
         group.cancelAll()
         return first
+    }
+}
+
+
+/// 发现页「全部源」的结果缓存。
+///
+/// 引擎的 JS 是同步桥，多个源只能排队跑，一次全量要十几秒。切回发现页时如果 3 分钟内
+/// 刚拉过同一批源、同一个关键词，就直接把上次的结果画出来。只放内存，空结果不缓存。
+enum ExploreCache {
+    struct Hit {
+        let works: [Work]
+        let ok: Int
+        let fail: Int
+    }
+
+    private static let ttl: TimeInterval = 3 * 60
+    private static var sig = ""
+    private static var at: Date = .distantPast
+    private static var works: [Work] = []
+    private static var ok = 0
+    private static var fail = 0
+
+    static func get(_ key: String) -> Hit? {
+        guard !key.isEmpty, key == sig, !works.isEmpty else { return nil }
+        guard Date().timeIntervalSince(at) <= ttl else { return nil }
+        return Hit(works: works, ok: ok, fail: fail)
+    }
+
+    static func put(_ key: String, _ list: [Work], _ okCount: Int, _ failCount: Int) {
+        guard !key.isEmpty, !list.isEmpty else { return }
+        sig = key
+        at = Date()
+        works = list
+        ok = okCount
+        fail = failCount
+    }
+
+    static func clear() {
+        sig = ""
+        at = .distantPast
+        works = []
+        ok = 0
+        fail = 0
     }
 }

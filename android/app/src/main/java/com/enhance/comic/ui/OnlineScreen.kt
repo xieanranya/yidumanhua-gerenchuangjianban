@@ -227,6 +227,8 @@ private fun SourcesScreen(
     fun toggle(key: String, on: Boolean) {
         ui?.setSourceEnabled(key, on)
         rows = rows.map { if (it.key == key) it.copy(enabled = on) else it }
+        // 源集合变了，发现页那份「刚拉过的结果」就不再对应当前这批源，丢掉
+        ExploreCache.clear()
         onChanged()
     }
 
@@ -240,6 +242,7 @@ private fun SourcesScreen(
         }
         ui?.setSourceOrder(reordered)
         rows = reordered.mapNotNull { k -> rows.firstOrNull { it.key == k } }
+        ExploreCache.clear()
         onChanged()
     }
 
@@ -911,6 +914,8 @@ private fun AccountScreen(
     var loginBusy by remember { mutableStateOf(false) }
     var loginErr by remember { mutableStateOf<String?>(null) }
     var notice by remember { mutableStateOf<String?>(null) }
+    // Cookie 登录（E-Hentai 这类）要按源声明的字段数填，比如 ipb_member_id / ipb_pass_hash / igneous / star
+    var cookieVals by remember { mutableStateOf<List<String>>(emptyList()) }
 
     suspend fun refresh() {
         val r = engine.account(key)
@@ -919,7 +924,9 @@ private fun AccountScreen(
             info = d
             err = null
             val saved = d?.optString("savedAccount").orEmpty()
-            if (saved.isNotBlank() && user.isBlank()) user = saved
+            if (saved.isNotBlank() && saved != "cookies" && user.isBlank()) user = saved
+            val n = d?.optJSONArray("loginFields")?.length() ?: 0
+            if (n > 0 && cookieVals.size != n) cookieVals = List(n) { "" }
         } else {
             err = r.optString("error", "账号信息读取失败")
         }
@@ -932,15 +939,26 @@ private fun AccountScreen(
     }
 
     fun doLogin() {
-        if (loginBusy || user.isBlank() || pass.isBlank()) return
+        val cookieMode = info?.optString("loginMode") == "cookie"
+        val canGo = if (cookieMode) {
+            cookieVals.any { it.isNotBlank() }
+        } else {
+            user.isNotBlank() && pass.isNotBlank()
+        }
+        if (loginBusy || !canGo) return
         scope.launch {
             loginBusy = true
             loginErr = null
             notice = null
-            val r = engine.login(key, user.trim(), pass)
+            val r = if (cookieMode) {
+                engine.login(key, org.json.JSONArray(cookieVals.map { it.trim() }).toString(), "")
+            } else {
+                engine.login(key, user.trim(), pass)
+            }
             loginBusy = false
             if (r.optBoolean("ok")) {
                 pass = ""
+                cookieVals = cookieVals.map { "" }
                 notice = "登录成功"
                 refresh()
             } else {
@@ -1002,7 +1020,9 @@ private fun AccountScreen(
                     Text("已登录账号", color = c.fg3, fontSize = 11.sp)
                     Spacer(Modifier.height(5.dp))
                     Text(
-                        info?.optString("savedAccount").orEmpty().ifBlank { "（该源未回传账号名）" },
+                        info?.optString("savedAccount").orEmpty()
+                            .let { if (it == "cookies") "Cookie 登录" else it }
+                            .ifBlank { "（该源未回传账号名）" },
                         color = c.fg,
                         fontSize = 15.sp,
                         fontWeight = FontWeight.Medium,
@@ -1030,6 +1050,71 @@ private fun AccountScreen(
                             }
                         },
                     )
+                } else if (info?.optString("loginMode") == "cookie") {
+                    val fields = (0 until (info?.optJSONArray("loginFields")?.length() ?: 0))
+                        .map { info?.optJSONArray("loginFields")?.optString(it).orEmpty() }
+                    Text("Cookie 登录", color = c.fg3, fontSize = 11.sp)
+                    Spacer(Modifier.height(5.dp))
+                    Text(
+                        "在浏览器里登录 $name，打开开发者工具 → Application → Cookies，" +
+                            "把下面这 ${fields.size} 项逐个复制过来。填一次就不用再管。",
+                        color = c.fg2,
+                        fontSize = 11.5.sp,
+                        lineHeight = 17.sp,
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    fields.forEachIndexed { i, f ->
+                        OutlinedTextField(
+                            value = cookieVals.getOrElse(i) { "" },
+                            onValueChange = { v ->
+                                cookieVals = cookieVals.toMutableList().also {
+                                    while (it.size <= i) it.add("")
+                                    it[i] = v
+                                }
+                            },
+                            label = { Text(f) },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(
+                                imeAction = if (i == fields.size - 1) ImeAction.Done else ImeAction.Next,
+                            ),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        if (i < fields.size - 1) Spacer(Modifier.height(9.dp))
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "igneous / star 可以为空（没有就是空着）。",
+                        color = c.fg3,
+                        fontSize = 10.5.sp,
+                    )
+                    loginErr?.let {
+                        Spacer(Modifier.height(8.dp))
+                        Text(it, color = c.bad, fontSize = 11.5.sp, lineHeight = 17.sp)
+                    }
+                    Spacer(Modifier.height(14.dp))
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .height(46.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(if (!loginBusy && cookieVals.any { it.isNotBlank() }) c.accent else c.chip)
+                            .clickable { doLogin() },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        if (loginBusy) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                CircularProgressIndicator(
+                                    Modifier.size(15.dp),
+                                    strokeWidth = 2.dp,
+                                    color = c.accentInk,
+                                )
+                                Spacer(Modifier.width(9.dp))
+                                Text("验证中…", color = c.accentInk, fontSize = 13.5.sp)
+                            }
+                        } else {
+                            Text("登录", color = c.accentInk, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
                 } else {
                     Text("账号", color = c.fg3, fontSize = 11.sp)
                     Spacer(Modifier.height(6.dp))

@@ -205,22 +205,56 @@ struct HomeScreen: View {
             hotBusy = false
             return
         }
+        let sig = "home|" + targets.map { $0.key }.joined(separator: ",")
+        // 3 分钟内刚拉过同一批源：直接用上次的，切回首页不再等一遍
+        if let cached = ExploreCache.get(sig) {
+            await MainActor.run {
+                hot = Array(cached.works.prefix(12))
+                hotFrom = cached.ok
+                hotBusy = false
+            }
+            return
+        }
         var all: [ComicRow] = []
         var hit = 0
-        for s in targets {
-            guard let r = await exploreWithTimeout(key: s.key, seconds: 15) else { continue }
-            guard (r["ok"] as? Bool) == true, let d = r["data"] as? [String: Any] else { continue }
-            let secs = ExploreSection.parse(d, sourceKey: s.key, sourceName: s.name)
-            let comics = secs.flatMap { $0.comics }
-            if comics.isEmpty { continue }
-            hit += 1
-            all.append(contentsOf: comics)
-        }
-        let works = Array(groupWorks(all).prefix(12))
-        await MainActor.run {
-            hot = works
-            hotFrom = hit
-            hotBusy = false
+        var done = 0
+        // 并发跑，谁先回来谁先上屏（原来是串行 for，三个源最慢要等 45 秒）
+        await withTaskGroup(of: [ComicRow]?.self) { group in
+            for s in targets {
+                group.addTask {
+                    guard let r = await exploreWithTimeout(key: s.key, seconds: 12),
+                          (r["ok"] as? Bool) == true,
+                          let d = r["data"] as? [String: Any] else { return nil }
+                    let comics = ExploreSection.parse(d, sourceKey: s.key, sourceName: s.name)
+                        .flatMap { $0.comics }
+                    return comics.isEmpty ? nil : comics
+                }
+            }
+            for await result in group {
+                done += 1
+                if let list = result {
+                    hit += 1
+                    all.append(contentsOf: list)
+                    let snap = Array(groupWorks(all, sort: false).prefix(12))
+                    let h = hit
+                    await MainActor.run {
+                        hot = snap
+                        hotFrom = h
+                        if hotBusy { hotBusy = false }
+                    }
+                }
+                if done == targets.count {
+                    let finalWorks = groupWorks(all)
+                    let h = hit
+                    let miss = targets.count - hit
+                    await MainActor.run {
+                        hot = Array(finalWorks.prefix(12))
+                        hotFrom = h
+                        hotBusy = false
+                        ExploreCache.put(sig, finalWorks, h, miss)
+                    }
+                }
+            }
         }
     }
 }

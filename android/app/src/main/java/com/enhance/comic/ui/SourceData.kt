@@ -187,8 +187,14 @@ fun ComicRow.asWork(): Work = Work(
     entries = listOf(WorkEntry(sourceKey, sourceName, id, title, cover)),
 )
 
-/** 跨源聚合：多源优先排在前面，其余保持原顺序。 */
-fun groupWorks(list: List<ComicRow>): List<Work> {
+/**
+ * 跨源聚合：多源优先排在前面，其余保持原顺序。
+ *
+ * [sort] = false 时不做「多源优先」重排，只按首次出现顺序摆。
+ * 发现页是流式上屏的，每来一个源都重排一次会让整片格子跳，所以流式过程中传 false，
+ * 全部源到齐后再排一次。
+ */
+fun groupWorks(list: List<ComicRow>, sort: Boolean = true): List<Work> {
     val index = HashMap<String, Int>()
     val out = ArrayList<Work>()
     for (row in list) {
@@ -208,7 +214,52 @@ fun groupWorks(list: List<ComicRow>): List<Work> {
             )
         }
     }
+    if (!sort) return out
     val multi = out.filter { it.entries.size > 1 }.sortedByDescending { it.entries.size }
     val single = out.filter { it.entries.size == 1 }
     return multi + single
+}
+
+/**
+ * 发现页「全部源」的结果缓存。
+ *
+ * 引擎的 JS 是同步桥，多个源只能排队跑，一次全量要十几秒。切回发现页时如果 3 分钟内
+ * 刚拉过同一批源、同一个关键词，就直接把上次的结果画出来，不再重新打一遍网络。
+ * 只放内存（进程退了就没了），空结果不缓存——下次进来还应该再试一次。
+ */
+object ExploreCache {
+    private const val TTL_MS = 3 * 60 * 1000L
+    private const val MAX_ENTRIES = 6
+
+    data class Hit(val works: List<Work>, val ok: Int, val fail: Int)
+
+    private class Entry(val works: List<Work>, val ok: Int, val fail: Int, val at: Long)
+
+    private val slots = LinkedHashMap<String, Entry>()
+
+    @Synchronized
+    fun get(key: String): Hit? {
+        if (key.isBlank()) return null
+        val e = slots[key] ?: return null
+        if (System.currentTimeMillis() - e.at > TTL_MS) {
+            slots.remove(key)
+            return null
+        }
+        if (e.works.isEmpty()) return null
+        return Hit(e.works, e.ok, e.fail)
+    }
+
+    @Synchronized
+    fun put(key: String, list: List<Work>, okCount: Int, failCount: Int) {
+        if (key.isBlank() || list.isEmpty()) return
+        if (!slots.containsKey(key) && slots.size >= MAX_ENTRIES) {
+            slots.keys.firstOrNull()?.let { slots.remove(it) }
+        }
+        slots[key] = Entry(list, okCount, failCount, System.currentTimeMillis())
+    }
+
+    @Synchronized
+    fun clear() {
+        slots.clear()
+    }
 }

@@ -45,7 +45,19 @@ import kotlin.coroutines.resume
 class SourceEngine private constructor(private val app: Context) {
 
     private val main = Handler(Looper.getMainLooper())
-    private var web: WebView? = null
+
+    /**
+     * 引擎自己的 Looper 线程。
+     *
+     * 为什么必须单独开一条：JS 是**同步**桥，源脚本里 `sendMessage({method:'http'})` 会一直等到
+     * 请求结束才返回。WebView 建在哪个线程，`@JavascriptInterface` 就在哪个线程跑 —— 以前建在
+     * 主线程，于是一个不响应的源就能把界面（包括转圈动画、返回按钮）整块冻住几十秒，
+     * 用户看到的就是「点了漫画一直转圈、根本用不了」。
+     * 放到独立线程后，网络再慢也只卡引擎，UI 照常动，超时后还能给出错误提示。
+     */
+    private val engineThread = android.os.HandlerThread("src-engine-js").apply { start() }
+    @Volatile private var handler: Handler = Handler(engineThread.looper)
+    @Volatile private var web: WebView? = null
     private val waiters = ConcurrentHashMap<String, CompletableDeferred<JSONObject>>()
     private val arrived = ConcurrentHashMap<String, JSONObject>()
     private val prefs = app.getSharedPreferences("source_kv", Context.MODE_PRIVATE)
@@ -66,8 +78,7 @@ class SourceEngine private constructor(private val app: Context) {
     // ---------------------------------------------------------------- 生命周期
 
     @SuppressLint("SetJavaScriptEnabled")
-    private fun ensureWeb(): WebView {
-        web?.let { return it }
+    private fun buildWeb(): WebView {
         val w = WebView(app)
         w.settings.javaScriptEnabled = true
         w.settings.domStorageEnabled = true
@@ -81,17 +92,45 @@ class SourceEngine private constructor(private val app: Context) {
             }
         }
         w.loadDataWithBaseURL("https://local.source/", "<html><body></body></html>", "text/html", "utf-8", null)
-        web = w
         return w
     }
 
-    /** 在主线程准备引擎并把域名别名表灌进去；幂等。 */
+    /**
+     * 在引擎线程上建 WebView；万一某些机型不允许后台线程建 WebView，
+     * 就退回主线程（旧行为，能用但会卡 UI），不让整个在线模块直接挂掉。
+     */
+    private fun ensureWeb(): WebView? {
+        web?.let { return it }
+        val w = runCatching { buildWeb() }.getOrNull()
+        if (w != null) {
+            web = w
+            return w
+        }
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            val latch = java.util.concurrent.CountDownLatch(1)
+            var fallback: WebView? = null
+            main.post {
+                handler = main
+                fallback = runCatching { buildWeb() }.getOrNull()
+                latch.countDown()
+            }
+            runCatching { latch.await(6, java.util.concurrent.TimeUnit.SECONDS) }
+            web = fallback
+            return fallback
+        }
+        return null
+    }
+
+    /** 在引擎线程上准备引擎并把域名别名表灌进去；幂等。 */
     suspend fun start(): Boolean {
         if (ready) return true
-        runOnMain { ensureWeb() }
+        val built = suspendCancellableCoroutine<Boolean> { cont ->
+            handler.post { cont.resume(ensureWeb() != null) }
+        }
+        if (!built) return false
         // 等骨架页面加载完，NativeBridge 才挂上
         var waited = 0
-        while (!pageReady && waited < 3000) {
+        while (!pageReady && waited < 4000) {
             kotlinx.coroutines.delay(50)
             waited += 50
         }
@@ -158,7 +197,8 @@ class SourceEngine private constructor(private val app: Context) {
         callAsync("search", JSONObject.quote(key), JSONObject.quote(kw), JSONObject.quote(optsJson), page.toString())
 
     suspend fun detail(key: String, id: String): JSONObject =
-        callAsync("detail", JSONObject.quote(key), JSONObject.quote(id))
+        // 30 秒还没回来就别让用户干等了：转圈一定要能变成「看得懂的失败 + 重试」
+        callAsync("detail", JSONObject.quote(key), JSONObject.quote(id), timeoutMs = 30_000)
 
     suspend fun pages(key: String, comicId: String, epId: String): JSONObject =
         callAsync("pages", JSONObject.quote(key), JSONObject.quote(comicId), JSONObject.quote(epId))
@@ -619,7 +659,7 @@ class SourceEngine private constructor(private val app: Context) {
     }
 
     private suspend fun evalJs(code: String): String = suspendCancellableCoroutine { cont ->
-        main.post {
+        handler.post {
             val w = web
             if (w == null) {
                 cont.resume("null")

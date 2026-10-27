@@ -436,21 +436,28 @@ private fun BrowseScreen(
     LaunchedEffect(tick) {
         busy = true
         err = null
-        runCatching {
-            val a = engine.account(key)
-            if (a.optBoolean("ok")) {
-                val d = a.optJSONObject("data")
-                logged = d?.optBoolean("logged") == true
-                canLogin = d?.optBoolean("canLogin") != false
+        try {
+            runCatching {
+                val a = engine.account(key)
+                if (a.optBoolean("ok")) {
+                    val d = a.optJSONObject("data")
+                    logged = d?.optBoolean("logged") == true
+                    canLogin = d?.optBoolean("canLogin") != false
+                }
             }
-        }
-        val r = engine.explore(key, 0)
-        busy = false
-        if (r.optBoolean("ok")) {
-            sections = parseSections(r.optJSONObject("data"))
-            if (sections.isEmpty()) searched = false
-        } else {
-            err = r.optString("error", "加载失败")
+            val r = engine.explore(key, 0)
+            if (r.optBoolean("ok")) {
+                sections = parseSections(r.optJSONObject("data"))
+                if (sections.isEmpty()) searched = false
+            } else {
+                err = r.optString("error", "加载失败")
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            err = "加载失败：" + (e.message ?: e.toString())
+        } finally {
+            busy = false
         }
     }
 
@@ -459,7 +466,18 @@ private fun BrowseScreen(
         scope.launch {
             busy = true
             err = null
-            val r = engine.search(key, q, "[]", 1)
+            val r = try {
+                engine.search(key, q, "[]", 1)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                busy = false
+                throw e
+            } catch (e: Throwable) {
+                busy = false
+                searched = true
+                sections = emptyList()
+                err = "搜索失败：" + (e.message ?: e.toString())
+                return@launch
+            }
             busy = false
             searched = true
             if (r.optBoolean("ok")) {
@@ -624,10 +642,19 @@ private fun DetailScreen(
 
     LaunchedEffect(id) {
         busy = true
-        val r = engine.detail(key, id)
-        busy = false
-        if (r.optBoolean("ok")) d = r.optJSONObject("data")
-        else err = r.optString("error", "加载失败")
+        err = null
+        try {
+            val r = engine.detail(key, id)
+            if (r.optBoolean("ok")) d = r.optJSONObject("data")
+            else err = r.optString("error", "加载失败")
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            err = "打开失败：" + (e.message ?: e.toString())
+        } finally {
+            // 不管成功、失败还是异常，转圈都必须停 —— 否则就是「点一本漫画一直转」
+            busy = false
+        }
     }
 
     val chapters = remember(d) {
@@ -651,7 +678,16 @@ private fun DetailScreen(
         if (pending != null) return
         pending = cid
         scope.launch {
-            val r = engine.pages(key, id, cid)
+            val r = try {
+                engine.pages(key, id, cid)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                pending = null
+                throw e
+            } catch (e: Throwable) {
+                pending = null
+                err = "这一话打不开：" + (e.message ?: e.toString())
+                return@launch
+            }
             pending = null
             if (!r.optBoolean("ok")) {
                 err = r.optString("error", "取图失败")
@@ -936,8 +972,13 @@ private fun AccountScreen(
 
     LaunchedEffect(key) {
         busy = true
-        refresh()
-        busy = false
+        try {
+            refresh()
+        } catch (e: Throwable) {
+            err = "账号信息读取失败：" + (e.message ?: e.toString())
+        } finally {
+            busy = false
+        }
     }
 
     fun doLogin() {
@@ -1338,7 +1379,13 @@ private fun OnlineLazyReader(engine: SourceEngine, nav: Nav.ReadLazy, onBack: ()
         if (pages.containsKey(idx) || fails.containsKey(idx)) return
         if (!inflight.add(idx)) return
         scope.launch {
-            val r = engine.pageImage(nav.key, nav.comicId, nav.epId, idx)
+            val r = try {
+                engine.pageImage(nav.key, nav.comicId, nav.epId, idx)
+            } catch (e: Throwable) {
+                inflight.remove(idx)
+                fails[idx] = e.message ?: e.toString()
+                return@launch
+            }
             inflight.remove(idx)
             if (r.optBoolean("ok")) {
                 val page = parsePage(r.optJSONObject("data") ?: JSONObject())

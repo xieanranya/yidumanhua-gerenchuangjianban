@@ -136,7 +136,8 @@ final class SourceEngine {
     }
 
     func detail(key: String, id: String) async -> [String: Any] {
-        await asyncCall("detail", [jsLiteral(key), jsLiteral(id)])
+        // 30 秒没回来就给结果：转圈必须能变成「看得懂的失败 + 重试」
+        await asyncCall("detail", [jsLiteral(key), jsLiteral(id)], timeout: 30)
     }
 
     func pages(key: String, comicId: String, epId: String) async -> [String: Any] {

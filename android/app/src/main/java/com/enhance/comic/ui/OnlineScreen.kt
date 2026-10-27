@@ -52,7 +52,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -1260,16 +1262,54 @@ private fun AccountInfoItems(info: JSONObject?) {
     }
 }
 
+/**
+ * 解好的一页：地址 + 源要求的请求头 + 打乱段数。
+ * 三者缺一不可 —— 少了请求头，Komiic/NoyACG/绅士漫画 直接 403；
+ * 少了段数，禁漫整页是错位的横条。
+ */
+private data class PageRef(
+    val url: String,
+    val headers: Map<String, String>,
+    val num: Int,
+)
+
+private fun parsePage(data: JSONObject): PageRef {
+    val url = data.optString("url")
+    val headers = mutableMapOf<String, String>()
+    data.optJSONObject("headers")?.let { h ->
+        for (k in h.keys()) {
+            val v = h.optString(k)
+            if (v.isNotBlank()) headers[k] = v
+        }
+    }
+    val num = data.optJSONObject("descramble")?.optInt("num") ?: 0
+    return PageRef(url, headers, num)
+}
+
 // ==================================================================================== 阅读
 
 @Composable
 private fun OnlineReader(urls: List<String>, referer: String?, title: String, onBack: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    val density = LocalDensity.current
+    val cfg = LocalConfiguration.current
+    val targetPx = with(density) { cfg.screenWidthDp.dp.roundToPx() }
+    val refHeaders = remember(referer) {
+        if (referer.isNullOrBlank()) null else mapOf("Referer" to referer)
+    }
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         LazyColumn(Modifier.fillMaxSize()) {
             items(urls.size) { idx ->
+                // 没声明 onImageLoad 的源走这条：地址是现成的，先预取后两页
+                LaunchedEffect(idx) {
+                    for (k in 1..2) {
+                        val j = idx + k
+                        if (j < urls.size) prefetchPage(urls[j], refHeaders, 0, targetPx)
+                    }
+                }
                 RemotePageImage(
                     url = urls[idx],
-                    referer = referer,
+                    headers = refHeaders,
                     modifier = Modifier.fillMaxWidth().aspectRatio(0.7f),
                 )
             }
@@ -1279,14 +1319,17 @@ private fun OnlineReader(urls: List<String>, referer: String?, title: String, on
 }
 
 /**
- * 惰性阅读：翻到哪解到哪，另加一页预取。
+ * 惰性阅读：翻到哪解到哪，另加两页预取。
  * E-Hentai 这类源一页要一次 API（约 1 秒），一次性预解 165 页会卡十几分钟，
- * 所以 pages() 只回页数，图片地址在真正要显示时才解。
+ * 所以 pages() 只回页数，图片地址（含请求头、打乱参数）在真正要显示时才解。
  */
 @Composable
 private fun OnlineLazyReader(engine: SourceEngine, nav: Nav.ReadLazy, onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
-    val pages = remember { mutableStateMapOf<Int, String>() }
+    val density = LocalDensity.current
+    val cfg = LocalConfiguration.current
+    val targetPx = with(density) { cfg.screenWidthDp.dp.roundToPx() }
+    val pages = remember { mutableStateMapOf<Int, PageRef>() }
     val fails = remember { mutableStateMapOf<Int, String>() }
     val inflight = remember { mutableSetOf<Int>() }
 
@@ -1298,8 +1341,22 @@ private fun OnlineLazyReader(engine: SourceEngine, nav: Nav.ReadLazy, onBack: ()
             val r = engine.pageImage(nav.key, nav.comicId, nav.epId, idx)
             inflight.remove(idx)
             if (r.optBoolean("ok")) {
-                val u = r.optJSONObject("data")?.optString("url").orEmpty()
-                if (u.isBlank()) fails[idx] = "服务端没给地址" else pages[idx] = u
+                val page = parsePage(r.optJSONObject("data") ?: JSONObject())
+                if (page.url.isBlank()) {
+                    fails[idx] = "服务端没给地址"
+                } else {
+                    pages[idx] = page
+                    // 拿到地址就顺手把图和后两页解出来，划下去不再每页等
+                    scope.launch {
+                        prefetchPage(page.url, page.headers, page.num, targetPx)
+                        for (k in 1..2) {
+                            val j = idx + k
+                            if (j < nav.count) {
+                                pages[j]?.let { prefetchPage(it.url, it.headers, it.num, targetPx) }
+                            }
+                        }
+                    }
+                }
             } else {
                 fails[idx] = r.optString("error", "取图失败")
             }
@@ -1313,11 +1370,16 @@ private fun OnlineLazyReader(engine: SourceEngine, nav: Nav.ReadLazy, onBack: ()
                     load(idx)
                     load(idx + 1)
                 }
-                val u = pages[idx]
+                val page = pages[idx]
                 val f = fails[idx]
                 Box(Modifier.fillMaxWidth().aspectRatio(0.7f), contentAlignment = Alignment.Center) {
                     when {
-                        u != null -> RemotePageImage(u, modifier = Modifier.fillMaxSize())
+                        page != null -> RemotePageImage(
+                            url = page.url,
+                            headers = page.headers,
+                            descramble = page.num,
+                            modifier = Modifier.fillMaxSize(),
+                        )
                         f != null -> Text(
                             "第 ${idx + 1} 页没取到：$f\n点这里重试",
                             color = Color(0xCCFFFFFF),

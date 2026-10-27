@@ -57,14 +57,22 @@ final class RemoteImageLoader {
         cache.totalCostLimit = 96 << 20
     }
 
-    func cached(_ url: String, maxPixel: CGFloat) -> UIImage? {
-        cache.object(forKey: Self.cacheKey(url, maxPixel) as NSString)
+    func cached(_ url: String, maxPixel: CGFloat, headers: [String: String]? = nil, num: Int = 0) -> UIImage? {
+        cache.object(forKey: Self.cacheKey(url, maxPixel, headers, num) as NSString)
     }
 
     /// maxPixel 是物理像素上限：图再大也只解到这个尺寸（省内存也省 CPU）
-    func image(_ url: String, referer: String? = nil, maxPixel: CGFloat = 1200) async -> UIImage? {
+    /// - headers: 源在 onImageLoad 里给的请求头（Referer 等），不给会被防盗链拒
+    /// - num: 禁漫的分块乱序段数，>1 时按段倒序还原（不还原整页是错位横条）
+    func image(
+        _ url: String,
+        referer: String? = nil,
+        headers: [String: String]? = nil,
+        num: Int = 0,
+        maxPixel: CGFloat = 1200
+    ) async -> UIImage? {
         guard !url.isEmpty else { return nil }
-        let key = Self.cacheKey(url, maxPixel)
+        let key = Self.cacheKey(url, maxPixel, headers, num)
         if let hit = cache.object(forKey: key as NSString) { return hit }
 
         lock.lock()
@@ -76,6 +84,8 @@ final class RemoteImageLoader {
             await RemoteImageLoader.fetch(
                 url,
                 referer: referer,
+                headers: headers,
+                num: num,
                 maxPixel: maxPixel,
                 session: RemoteImageLoader.session
             )
@@ -95,9 +105,16 @@ final class RemoteImageLoader {
         return image
     }
 
-    private static func cacheKey(_ url: String, _ maxPixel: CGFloat) -> String {
+    private static func cacheKey(
+        _ url: String, _ maxPixel: CGFloat, _ headers: [String: String]? = nil, _ num: Int = 0
+    ) -> String {
         let bucket = Int(max(320, maxPixel) / 320)
-        return "\(bucket)|\(url)"
+        // 请求头会改变拿到的图（Referer 不同可能一个是 403），必须进 key，否则会串图
+        var h = 0
+        if let headers, !headers.isEmpty {
+            for k in headers.keys.sorted() { h = h &* 31 &+ k.hashValue &+ (headers[k]?.hashValue ?? 0) }
+        }
+        return "\(bucket)|\(num)|\(h)|\(url)"
     }
 
     private static func cost(_ image: UIImage) -> Int {
@@ -108,6 +125,8 @@ final class RemoteImageLoader {
     private static func fetch(
         _ url: String,
         referer: String?,
+        headers: [String: String]?,
+        num: Int,
         maxPixel: CGFloat,
         session: URLSession
     ) async -> UIImage? {
@@ -120,16 +139,60 @@ final class RemoteImageLoader {
         if let referer, !referer.isEmpty {
             req.setValue(referer, forHTTPHeaderField: "Referer")
         }
+        // 源自己声明的头优先（它会覆盖上面那几个默认值）
+        var hasReferer = !(referer ?? "").isEmpty
+        if let headers {
+            for (k, v) in headers where !v.isEmpty {
+                let lk = k.lowercased()
+                if lk == "accept-encoding" || lk == "connection" || lk == "host" || lk == "content-length" { continue }
+                if lk == "referer" { hasReferer = true }
+                req.setValue(v, forHTTPHeaderField: k)
+            }
+        }
+        // 没拿到 Referer 的（封面/缩略图），用图片自己的站补一个：防盗链多数只校验同站
+        if !hasReferer {
+            req.setValue("\(u.scheme ?? "https")://\(u.host ?? "")/", forHTTPHeaderField: "Referer")
+        }
         do {
             let (data, resp) = try await session.data(for: req)
             if let http = resp as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
                 return nil
             }
             guard !data.isEmpty else { return nil }
-            return downsample(data, maxPixel: maxPixel)
+            guard let img = downsample(data, maxPixel: maxPixel) else { return nil }
+            return num > 1 ? (descramble(img, num: num) ?? img) : img
         } catch {
             return nil
         }
+    }
+
+    /// 禁漫把一页按高度切成 num 段再倒序拼回去。还原 = 第 num-1 段放最上、第 0 段放最下。
+    /// 段划分与源里 modifyImage 的算法一致（最后一段吃掉余数）。
+    private static func descramble(_ image: UIImage, num: Int) -> UIImage? {
+        guard num > 1, let cg = image.cgImage else { return image }
+        let w = cg.width
+        let h = cg.height
+        let blockSize = h / num
+        guard w > 0, h > 0, blockSize > 0 else { return image }
+        let remainder = h % num
+        let cs = CGColorSpaceCreateDeviceRGB()
+        guard let ctx = CGContext(
+            data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
+            space: cs, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return image }
+
+        var y = 0
+        for i in stride(from: num - 1, through: 0, by: -1) {
+            let start = i * blockSize
+            let end = start + blockSize + (i != num - 1 ? 0 : remainder)
+            let ch = end - start
+            guard ch > 0, let band = cg.cropping(to: CGRect(x: 0, y: start, width: w, height: ch)) else { continue }
+            // CGImage 的 crop 原点是左上；CGContext 的原点在左下，所以要翻一次
+            ctx.draw(band, in: CGRect(x: 0, y: h - y - ch, width: w, height: ch))
+            y += ch
+        }
+        guard let out = ctx.makeImage() else { return image }
+        return UIImage(cgImage: out, scale: image.scale, orientation: image.imageOrientation)
     }
 
     private static func downsample(_ data: Data, maxPixel: CGFloat) -> UIImage? {
@@ -198,6 +261,8 @@ struct OnlinePageImage: View {
     let url: String
     let index: Int
     var referer: String? = nil
+    var headers: [String: String]? = nil
+    var descramble: Int = 0
 
     @Environment(\.displayScale) private var scale
     @State private var image: UIImage?
@@ -237,17 +302,19 @@ struct OnlinePageImage: View {
             }
         }
         .frame(maxWidth: .infinity)
-        .task(id: "\(url)|\(attempt)") { await load() }
+        .task(id: "\(url)|\(descramble)|\(attempt)") { await load() }
     }
 
     private func load() async {
         let width = UIScreen.main.bounds.width * max(scale, 2)
-        if let hit = RemoteImageLoader.shared.cached(url, maxPixel: width) {
+        if let hit = RemoteImageLoader.shared.cached(url, maxPixel: width, headers: headers, num: descramble) {
             image = hit
             failed = false
             return
         }
-        let got = await RemoteImageLoader.shared.image(url, referer: referer, maxPixel: width)
+        let got = await RemoteImageLoader.shared.image(
+            url, referer: referer, headers: headers, num: descramble, maxPixel: width
+        )
         if Task.isCancelled { return }
         image = got
         failed = (got == nil)

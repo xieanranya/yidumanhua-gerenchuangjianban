@@ -902,7 +902,15 @@ struct OnlineReader: View {
 
     @Environment(\.dismiss) private var dismiss
 
-    @State private var urls: [Int: String]
+    /// 一页：地址 + 源要求的请求头 + 打乱段数。
+    /// 少了请求头，Komiic/NoyACG/绅士漫画 直接 403；少了段数，禁漫整页是错位横条。
+    struct PageRef {
+        let url: String
+        var headers: [String: String] = [:]
+        var num: Int = 0
+    }
+
+    @State private var pages: [Int: PageRef]
     @State private var fails: [Int: String] = [:]
     @State private var loading: Set<Int> = []
     @State private var current = 0
@@ -910,9 +918,9 @@ struct OnlineReader: View {
 
     init(payload: ReadingPayload) {
         self.payload = payload
-        var seed: [Int: String] = [:]
-        for (i, u) in payload.urls.enumerated() where !u.isEmpty { seed[i] = u }
-        _urls = State(initialValue: seed)
+        var seed: [Int: PageRef] = [:]
+        for (i, u) in payload.urls.enumerated() where !u.isEmpty { seed[i] = PageRef(url: u) }
+        _pages = State(initialValue: seed)
     }
 
     private var total: Int { payload.lazy?.count ?? payload.urls.count }
@@ -944,9 +952,9 @@ struct OnlineReader: View {
 
     @ViewBuilder
     private func cell(_ i: Int) -> some View {
-        if let u = urls[i] {
-            OnlinePageImage(url: u, index: i)
-                .task(id: u) { prefetch(i) }
+        if let p = pages[i] {
+            OnlinePageImage(url: p.url, index: i, headers: p.headers, descramble: p.num)
+                .task(id: p.url) { prefetch(i) }
         } else if let f = fails[i] {
             failCell(i, f)
         } else {
@@ -1017,7 +1025,7 @@ struct OnlineReader: View {
     @MainActor
     private func ensure(_ i: Int) async {
         guard i >= 0, i < total else { return }
-        guard urls[i] == nil, fails[i] == nil, !loading.contains(i) else { return }
+        guard pages[i] == nil, fails[i] == nil, !loading.contains(i) else { return }
         guard let lz = payload.lazy else { return }
         loading.insert(i)
         let r = await SourceEngine.shared.pageImage(
@@ -1031,19 +1039,30 @@ struct OnlineReader: View {
            let d = r["data"] as? [String: Any],
            let u = d["url"] as? String,
            !u.isEmpty {
-            urls[i] = u
+            var p = PageRef(url: u)
+            if let h = d["headers"] as? [String: Any] {
+                var m: [String: String] = [:]
+                for (k, v) in h { if let s = v as? String, !s.isEmpty { m[k] = s } }
+                p.headers = m
+            }
+            if let ds = d["descramble"] as? [String: Any], let n = ds["num"] as? Int {
+                p.num = n
+            }
+            pages[i] = p
         } else {
             fails[i] = r["error"] as? String ?? "取图失败"
         }
     }
 
-    /// 下一张顺手解出来，快速往下划的时候不至于每页都等
+    /// 后面两页顺手解出来 + 图先下好，快速往下划的时候不至于每页都等
     private func prefetch(_ i: Int) {
         guard payload.lazy != nil else { return }
-        let next = i + 1
-        guard next < total, urls[next] == nil, fails[next] == nil, !loading.contains(next) else {
-            return
+        for k in 1...2 {
+            let next = i + k
+            guard next < total, pages[next] == nil, fails[next] == nil, !loading.contains(next) else {
+                continue
+            }
+            Task { await ensure(next) }
         }
-        Task { await ensure(next) }
     }
 }

@@ -1,5 +1,6 @@
 package com.enhance.comic.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -17,6 +18,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -40,8 +42,10 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -57,16 +61,20 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.enhance.comic.data.OnlineRecord
 import com.enhance.comic.data.SourceEngine
 import com.enhance.comic.data.UiStore
+import com.enhance.comic.model.EnhanceSettings
+import com.enhance.comic.model.ReaderPrefs
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
@@ -90,6 +98,9 @@ private sealed class Nav {
         val count: Int,
         val title: String,
         val back: Nav,
+        /** 整本目录（id to 标题）—— 阅读时能直接换话，不用退出去重进 */
+        val chapters: List<Pair<String, String>> = emptyList(),
+        val index: Int = 0,
     ) : Nav()
     /** 独立的账号页：登录 / 退出 / 看账号信息，退出后回到来的那一页 */
     data class Account(val key: String, val name: String, val back: Nav) : Nav()
@@ -106,6 +117,11 @@ fun OnlineSourceScreen(
     startTitle: String = "",
     startAlts: List<WorkEntry> = emptyList(),
     uiStore: UiStore? = null,
+    /** 阅读器设置：和本地阅读器共用同一份，在线阅读也能调 */
+    prefs: ReaderPrefs = ReaderPrefs(),
+    enhance: EnhanceSettings = EnhanceSettings(),
+    onPrefs: (ReaderPrefs) -> Unit = {},
+    onEnhance: (EnhanceSettings) -> Unit = {},
     onRecordsChanged: () -> Unit = {},
     onSourcesChanged: () -> Unit = {},
     onBack: () -> Unit,
@@ -153,10 +169,12 @@ fun OnlineSourceScreen(
             onAccount = { name ->
                 nav = Nav.Account(n.key, name, Nav.Info(n.key, n.id, n.title, n.alts))
             },
-            onRead = { comicId, epId, data, t ->
+            onRead = { comicId, epId, data, t, chapters, index ->
                 val back = Nav.Info(n.key, n.id, n.title, n.alts)
                 nav = if (data.optBoolean("lazy")) {
-                    Nav.ReadLazy(n.key, comicId, epId, data.optInt("count"), t, back)
+                    Nav.ReadLazy(
+                        n.key, comicId, epId, data.optInt("count"), t, back, chapters, index,
+                    )
                 } else {
                     Nav.Read(imageUrls(data), null, t, back)
                 }
@@ -174,9 +192,34 @@ fun OnlineSourceScreen(
             onBack = { nav = n.back },
         )
 
-        is Nav.Read -> OnlineReader(n.urls, n.referer, n.title, onBack = { nav = n.back })
+        is Nav.Read -> OnlineReader(
+            urls = n.urls,
+            referer = n.referer,
+            title = n.title,
+            prefs = prefs,
+            enhance = enhance,
+            onPrefs = onPrefs,
+            onEnhance = onEnhance,
+            onBack = { nav = n.back },
+        )
 
-        is Nav.ReadLazy -> OnlineLazyReader(engine, n, onBack = { nav = n.back })
+        // 换话时 epId 变了，用 key() 让阅读器整个重建（页缓存、滚动位置都归零）
+        is Nav.ReadLazy -> key(n.epId) {
+            OnlineLazyReader(
+                engine = engine,
+                nav = n,
+                prefs = prefs,
+                enhance = enhance,
+                onPrefs = onPrefs,
+                onEnhance = onEnhance,
+                onPickChapter = { i ->
+                    n.chapters.getOrNull(i)?.let { (id, t) ->
+                        nav = n.copy(epId = id, title = t, index = i)
+                    }
+                },
+                onBack = { nav = n.back },
+            )
+        }
     }
 }
 
@@ -616,7 +659,7 @@ private fun DetailScreen(
     onBack: () -> Unit,
     onSwitch: (WorkEntry) -> Unit = {},
     onAccount: (String) -> Unit,
-    onRead: (String, String, JSONObject, String) -> Unit,
+    onRead: (String, String, JSONObject, String, List<Pair<String, String>>, Int) -> Unit,
     onRemember: (OnlineRecord) -> Unit,
 ) {
     val c = LocalColors.current
@@ -716,7 +759,7 @@ private fun DetailScreen(
                     at = System.currentTimeMillis(),
                 ),
             )
-            onRead(id, cid, data, epTitle)
+            onRead(id, cid, data, epTitle, chapters.map { it.id to it.title }, idx)
         }
     }
 
@@ -1363,8 +1406,16 @@ private fun parsePage(data: JSONObject): PageRef {
 // ==================================================================================== 阅读
 
 @Composable
-private fun OnlineReader(urls: List<String>, referer: String?, title: String, onBack: () -> Unit) {
-    val scope = rememberCoroutineScope()
+private fun OnlineReader(
+    urls: List<String>,
+    referer: String?,
+    title: String,
+    prefs: ReaderPrefs,
+    enhance: EnhanceSettings,
+    onPrefs: (ReaderPrefs) -> Unit,
+    onEnhance: (EnhanceSettings) -> Unit,
+    onBack: () -> Unit,
+) {
     val density = LocalDensity.current
     val cfg = LocalConfiguration.current
     val targetPx = with(density) { cfg.screenWidthDp.dp.roundToPx() }
@@ -1372,9 +1423,23 @@ private fun OnlineReader(urls: List<String>, referer: String?, title: String, on
         if (referer.isNullOrBlank()) null else mapOf("Referer" to referer)
     }
     var showBar by remember { mutableStateOf(true) }
+    var panel by remember { mutableStateOf(ReaderPanel.NONE) }
+    ReaderSkinEffects(prefs)
+    OnlineReaderBars(
+        showBar = showBar,
+        onShowBar = { showBar = it },
+        panel = panel,
+        onPanel = { panel = it },
+        onBack = onBack,
+    )
+    val gap = pageGap(prefs)
+
     ImmersiveFullscreen()
-    Box(Modifier.fillMaxSize().background(Color.Black)) {
-        LazyColumn(Modifier.fillMaxSize()) {
+    Box(Modifier.fillMaxSize().background(readerBg(prefs.background))) {
+        LazyColumn(
+            Modifier.fillMaxSize(),
+            verticalArrangement = if (gap > 0.dp) Arrangement.spacedBy(gap) else Arrangement.Top,
+        ) {
             items(urls.size) { idx ->
                 // 没声明 onImageLoad 的源走这条：地址是现成的，先预取后两页
                 LaunchedEffect(idx) {
@@ -1387,13 +1452,40 @@ private fun OnlineReader(urls: List<String>, referer: String?, title: String, on
                     Modifier.fillMaxWidth().clickable(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null,
-                    ) { showBar = !showBar },
+                    ) {
+                        // 面板开着时先收面板，别一下就消失
+                        if (panel != ReaderPanel.NONE) panel = ReaderPanel.NONE else showBar = !showBar
+                    },
                 ) {
-                    RemotePageImage(url = urls[idx], headers = refHeaders, modifier = Modifier.fillMaxWidth())
+                    RemotePageImage(
+                        url = urls[idx],
+                        headers = refHeaders,
+                        prefs = prefs,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
                 }
             }
         }
-        if (showBar) ReaderOverlayBar(title, "${urls.size} 页", onBack)
+        if (showBar) {
+            ReaderTopChrome(
+                title = title,
+                pageLabel = "${urls.size} 页",
+                prefs = prefs,
+                enhance = enhance,
+                panel = panel,
+                marked = false,
+                hasChapters = false,
+                onPanel = { panel = it },
+                onBack = onBack,
+                onMenu = { showBar = false },
+                onOpenChapters = {},
+                onAddBookmark = {},
+                onShowBookmarks = {},
+                onPrefs = onPrefs,
+                onEnhance = onEnhance,
+                online = true,
+            )
+        }
     }
 }
 
@@ -1403,7 +1495,17 @@ private fun OnlineReader(urls: List<String>, referer: String?, title: String, on
  * 所以 pages() 只回页数，图片地址（含请求头、打乱参数）在真正要显示时才解。
  */
 @Composable
-private fun OnlineLazyReader(engine: SourceEngine, nav: Nav.ReadLazy, onBack: () -> Unit) {
+private fun OnlineLazyReader(
+    engine: SourceEngine,
+    nav: Nav.ReadLazy,
+    prefs: ReaderPrefs,
+    enhance: EnhanceSettings,
+    onPrefs: (ReaderPrefs) -> Unit,
+    onEnhance: (EnhanceSettings) -> Unit,
+    /** 点目录里的第 i 话（由外层改 nav，阅读器整个重建） */
+    onPickChapter: (Int) -> Unit = {},
+    onBack: () -> Unit,
+) {
     val scope = rememberCoroutineScope()
     val density = LocalDensity.current
     val cfg = LocalConfiguration.current
@@ -1412,6 +1514,19 @@ private fun OnlineLazyReader(engine: SourceEngine, nav: Nav.ReadLazy, onBack: ()
     val fails = remember { mutableStateMapOf<Int, String>() }
     val inflight = remember { mutableSetOf<Int>() }
     var showBar by remember { mutableStateOf(true) }
+    var panel by remember { mutableStateOf(ReaderPanel.NONE) }
+    var showChapters by remember { mutableStateOf(false) }
+    ReaderSkinEffects(prefs)
+    OnlineReaderBars(
+        showBar = showBar,
+        onShowBar = { showBar = it },
+        panel = panel,
+        onPanel = { panel = it },
+        onBack = onBack,
+        modal = showChapters,
+        onCloseModal = { showChapters = false },
+    )
+    val gap = pageGap(prefs)
 
     fun load(idx: Int) {
         if (idx < 0 || idx >= nav.count) return
@@ -1450,8 +1565,11 @@ private fun OnlineLazyReader(engine: SourceEngine, nav: Nav.ReadLazy, onBack: ()
     }
 
     ImmersiveFullscreen()
-    Box(Modifier.fillMaxSize().background(Color.Black)) {
-        LazyColumn(Modifier.fillMaxSize()) {
+    Box(Modifier.fillMaxSize().background(readerBg(prefs.background))) {
+        LazyColumn(
+            Modifier.fillMaxSize(),
+            verticalArrangement = if (gap > 0.dp) Arrangement.spacedBy(gap) else Arrangement.Top,
+        ) {
             items(nav.count) { idx ->
                 LaunchedEffect(idx) {
                     load(idx)
@@ -1464,12 +1582,15 @@ private fun OnlineLazyReader(engine: SourceEngine, nav: Nav.ReadLazy, onBack: ()
                         Modifier.fillMaxWidth().clickable(
                             interactionSource = remember { MutableInteractionSource() },
                             indication = null,
-                        ) { showBar = !showBar },
+                        ) {
+                            if (panel != ReaderPanel.NONE) panel = ReaderPanel.NONE else showBar = !showBar
+                        },
                     ) {
                         RemotePageImage(
                             url = page.url,
                             headers = page.headers,
                             descramble = page.num,
+                            prefs = prefs,
                             modifier = Modifier.fillMaxWidth(),
                         )
                     }
@@ -1502,35 +1623,144 @@ private fun OnlineLazyReader(engine: SourceEngine, nav: Nav.ReadLazy, onBack: ()
                 }
             }
         }
-        if (showBar) ReaderOverlayBar(nav.title, "${pages.size}/${nav.count} 页", onBack)
+        if (showBar) {
+            ReaderTopChrome(
+                title = nav.title,
+                pageLabel = "${pages.size}/${nav.count} 页",
+                prefs = prefs,
+                enhance = enhance,
+                panel = panel,
+                marked = false,
+                hasChapters = nav.chapters.isNotEmpty(),
+                onPanel = { panel = it },
+                onBack = onBack,
+                onMenu = { showBar = false },
+                onOpenChapters = { showChapters = true },
+                onAddBookmark = {},
+                onShowBookmarks = {},
+                onPrefs = onPrefs,
+                onEnhance = onEnhance,
+                online = true,
+            )
+        }
+        if (showChapters) {
+            val skin = skinFor(prefs.chromeLight)
+            SkinDialog("目录", prefs.chromeLight, onDismiss = { showChapters = false }) {
+                LazyColumn(Modifier.heightIn(max = 400.dp)) {
+                    items(nav.chapters.size) { i ->
+                        val item = nav.chapters[i]
+                        val active = i == nav.index
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    showChapters = false
+                                    if (!active) onPickChapter(i)
+                                }
+                                .padding(vertical = 11.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = item.second.ifBlank { "第 ${i + 1} 话" },
+                                modifier = Modifier.weight(1f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                color = if (active) skin.accent else skin.fg,
+                                fontSize = 12.5.sp,
+                                fontWeight = if (active) FontWeight.Medium else FontWeight.Normal,
+                            )
+                            if (active) Text("当前", color = skin.accent, fontSize = 10.5.sp)
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
+/**
+ * 在线阅读器的栏体行为：4 秒自动收起；返回键先收面板、再叫出顶栏、最后才退出。
+ *
+ * 以前在线阅读只有一条常驻的顶栏，按返回直接走人，面板也没地方开 ——
+ * 现在和本地阅读器一样：点画面切换、面板优先关、返回分级。
+ */
 @Composable
-private fun ReaderOverlayBar(title: String, pageLabel: String, onBack: () -> Unit) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .background(Color(0xAA000000))
-            .statusBarsPadding()
-            .height(44.dp)
-            .padding(horizontal = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(
-            Modifier.size(40.dp).clickable(onClick = onBack),
-            contentAlignment = Alignment.Center,
-        ) { GlyphView(Glyph.BACK, Color.White, 20.dp) }
-        Text(
-            title.ifBlank { "阅读" },
-            color = Color.White,
-            fontSize = 13.sp,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f),
-        )
-        Text(pageLabel, color = Color(0xCCFFFFFF), fontSize = 11.5.sp, modifier = Modifier.padding(end = 10.dp))
+private fun OnlineReaderBars(
+    showBar: Boolean,
+    onShowBar: (Boolean) -> Unit,
+    panel: ReaderPanel,
+    onPanel: (ReaderPanel) -> Unit,
+    onBack: () -> Unit,
+    /** 目录这类「开着的时候不能自动收栏」的浮层 */
+    modal: Boolean = false,
+    onCloseModal: () -> Unit = {},
+) {
+    LaunchedEffect(showBar, panel, modal) {
+        if (showBar && panel == ReaderPanel.NONE && !modal) {
+            kotlinx.coroutines.delay(4000)
+            onShowBar(false)
+        }
     }
+    BackHandler {
+        when {
+            modal -> onCloseModal()
+            panel != ReaderPanel.NONE -> onPanel(ReaderPanel.NONE)
+            !showBar -> onShowBar(true)
+            else -> onBack()
+        }
+    }
+}
+
+/**
+ * 阅读器外观：亮度 + 常亮。
+ *
+ * 以前只有本地阅读器会改屏幕亮度，在线阅读点「设置 → 亮度」完全没反应 ——
+ * 设置是同一份，行为也该一致；退出阅读页时把亮度还原，别把系统亮度锁死。
+ */
+@Composable
+private fun ReaderSkinEffects(prefs: ReaderPrefs) {
+    val view = LocalView.current
+    val ctx = LocalContext.current
+    LaunchedEffect(prefs.autoBrightness, prefs.brightness) {
+        val w = (ctx as? android.app.Activity)?.window ?: return@LaunchedEffect
+        val lp = w.attributes
+        lp.screenBrightness = if (prefs.autoBrightness) {
+            android.view.WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+        } else {
+            (prefs.brightness / 100f).coerceIn(0.05f, 1f)
+        }
+        w.attributes = lp
+    }
+    DisposableEffect(prefs.keepScreenOn) {
+        view.keepScreenOn = prefs.keepScreenOn
+        onDispose { view.keepScreenOn = false }
+    }
+    // 亮度还原必须挂在 Unit 上：挂在 keepScreenOn 上时，一改「常亮」就会把亮度还原，
+    // 而 LaunchedEffect 的 key 没变、不会重新设置 —— 调好的亮度白调。
+    DisposableEffect(Unit) {
+        onDispose {
+            runCatching {
+                val w = (ctx as? android.app.Activity)?.window ?: return@runCatching
+                val lp = w.attributes
+                lp.screenBrightness = android.view.WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+                w.attributes = lp
+            }
+        }
+    }
+}
+
+/** 阅读页底色（设置里那三个：纯黑 / 深灰 / 米白） */
+private fun readerBg(index: Int): Color = when (index) {
+    0 -> Color(0xFF000000)
+    1 -> Color(0xFF16161A)
+    else -> Color(0xFFEDEDE6)
+}
+
+/** 页面间距：设置里存的是「视口高度的百分比」，换成 dp */
+@Composable
+private fun pageGap(prefs: ReaderPrefs): Dp {
+    val h = LocalConfiguration.current.screenHeightDp
+    return (h * prefs.pageGapPercent / 100f).dp
 }
 
 // ==================================================================================== 网页登录

@@ -251,6 +251,11 @@ private fun Root() {
                         startTitle = over.title,
                         startAlts = over.alts,
                         uiStore = ui,
+                        // 阅读设置和本地阅读器共用同一份：在线看图也能调间距/滤镜/亮度
+                        prefs = prefs,
+                        enhance = enhance,
+                        onPrefs = { prefs = it; store.readerPrefs = it },
+                        onEnhance = { enhance = it; store.enhance = it },
                         onRecordsChanged = { records = ui.records() },
                         onSourcesChanged = { sourceRev++ },
                         onBack = { overlay = null },

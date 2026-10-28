@@ -34,6 +34,7 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.enhance.comic.model.ReaderPrefs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.sync.Semaphore
@@ -240,6 +241,8 @@ fun RemotePageImage(
     url: String,
     headers: Map<String, String>? = null,
     descramble: Int = 0,
+    /** 阅读器的显示设置（灰度/反色/蓝光）。传 null 就是原图。 */
+    prefs: ReaderPrefs? = null,
     modifier: Modifier = Modifier,
 ) {
     val density = LocalDensity.current
@@ -261,6 +264,10 @@ fun RemotePageImage(
     // 整页按**图片自己的宽高比**铺满屏幕宽度，页与页之间无缝。
     // 以前外面套一个写死的 0.7 比例框、图在里面 Fit —— 比例不完全一致就留黑边，
     // 看起来就是「没全屏、四周有黑框」。
+    val filter = remember(prefs?.grayscale, prefs?.invert) {
+        readerColorFilter(prefs?.grayscale == true, prefs?.invert == true)
+    }
+    val blue = (prefs?.blueLight ?: 0).coerceIn(0, 100)
     Box(modifier = modifier.fillMaxWidth()) {
         val cur = bmp
         when {
@@ -271,6 +278,7 @@ fun RemotePageImage(
                     .fillMaxWidth()
                     .aspectRatio(cur.width.toFloat() / maxOf(cur.height, 1)),
                 contentScale = ContentScale.FillWidth,
+                colorFilter = filter,
             )
             failed -> Box(
                 Modifier.fillMaxWidth().aspectRatio(0.7f).background(Color(0xFF141414)),
@@ -290,7 +298,47 @@ fun RemotePageImage(
                 CircularProgressIndicator(color = Color(0xCCFF6E9C), strokeWidth = 2.dp, modifier = Modifier.size(22.dp))
             }
         }
+        // 蓝光过滤：整页盖一层暖色，强度跟着设置走（0 就是不加）
+        if (blue > 0 && cur != null) {
+            Box(
+                Modifier
+                    .matchParentSize()
+                    .background(Color(0xFFFFA64D).copy(alpha = blue / 100f * 0.35f)),
+            )
+        }
     }
+}
+
+/**
+ * 灰度 / 反色 转成 ColorFilter。
+ *
+ * 阅读器的「滤镜」以前只对本地书生效（图片走原生绘制），在线看的时候点了没反应。
+ * 现在两张路都经过这里：矩阵用 Android 的 ColorMatrix 组合，再交给 Compose 绘制。
+ */
+private fun readerColorFilter(gray: Boolean, invert: Boolean): androidx.compose.ui.graphics.ColorFilter? {
+    if (!gray && !invert) return null
+    return runCatching {
+        val m = android.graphics.ColorMatrix()
+        if (gray) {
+            val g = android.graphics.ColorMatrix()
+            g.setSaturation(0f)
+            m.postConcat(g)
+        }
+        if (invert) {
+            val inv = android.graphics.ColorMatrix(
+                floatArrayOf(
+                    -1f, 0f, 0f, 0f, 255f,
+                    0f, -1f, 0f, 0f, 255f,
+                    0f, 0f, -1f, 0f, 255f,
+                    0f, 0f, 0f, 1f, 0f,
+                ),
+            )
+            m.postConcat(inv)
+        }
+        androidx.compose.ui.graphics.ColorFilter.colorMatrix(
+            androidx.compose.ui.graphics.ColorMatrix(m.array),
+        )
+    }.getOrNull()
 }
 
 /** 预取：先把下一两页下好，划下去直接命中缓存 */

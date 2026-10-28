@@ -365,6 +365,8 @@ internal fun ReaderTopChrome(
     onShowBookmarks: () -> Unit,
     onPrefs: (ReaderPrefs) -> Unit,
     onEnhance: (EnhanceSettings) -> Unit,
+    /** 在线看的：没有翻页方式/双页/书签这些东西（竖向滚动，也没有本地书签表） */
+    online: Boolean = false,
 ) {
     val skin = skinFor(prefs.chromeLight)
 
@@ -392,12 +394,14 @@ internal fun ReaderTopChrome(
                 Text(text = pageLabel, color = skin.dim, fontSize = 10.5.sp, maxLines = 1)
             }
 
-            Box(
-                modifier = Modifier
-                    .size(44.dp)
-                    .clickable(onClick = onMenu),
-                contentAlignment = Alignment.Center,
-            ) { GlyphView(Glyph.MORE, skin.fg, 21.dp) }
+            if (!online) {
+                Box(
+                    modifier = Modifier
+                        .size(44.dp)
+                        .clickable(onClick = onMenu),
+                    contentAlignment = Alignment.Center,
+                ) { GlyphView(Glyph.MORE, skin.fg, 21.dp) }
+            }
         }
 
         Row(
@@ -421,19 +425,21 @@ internal fun ReaderTopChrome(
                         enhance.sharpen || enhance.contrastPass,
                     skin,
                 ) { onPanel(if (panel == ReaderPanel.FILTER) ReaderPanel.NONE else ReaderPanel.FILTER) }
-                ToolItem(Glyph.TURN, "翻页方式", panel == ReaderPanel.TURN, skin) {
-                    onPanel(if (panel == ReaderPanel.TURN) ReaderPanel.NONE else ReaderPanel.TURN)
-                }
-                ToolItem(
-                    Glyph.LAYOUT,
-                    "页面布局",
-                    panel == ReaderPanel.LAYOUT || prefs.doublePage || prefs.scaleMode != ScaleMode.FIT,
-                    skin,
-                ) { onPanel(if (panel == ReaderPanel.LAYOUT) ReaderPanel.NONE else ReaderPanel.LAYOUT) }
-                ToolItem(Glyph.BOOKMARK, "书签", marked, skin) {
-                    onPanel(
-                        if (panel == ReaderPanel.BOOKMARK) ReaderPanel.NONE else ReaderPanel.BOOKMARK,
-                    )
+                if (!online) {
+                    ToolItem(Glyph.TURN, "翻页方式", panel == ReaderPanel.TURN, skin) {
+                        onPanel(if (panel == ReaderPanel.TURN) ReaderPanel.NONE else ReaderPanel.TURN)
+                    }
+                    ToolItem(
+                        Glyph.LAYOUT,
+                        "页面布局",
+                        panel == ReaderPanel.LAYOUT || prefs.doublePage || prefs.scaleMode != ScaleMode.FIT,
+                        skin,
+                    ) { onPanel(if (panel == ReaderPanel.LAYOUT) ReaderPanel.NONE else ReaderPanel.LAYOUT) }
+                    ToolItem(Glyph.BOOKMARK, "书签", marked, skin) {
+                        onPanel(
+                            if (panel == ReaderPanel.BOOKMARK) ReaderPanel.NONE else ReaderPanel.BOOKMARK,
+                        )
+                    }
                 }
                 if (hasChapters) {
                     ToolItem(Glyph.LIST, "目录", false, skin) { onOpenChapters() }

@@ -28,8 +28,9 @@ import androidx.compose.ui.unit.sp
 /** 四个 Tab 的定义。顺序就是底部栏顺序。 */
 internal enum class AppTab(val label: String, val glyph: Glyph) {
     HOME("首页", Glyph.HOME),
-    DISCOVER("发现", Glyph.DISCOVER),
+    // 用户要求的顺序：首页 / 书架 / 发现 / 我的
     SHELF("书架", Glyph.SHELF),
+    DISCOVER("发现", Glyph.DISCOVER),
     ME("我的", Glyph.USER),
 }
 

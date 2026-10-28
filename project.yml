@@ -18,8 +18,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.enhance.comic
         PRODUCT_NAME: EnhanceComic
-        MARKETING_VERSION: "1.9.21"
-        CURRENT_PROJECT_VERSION: "32"
+        MARKETING_VERSION: "1.9.22"
+        CURRENT_PROJECT_VERSION: "33"
         SWIFT_VERSION: "5.0"
         TARGETED_DEVICE_FAMILY: "1,2"
         GENERATE_INFOPLIST_FILE: YES

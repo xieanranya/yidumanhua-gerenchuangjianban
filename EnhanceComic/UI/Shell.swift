@@ -3,9 +3,10 @@ import SwiftUI
 // ==================================================================================== 四 Tab
 
 enum AppTab: String, CaseIterable, Identifiable {
+    // 用户要求的顺序：首页 / 书架 / 发现 / 我的
     case home
-    case discover
     case shelf
+    case discover
     case me
 
     var id: String { rawValue }

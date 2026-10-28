@@ -40,7 +40,7 @@ import com.enhance.comic.data.UiStore
 import com.enhance.comic.model.Book
 
 /**
- * 首页：搜索入口 + 继续阅读 + 快捷入口 + 热门推荐 + 源状态。
+ * 首页：只留搜索入口 + 继续阅读 + 热门推荐（越简洁越好，入口都挪到下面的 Tab 里）。
  * 「热门推荐」是真的去问源要一页首页，拿不到就整块不显示，不留假数据。
  */
 @Composable
@@ -51,8 +51,6 @@ fun HomeScreen(
     sourceRev: Int = 0,
     onOpenBook: (Book) -> Unit,
     onDiscover: () -> Unit,
-    onSourceManager: () -> Unit,
-    onImport: () -> Unit,
     onOpenWork: (Work) -> Unit,
 ) {
     val c = LocalColors.current
@@ -155,36 +153,6 @@ fun HomeScreen(
             }
         }
 
-        item(span = { GridItemSpan(maxLineSpan) }) { SectionHeader("快速入口", inset = false) }
-        item(span = { GridItemSpan(maxLineSpan) }) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(9.dp),
-            ) {
-                QuickEntry(
-                    glyph = Glyph.DISCOVER,
-                    label = "发现",
-                    sub = if (rows.isEmpty()) "全部源" else "${rows.count { it.enabled }} 个源",
-                    onClick = onDiscover,
-                    modifier = Modifier.weight(1f),
-                )
-                QuickEntry(
-                    glyph = Glyph.SHELF,
-                    label = "本地导入",
-                    sub = "ZIP / PDF",
-                    onClick = onImport,
-                    modifier = Modifier.weight(1f),
-                )
-                QuickEntry(
-                    glyph = Glyph.GEAR,
-                    label = "源管理",
-                    sub = if (rows.isEmpty()) "读取中" else "${rows.count { it.enabled }} 个源",
-                    onClick = onSourceManager,
-                    modifier = Modifier.weight(1f),
-                )
-            }
-        }
-
         if (hot.isNotEmpty()) {
             item(span = { GridItemSpan(maxLineSpan) }) {
                 SectionHeader("热门推荐", more = hotLabel, onMore = onDiscover, inset = false)
@@ -205,25 +173,6 @@ fun HomeScreen(
             Box(Modifier.height(if (hot.isEmpty() && hotBusy) 60.dp else 8.dp))
         }
 
-        item(span = { GridItemSpan(maxLineSpan) }) {
-            SectionHeader("漫画源", more = "管理", onMore = onSourceManager, inset = false)
-        }
-        item(span = { GridItemSpan(maxLineSpan) }) {
-            Column {
-                NoteBar(
-                    text = sourceSummary(rows),
-                    tone = Tone.PLAIN,
-                    inset = false,
-                )
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    "共 ${books.size} 本本地漫画 · 画质增强 ${if (reading != null) "在读" else "待导入"}",
-                    color = c.fg3,
-                    fontSize = 10.5.sp,
-                    modifier = Modifier.padding(top = 2.dp),
-                )
-            }
-        }
     }
 }
 

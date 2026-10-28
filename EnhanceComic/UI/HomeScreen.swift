@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// 首页：搜索入口 / 继续阅读 / 快捷入口 / 热门推荐 / 源状态。
+/// 首页：只留搜索入口 / 继续阅读 / 热门推荐（越简洁越好）。
 struct HomeScreen: View {
 
     let onSearch: () -> Void
@@ -41,18 +41,13 @@ struct HomeScreen: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                BigTitle(text: "首页", sub: subline, inset: false)
+                BigTitle(text: "首页", inset: false)
                     .padding(.horizontal, 18)
 
                 SearchStub(text: "搜漫画名、作者、题材", onTap: onSearch, inset: false)
                     .padding(.horizontal, 18)
 
                 continueSection
-
-                SectionHeader(title: "快捷入口", inset: false)
-                    .padding(.horizontal, 18)
-                quickEntries
-                    .padding(.horizontal, 18)
 
                 SectionHeader(
                     title: "热门推荐",
@@ -90,34 +85,15 @@ struct HomeScreen: View {
                     .padding(.horizontal, 18)
                 }
 
-                SectionHeader(
-                    title: "漫画源",
-                    more: "管理",
-                    onMore: onSources,
-                    inset: false
-                )
-                .padding(.horizontal, 18)
-                NoteBar(
-                    text: sourceSummary(hub.rows),
-                    tone: .neutral,
-                    inset: false
-                )
-                .padding(.horizontal, 18)
-                .padding(.bottom, 26)
             }
             .padding(.top, 4)
+            .padding(.bottom, 26)
         }
         .background(c.bg)
         .task { await loadHot() }
         .fullScreenCover(item: $openBook) { book in
             ReaderView(book: book).environmentObject(store)
         }
-    }
-
-    private var subline: String {
-        let local = store.books.isEmpty ? "本地书库还是空的" : "本地 \(store.books.count) 本"
-        let online = hub.rows.isEmpty ? "在线源读取中" : "\(hub.enabledRows.count) 个在线源"
-        return local + " · " + online
     }
 
     @ViewBuilder
@@ -162,40 +138,6 @@ struct HomeScreen: View {
                 .padding(.horizontal, 18)
             }
         }
-    }
-
-    private var quickEntries: some View {
-        HStack(spacing: 9) {
-            quickCard(glyph: .shelf, title: "本地书架", note: "\(store.books.count) 本", action: onShelf)
-            quickCard(glyph: .list, title: "源管理", note: "\(hub.enabledRows.count) 个", action: onSources)
-            quickCard(glyph: .search, title: "搜索", note: "全源", action: onSearch)
-        }
-    }
-
-    private func quickCard(glyph: Glyph, title: String, note: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            VStack(alignment: .leading, spacing: 7) {
-                GlyphView(glyph: glyph, tint: c.fg2, size: 18, strokeWidth: 1.6)
-                Text(title)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(c.fg)
-                    .lineLimit(1)
-                Text(note)
-                    .font(.system(size: 9.5))
-                    .foregroundColor(c.fg3)
-                    .lineLimit(1)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 11)
-            .padding(.vertical, 10)
-            .background(c.card2)
-            .overlay(
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .stroke(c.border, lineWidth: 1)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
-        }
-        .buttonStyle(.plain)
     }
 
     private func loadHot() async {

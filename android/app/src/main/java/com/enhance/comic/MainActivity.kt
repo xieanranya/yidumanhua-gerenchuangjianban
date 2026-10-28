@@ -258,8 +258,6 @@ private fun Root() {
                                 sourceRev = sourceRev,
                                 onOpenBook = { openBook = it },
                                 onDiscover = { switchTab(AppTab.DISCOVER) },
-                                onSourceManager = { overlay = Overlay.Online(null, null, "") },
-                                onImport = { pickFiles.launch(arrayOf("*/*")) },
                                 onOpenWork = { w ->
                                     overlay = Overlay.Online(
                                         w.primary.sourceKey,

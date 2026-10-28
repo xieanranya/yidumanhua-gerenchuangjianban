@@ -35,6 +35,16 @@ enum ReaderLayout: String, Codable, CaseIterable, Identifiable {
         case .slide: return "滑动"
         }
     }
+
+    var desc: String {
+        switch self {
+        case .webtoon: return "竖条连续，按屏宽铺满，页与页无缝"
+        case .paged: return "单页，左右翻"
+        case .free: return "竖条滚动 + 双指放大 1–4 倍"
+        case .double: return "两页并排，左右翻"
+        case .slide: return "横向连续，一屏一页"
+        }
+    }
 }
 
 enum ReadingMode: String, Codable, CaseIterable, Identifiable {

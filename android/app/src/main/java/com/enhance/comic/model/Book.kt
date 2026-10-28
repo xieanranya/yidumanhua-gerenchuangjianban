@@ -7,6 +7,26 @@ enum class BookType { ZIP, RAR, PDF, FOLDER }
 
 enum class ReadingMode { PAGED, VERTICAL, HORIZONTAL }
 
+/**
+ * 阅读器类型（在线阅读用）。
+ *
+ * 本地书走的是 readingMode + 页面布局那一套（原生画布，支持翻页动画/裁白边/双页），
+ * 在线图片是 Compose 渲染的，两套能力不同，所以单独一个字段，互不干扰。
+ */
+enum class ReaderLayout(val label: String, val desc: String) {
+    /** 竖条连续滚动，页与页无缝 —— 看条漫 */
+    WEBTOON("Webtoon", "竖条连续"),
+    /** 单页，左右翻 */
+    PAGED("相册", "单页左右翻"),
+    /** 竖条连续 + 双指缩放拖动 */
+    FREE("自由放大", "滚动 + 缩放"),
+    /** 两页并排，左右翻 */
+    DOUBLE("双页相册", "两页并排"),
+    /** 横向连续滚动 */
+    SLIDE("滑动", "横向连续"),
+    ;
+}
+
 /** How a paged image is scaled into the viewport before the finger's own zoom applies. */
 enum class ScaleMode(val label: String) {
     FIT("适应屏幕"),
@@ -159,6 +179,8 @@ data class EnhanceSettings(
 /** Display / layout preferences that are not per-pass. */
 data class ReaderPrefs(
     val readingMode: ReadingMode = ReadingMode.PAGED,
+    /** 在线阅读器的呈现方式；和本地书的 readingMode 分开存 */
+    val onlineLayout: ReaderLayout = ReaderLayout.WEBTOON,
     val rightToLeft: Boolean = true,
     val splitWidePages: Boolean = true,
     val autoCropWhiteBorders: Boolean = false,
@@ -202,6 +224,7 @@ data class ReaderPrefs(
         put("doublePage", doublePage)
         put("forceSpread", forceSpread)
         put("pageGapPercent", pageGapPercent)
+        put("onlineLayout", onlineLayout.name)
         put("grayscale", grayscale)
         put("autoContrast", autoContrast)
         put("invert", invert)
@@ -224,6 +247,8 @@ data class ReaderPrefs(
         fun fromJson(o: JSONObject): ReaderPrefs = ReaderPrefs(
             readingMode = runCatching { ReadingMode.valueOf(o.optString("readingMode")) }
                 .getOrDefault(ReadingMode.PAGED),
+            onlineLayout = runCatching { ReaderLayout.valueOf(o.optString("onlineLayout")) }
+                .getOrDefault(ReaderLayout.WEBTOON),
             rightToLeft = o.optBoolean("rightToLeft", true),
             splitWidePages = o.optBoolean("splitWidePages", true),
             autoCropWhiteBorders = o.optBoolean("autoCropWhiteBorders"),

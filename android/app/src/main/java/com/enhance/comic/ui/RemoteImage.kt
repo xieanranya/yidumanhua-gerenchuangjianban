@@ -243,6 +243,11 @@ fun RemotePageImage(
     descramble: Int = 0,
     /** 阅读器的显示设置（灰度/反色/蓝光）。传 null 就是原图。 */
     prefs: ReaderPrefs? = null,
+    /**
+     * true = 适应屏幕（相册/双页：整页缩到屏内，可能左右留边）；
+     * false = 铺满屏宽（Webtoon：长条图按宽度铺满、上下连续）。
+     */
+    fit: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     val density = LocalDensity.current
@@ -268,20 +273,25 @@ fun RemotePageImage(
         readerColorFilter(prefs?.grayscale == true, prefs?.invert == true)
     }
     val blue = (prefs?.blueLight ?: 0).coerceIn(0, 100)
-    Box(modifier = modifier.fillMaxWidth()) {
+    Box(modifier = if (fit) modifier.fillMaxSize() else modifier.fillMaxWidth()) {
         val cur = bmp
         when {
             cur != null -> Image(
                 bitmap = cur.asImageBitmap(),
                 contentDescription = null,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(cur.width.toFloat() / maxOf(cur.height, 1)),
-                contentScale = ContentScale.FillWidth,
+                modifier = if (fit) {
+                    Modifier.fillMaxSize()
+                } else {
+                    Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(cur.width.toFloat() / maxOf(cur.height, 1))
+                },
+                contentScale = if (fit) ContentScale.Fit else ContentScale.FillWidth,
                 colorFilter = filter,
             )
             failed -> Box(
-                Modifier.fillMaxWidth().aspectRatio(0.7f).background(Color(0xFF141414)),
+                if (fit) Modifier.fillMaxSize().background(Color(0xFF141414))
+                else Modifier.fillMaxWidth().aspectRatio(0.7f).background(Color(0xFF141414)),
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
@@ -292,7 +302,8 @@ fun RemotePageImage(
                 )
             }
             else -> Box(
-                Modifier.fillMaxWidth().aspectRatio(0.7f),
+                if (fit) Modifier.fillMaxSize()
+                else Modifier.fillMaxWidth().aspectRatio(0.7f),
                 contentAlignment = Alignment.Center,
             ) {
                 CircularProgressIndicator(color = Color(0xCCFF6E9C), strokeWidth = 2.dp, modifier = Modifier.size(22.dp))

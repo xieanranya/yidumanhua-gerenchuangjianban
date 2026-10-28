@@ -53,6 +53,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.enhance.comic.model.EnhanceSettings
+import com.enhance.comic.model.ReaderLayout
 import com.enhance.comic.model.ReaderPrefs
 import com.enhance.comic.model.ReadingMode
 import com.enhance.comic.model.ScaleFilter
@@ -106,7 +107,7 @@ internal val LightSkin = Skin(
 internal fun skinFor(light: Boolean): Skin = if (light) LightSkin else DarkSkin
 
 /** Reading panels, one per tool icon. */
-internal enum class ReaderPanel { NONE, GAP, FILTER, TURN, LAYOUT, BOOKMARK, SETTINGS }
+internal enum class ReaderPanel { NONE, GAP, FILTER, TURN, LAYOUT, TYPE, BOOKMARK, SETTINGS }
 
 // ==================================================================================== glyphs
 
@@ -425,6 +426,11 @@ internal fun ReaderTopChrome(
                         enhance.sharpen || enhance.contrastPass,
                     skin,
                 ) { onPanel(if (panel == ReaderPanel.FILTER) ReaderPanel.NONE else ReaderPanel.FILTER) }
+                if (online) {
+                    ToolItem(Glyph.LAYOUT, "阅读器类型", panel == ReaderPanel.TYPE, skin) {
+                        onPanel(if (panel == ReaderPanel.TYPE) ReaderPanel.NONE else ReaderPanel.TYPE)
+                    }
+                }
                 if (!online) {
                     ToolItem(Glyph.TURN, "翻页方式", panel == ReaderPanel.TURN, skin) {
                         onPanel(if (panel == ReaderPanel.TURN) ReaderPanel.NONE else ReaderPanel.TURN)
@@ -469,6 +475,7 @@ internal fun ReaderTopChrome(
                         ReaderPanel.FILTER -> FilterPanel(prefs, enhance, skin, onPrefs, onEnhance)
                         ReaderPanel.TURN -> TurnPanel(prefs, skin, onPrefs)
                         ReaderPanel.LAYOUT -> LayoutPanel(prefs, skin, onPrefs)
+                        ReaderPanel.TYPE -> TypePanel(prefs, skin, onPrefs)
                         ReaderPanel.BOOKMARK -> BookmarkPanel(skin, onAddBookmark, onShowBookmarks)
                         ReaderPanel.SETTINGS -> SettingsPanel(prefs, skin, onPrefs)
                         ReaderPanel.NONE -> Unit
@@ -486,6 +493,7 @@ private fun PanelHeader(panel: ReaderPanel, skin: Skin, onClose: () -> Unit) {
         ReaderPanel.FILTER -> "滤镜"
         ReaderPanel.TURN -> "翻页方式"
         ReaderPanel.LAYOUT -> "页面布局"
+        ReaderPanel.TYPE -> "阅读器类型"
         ReaderPanel.BOOKMARK -> "书签"
         ReaderPanel.SETTINGS -> "设置"
         ReaderPanel.NONE -> ""
@@ -889,6 +897,71 @@ private fun LayoutPanel(prefs: ReaderPrefs, skin: Skin, onPrefs: (ReaderPrefs) -
             onPrefs(prefs.copy(autoCropWhiteBorders = it))
         }
     }
+}
+
+/**
+ * 阅读器类型 + 阅读方向。
+ *
+ * 五种：Webtoon（竖条）/ 相册（单页左右翻）/ 自由放大（滚动+双指缩放）/
+ * 双页相册 / 滑动（横向连续）。方向只对「左右翻」的那三种有意义，
+ * 竖条模式下会明说一句，免得用户以为设了没反应。
+ */
+@Composable
+private fun TypePanel(prefs: ReaderPrefs, skin: Skin, onPrefs: (ReaderPrefs) -> Unit) {
+    ReaderLayout.entries.chunked(3).forEach { row ->
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            row.forEach { layout ->
+                val on = prefs.onlineLayout == layout
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(58.dp)
+                        .background(
+                            if (on) skin.accent.copy(alpha = 0.14f) else skin.bar,
+                            RoundedCornerShape(4.dp),
+                        )
+                        .border(
+                            1.dp,
+                            if (on) skin.accent else skin.hair,
+                            RoundedCornerShape(4.dp),
+                        )
+                        .clickable { onPrefs(prefs.copy(onlineLayout = layout)) }
+                        .padding(vertical = 6.dp),
+                    verticalArrangement = Arrangement.Center,
+                ) {
+                    Text(
+                        text = layout.label,
+                        color = if (on) skin.accent else skin.fg,
+                        fontSize = 11.sp,
+                        fontWeight = if (on) FontWeight.Medium else FontWeight.Normal,
+                        maxLines = 1,
+                    )
+                    Spacer(Modifier.height(2.dp))
+                    Text(layout.desc, color = skin.dim, fontSize = 8.5.sp, maxLines = 1)
+                }
+            }
+            repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
+        }
+        Spacer(Modifier.height(8.dp))
+    }
+    Text("阅读方向", color = skin.dim, fontSize = 10.sp)
+    Spacer(Modifier.height(4.dp))
+    SkinSeg(
+        labels = listOf("左到右", "右到左"),
+        selected = if (prefs.rightToLeft) 1 else 0,
+        skin = skin,
+    ) { onPrefs(prefs.copy(rightToLeft = it == 1)) }
+    Spacer(Modifier.height(6.dp))
+    Text(
+        text = if (prefs.onlineLayout == ReaderLayout.WEBTOON || prefs.onlineLayout == ReaderLayout.FREE) {
+            "竖条模式是上下滚的，方向只在相册 / 双页 / 滑动里生效。"
+        } else {
+            "左右翻时从哪一边开始。"
+        },
+        color = skin.dim,
+        fontSize = 9.5.sp,
+    )
 }
 
 @Composable

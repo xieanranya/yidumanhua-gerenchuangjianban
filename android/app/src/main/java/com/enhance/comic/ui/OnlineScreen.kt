@@ -3,6 +3,10 @@ package com.enhance.comic.ui
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.rememberTransformableState
+import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -16,6 +20,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -24,6 +29,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
@@ -32,6 +39,9 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.PagerState
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -46,6 +56,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -54,12 +65,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.TextStyle
@@ -74,6 +88,7 @@ import com.enhance.comic.data.OnlineRecord
 import com.enhance.comic.data.SourceEngine
 import com.enhance.comic.data.UiStore
 import com.enhance.comic.model.EnhanceSettings
+import com.enhance.comic.model.ReaderLayout
 import com.enhance.comic.model.ReaderPrefs
 import kotlinx.coroutines.launch
 import org.json.JSONArray
@@ -1405,6 +1420,259 @@ private fun parsePage(data: JSONObject): PageRef {
 
 // ==================================================================================== 阅读
 
+// ============================================================== 在线阅读器的五种呈现方式
+
+/**
+ * 一页的内容：有地址就画图，失败给个能点的重试，还没解出地址就转圈。
+ *
+ * [fit] 决定图片怎么摆：Webtoon 按宽度铺满（长条图），相册/双页缩进屏幕（可能左右留边）。
+ */
+@Composable
+private fun OnlinePageCell(
+    index: Int,
+    page: PageRef?,
+    fail: String?,
+    prefs: ReaderPrefs,
+    fit: Boolean,
+    onRetry: () -> Unit,
+) {
+    val boxMod = if (fit) Modifier.fillMaxSize() else Modifier.fillMaxWidth().aspectRatio(0.7f)
+    when {
+        page != null -> RemotePageImage(
+            url = page.url,
+            headers = page.headers,
+            descramble = page.num,
+            prefs = prefs,
+            fit = fit,
+            modifier = if (fit) Modifier.fillMaxSize() else Modifier.fillMaxWidth(),
+        )
+        fail != null -> Box(boxMod, contentAlignment = Alignment.Center) {
+            Text(
+                "第 ${index + 1} 页没取到：$fail\n点这里重试",
+                color = Color(0xCCFFFFFF),
+                fontSize = 12.sp,
+                modifier = Modifier
+                    .clickable(onClick = onRetry)
+                    .padding(14.dp),
+            )
+        }
+        else -> Box(boxMod, contentAlignment = Alignment.Center) {
+            CircularProgressIndicator(
+                color = Color(0xCCFF6E9C),
+                strokeWidth = 2.dp,
+                modifier = Modifier.size(22.dp),
+            )
+        }
+    }
+}
+
+/**
+ * 「自由放大」：整页可以双指缩放 / 双指拖动。
+ *
+ * 用 `transformable` 而不是 `detectTransformGestures` —— 后者会把单指手势也吃掉，
+ * 竖条就再也滚不动了；transformable 只处理多指，列表滚动照常。
+ */
+@Composable
+private fun ZoomablePage(content: @Composable () -> Unit) {
+    var scale by remember { mutableFloatStateOf(1f) }
+    var offset by remember { mutableStateOf(Offset.Zero) }
+    val state = rememberTransformableState { zoomChange, panChange, _ ->
+        scale = (scale * zoomChange).coerceIn(1f, 4f)
+        offset = if (scale <= 1.001f) Offset.Zero else offset + panChange
+    }
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .graphicsLayer(
+                scaleX = scale,
+                scaleY = scale,
+                translationX = offset.x,
+                translationY = offset.y,
+            )
+            .transformable(state),
+    ) { content() }
+}
+
+/**
+ * 底部的翻页滑条：拖到哪翻到哪。
+ *
+ * 只在「相册 / 双页相册」里出现 —— 那两种才有明确的「第几页」；
+ * Webtoon 和滑动本来就是连续滚，没有页的概念。
+ */
+@Composable
+private fun PageSeekBar(
+    current: Int,
+    total: Int,
+    skin: Skin,
+    onSeek: (Int) -> Unit,
+) {
+    if (total <= 1) return
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color(0x99000000))
+            .padding(horizontal = 14.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text("${current + 1}", color = Color(0xCCFFFFFF), fontSize = 10.5.sp)
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .padding(horizontal = 10.dp)
+                .height(22.dp)
+                .pointerInput(total) {
+                    detectTapGestures { o ->
+                        onSeek(((o.x / size.width) * total).toInt().coerceIn(0, total - 1))
+                    }
+                }
+                .pointerInput(total) {
+                    detectDragGestures { change, _ ->
+                        change.consume()
+                        onSeek(((change.position.x / size.width) * total).toInt().coerceIn(0, total - 1))
+                    }
+                },
+            contentAlignment = Alignment.CenterStart,
+        ) {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(2.dp)
+                    .background(Color(0x55FFFFFF)),
+            )
+            Box(
+                Modifier
+                    .fillMaxWidth(((current + 1f) / total).coerceIn(0f, 1f))
+                    .height(2.dp)
+                    .background(skin.accent),
+            )
+        }
+        Text("$total", color = Color(0xCCFFFFFF), fontSize = 10.5.sp)
+    }
+}
+
+/**
+ * 按 [ReaderPrefs.onlineLayout] 渲染整本。
+ *
+ * 五种布局共用同一套「第几页 → 一个格子」的抽象，两个阅读器（地址现成 / 惰性解析）
+ * 只需要提供 `pageAt` 和 `onNeed`，不用各写五遍。
+ *
+ * [pager] / [list] 由外层持有：底部滑条要能直接命令它们滚到某一页
+ * （放在里面的话外面就没法「拖到哪翻到哪」了）。
+ */
+@Composable
+private fun OnlinePages(
+    count: Int,
+    prefs: ReaderPrefs,
+    pager: PagerState,
+    list: LazyListState,
+    current: Int,
+    pageAt: (Int) -> PageRef?,
+    failAt: (Int) -> String?,
+    onRetry: (Int) -> Unit,
+    onNeed: (Int) -> Unit,
+    onPage: (Int) -> Unit,
+    onTap: () -> Unit,
+) {
+    if (count <= 0) return
+    val gap = pageGap(prefs)
+    val rtl = prefs.rightToLeft
+    val tap = Modifier.clickable(
+        interactionSource = remember { MutableInteractionSource() },
+        indication = null,
+        onClick = onTap,
+    )
+
+    // 换阅读器类型时把位置带过去：在 Webtoon 里滚到第 50 页，切相册不该又从第 1 页开始
+    LaunchedEffect(prefs.onlineLayout) {
+        val target = current
+        when (prefs.onlineLayout) {
+            ReaderLayout.PAGED -> if (target < count) pager.scrollToPage(target)
+            ReaderLayout.DOUBLE -> pager.scrollToPage(target / 2)
+            ReaderLayout.SLIDE, ReaderLayout.WEBTOON, ReaderLayout.FREE ->
+                if (target < count) list.scrollToItem(target)
+        }
+    }
+
+    when (prefs.onlineLayout) {
+        ReaderLayout.WEBTOON, ReaderLayout.FREE -> {
+            LaunchedEffect(list.firstVisibleItemIndex) { onPage(list.firstVisibleItemIndex) }
+            val zoom = prefs.onlineLayout == ReaderLayout.FREE
+            LazyColumn(
+                modifier = Modifier.fillMaxSize().then(tap),
+                state = list,
+                verticalArrangement = if (gap > 0.dp) Arrangement.spacedBy(gap) else Arrangement.Top,
+            ) {
+                items(count) { i ->
+                    LaunchedEffect(i) { onNeed(i) }
+                    val cell: @Composable () -> Unit = {
+                        OnlinePageCell(i, pageAt(i), failAt(i), prefs, fit = false) { onRetry(i) }
+                    }
+                    if (zoom) ZoomablePage(cell) else cell()
+                }
+            }
+        }
+
+        ReaderLayout.SLIDE -> {
+            LaunchedEffect(list.firstVisibleItemIndex) { onPage(list.firstVisibleItemIndex) }
+            val w = LocalConfiguration.current.screenWidthDp.dp
+            LazyRow(
+                modifier = Modifier.fillMaxSize().then(tap),
+                state = list,
+                horizontalArrangement = if (gap > 0.dp) Arrangement.spacedBy(gap) else Arrangement.Start,
+            ) {
+                items(count) { i ->
+                    LaunchedEffect(i) { onNeed(i) }
+                    Box(Modifier.width(w).fillMaxHeight()) {
+                        OnlinePageCell(i, pageAt(i), failAt(i), prefs, fit = true) { onRetry(i) }
+                    }
+                }
+            }
+        }
+
+        ReaderLayout.PAGED -> {
+            LaunchedEffect(pager.currentPage) {
+                onPage(pager.currentPage)
+                onNeed(pager.currentPage)
+            }
+            HorizontalPager(
+                state = pager,
+                reverseLayout = rtl,
+                modifier = Modifier.fillMaxSize(),
+            ) { p ->
+                Box(Modifier.fillMaxSize().then(tap)) {
+                    OnlinePageCell(p, pageAt(p), failAt(p), prefs, fit = true) { onRetry(p) }
+                }
+            }
+        }
+
+        ReaderLayout.DOUBLE -> {
+            LaunchedEffect(pager.currentPage) {
+                onPage(pager.currentPage * 2)
+                onNeed(pager.currentPage * 2)
+                onNeed(pager.currentPage * 2 + 1)
+            }
+            HorizontalPager(
+                state = pager,
+                reverseLayout = rtl,
+                modifier = Modifier.fillMaxSize(),
+            ) { p ->
+                Row(Modifier.fillMaxSize().then(tap)) {
+                    val a = p * 2
+                    val b = a + 1
+                    Box(Modifier.weight(1f).fillMaxHeight()) {
+                        OnlinePageCell(a, pageAt(a), failAt(a), prefs, fit = true) { onRetry(a) }
+                    }
+                    Box(Modifier.weight(1f).fillMaxHeight()) {
+                        if (b < count) {
+                            OnlinePageCell(b, pageAt(b), failAt(b), prefs, fit = true) { onRetry(b) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun OnlineReader(
     urls: List<String>,
@@ -1416,14 +1684,23 @@ private fun OnlineReader(
     onEnhance: (EnhanceSettings) -> Unit,
     onBack: () -> Unit,
 ) {
+    val scope = rememberCoroutineScope()
     val density = LocalDensity.current
     val cfg = LocalConfiguration.current
     val targetPx = with(density) { cfg.screenWidthDp.dp.roundToPx() }
     val refHeaders = remember(referer) {
         if (referer.isNullOrBlank()) null else mapOf("Referer" to referer)
     }
+    val refs = remember(urls, refHeaders) { urls.map { PageRef(it, refHeaders ?: emptyMap(), 0) } }
     var showBar by remember { mutableStateOf(true) }
     var panel by remember { mutableStateOf(ReaderPanel.NONE) }
+    var current by remember { mutableStateOf(0) }
+
+    val spreads = maxOf(1, (urls.size + 1) / 2)
+    val pageCount = if (prefs.onlineLayout == ReaderLayout.DOUBLE) spreads else urls.size
+    val pager = rememberPagerState(pageCount = { pageCount })
+    val list = rememberLazyListState()
+
     ReaderSkinEffects(prefs)
     OnlineReaderBars(
         showBar = showBar,
@@ -1432,44 +1709,40 @@ private fun OnlineReader(
         onPanel = { panel = it },
         onBack = onBack,
     )
-    val gap = pageGap(prefs)
+
+    // 预取后两页：翻到哪儿就跟到哪儿，别等真的划过去才下
+    LaunchedEffect(current) {
+        for (k in 1..2) {
+            val j = current + k
+            if (j < urls.size) prefetchPage(urls[j], refHeaders, 0, targetPx)
+        }
+    }
 
     ImmersiveFullscreen()
     Box(Modifier.fillMaxSize().background(readerBg(prefs.background))) {
-        LazyColumn(
-            Modifier.fillMaxSize(),
-            verticalArrangement = if (gap > 0.dp) Arrangement.spacedBy(gap) else Arrangement.Top,
-        ) {
-            items(urls.size) { idx ->
-                // 没声明 onImageLoad 的源走这条：地址是现成的，先预取后两页
-                LaunchedEffect(idx) {
-                    for (k in 1..2) {
-                        val j = idx + k
-                        if (j < urls.size) prefetchPage(urls[j], refHeaders, 0, targetPx)
-                    }
+        OnlinePages(
+            count = urls.size,
+            prefs = prefs,
+            pager = pager,
+            list = list,
+            current = current,
+            pageAt = { i -> refs.getOrNull(i) },
+            failAt = { null },
+            onRetry = {},
+            onNeed = { i ->
+                urls.getOrNull(i)?.let { u ->
+                    scope.launch { prefetchPage(u, refHeaders, 0, targetPx) }
                 }
-                Box(
-                    Modifier.fillMaxWidth().clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null,
-                    ) {
-                        // 面板开着时先收面板，别一下就消失
-                        if (panel != ReaderPanel.NONE) panel = ReaderPanel.NONE else showBar = !showBar
-                    },
-                ) {
-                    RemotePageImage(
-                        url = urls[idx],
-                        headers = refHeaders,
-                        prefs = prefs,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                }
-            }
-        }
+            },
+            onPage = { current = it },
+            onTap = {
+                if (panel != ReaderPanel.NONE) panel = ReaderPanel.NONE else showBar = !showBar
+            },
+        )
         if (showBar) {
             ReaderTopChrome(
                 title = title,
-                pageLabel = "${urls.size} 页",
+                pageLabel = "${current + 1}/${urls.size} 页",
                 prefs = prefs,
                 enhance = enhance,
                 panel = panel,
@@ -1485,6 +1758,22 @@ private fun OnlineReader(
                 onEnhance = onEnhance,
                 online = true,
             )
+            if (prefs.onlineLayout == ReaderLayout.PAGED ||
+                prefs.onlineLayout == ReaderLayout.DOUBLE
+            ) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
+                    PageSeekBar(
+                        current = current,
+                        total = urls.size,
+                        skin = skinFor(prefs.chromeLight),
+                    ) { target ->
+                        scope.launch {
+                            val p = if (prefs.onlineLayout == ReaderLayout.DOUBLE) target / 2 else target
+                            pager.scrollToPage(p)
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -1516,6 +1805,13 @@ private fun OnlineLazyReader(
     var showBar by remember { mutableStateOf(true) }
     var panel by remember { mutableStateOf(ReaderPanel.NONE) }
     var showChapters by remember { mutableStateOf(false) }
+    var current by remember { mutableStateOf(0) }
+
+    val spreads = maxOf(1, (nav.count + 1) / 2)
+    val pageCount = if (prefs.onlineLayout == ReaderLayout.DOUBLE) spreads else nav.count
+    val pager = rememberPagerState(pageCount = { pageCount })
+    val list = rememberLazyListState()
+
     ReaderSkinEffects(prefs)
     OnlineReaderBars(
         showBar = showBar,
@@ -1526,7 +1822,6 @@ private fun OnlineLazyReader(
         modal = showChapters,
         onCloseModal = { showChapters = false },
     )
-    val gap = pageGap(prefs)
 
     fun load(idx: Int) {
         if (idx < 0 || idx >= nav.count) return
@@ -1566,67 +1861,28 @@ private fun OnlineLazyReader(
 
     ImmersiveFullscreen()
     Box(Modifier.fillMaxSize().background(readerBg(prefs.background))) {
-        LazyColumn(
-            Modifier.fillMaxSize(),
-            verticalArrangement = if (gap > 0.dp) Arrangement.spacedBy(gap) else Arrangement.Top,
-        ) {
-            items(nav.count) { idx ->
-                LaunchedEffect(idx) {
-                    load(idx)
-                    load(idx + 1)
-                }
-                val page = pages[idx]
-                val f = fails[idx]
-                when {
-                    page != null -> Box(
-                        Modifier.fillMaxWidth().clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null,
-                        ) {
-                            if (panel != ReaderPanel.NONE) panel = ReaderPanel.NONE else showBar = !showBar
-                        },
-                    ) {
-                        RemotePageImage(
-                            url = page.url,
-                            headers = page.headers,
-                            descramble = page.num,
-                            prefs = prefs,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                    }
-                    f != null -> Box(
-                        Modifier.fillMaxWidth().aspectRatio(0.7f),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(
-                            "第 ${idx + 1} 页没取到：$f\n点这里重试",
-                            color = Color(0xCCFFFFFF),
-                            fontSize = 12.sp,
-                            modifier = Modifier
-                                .clickable {
-                                    fails.remove(idx)
-                                    load(idx)
-                                }
-                                .padding(14.dp),
-                        )
-                    }
-                    else -> Box(
-                        Modifier.fillMaxWidth().aspectRatio(0.7f),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        CircularProgressIndicator(
-                            color = Color(0xCCFF6E9C),
-                            strokeWidth = 2.dp,
-                            modifier = Modifier.size(22.dp),
-                        )
-                    }
-                }
-            }
-        }
+        OnlinePages(
+            count = nav.count,
+            prefs = prefs,
+            pager = pager,
+            list = list,
+            current = current,
+            pageAt = { i -> pages[i] },
+            failAt = { i -> fails[i] },
+            onRetry = { i ->
+                fails.remove(i)
+                load(i)
+            },
+            onNeed = { i -> load(i) },
+            onPage = { current = it },
+            onTap = {
+                if (panel != ReaderPanel.NONE) panel = ReaderPanel.NONE else showBar = !showBar
+            },
+        )
         if (showBar) {
             ReaderTopChrome(
                 title = nav.title,
-                pageLabel = "${pages.size}/${nav.count} 页",
+                pageLabel = "${current + 1}/${nav.count} 页",
                 prefs = prefs,
                 enhance = enhance,
                 panel = panel,
@@ -1642,6 +1898,22 @@ private fun OnlineLazyReader(
                 onEnhance = onEnhance,
                 online = true,
             )
+            if (prefs.onlineLayout == ReaderLayout.PAGED ||
+                prefs.onlineLayout == ReaderLayout.DOUBLE
+            ) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
+                    PageSeekBar(
+                        current = current,
+                        total = nav.count,
+                        skin = skinFor(prefs.chromeLight),
+                    ) { target ->
+                        scope.launch {
+                            val p = if (prefs.onlineLayout == ReaderLayout.DOUBLE) target / 2 else target
+                            pager.scrollToPage(p)
+                        }
+                    }
+                }
+            }
         }
         if (showChapters) {
             val skin = skinFor(prefs.chromeLight)

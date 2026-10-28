@@ -1494,63 +1494,6 @@ private fun ZoomablePage(content: @Composable () -> Unit) {
 }
 
 /**
- * 底部的翻页滑条：拖到哪翻到哪。
- *
- * 只在「相册 / 双页相册」里出现 —— 那两种才有明确的「第几页」；
- * Webtoon 和滑动本来就是连续滚，没有页的概念。
- */
-@Composable
-private fun PageSeekBar(
-    current: Int,
-    total: Int,
-    skin: Skin,
-    onSeek: (Int) -> Unit,
-) {
-    if (total <= 1) return
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(Color(0x99000000))
-            .padding(horizontal = 14.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text("${current + 1}", color = Color(0xCCFFFFFF), fontSize = 10.5.sp)
-        Box(
-            modifier = Modifier
-                .weight(1f)
-                .padding(horizontal = 10.dp)
-                .height(22.dp)
-                .pointerInput(total) {
-                    detectTapGestures { o ->
-                        onSeek(((o.x / size.width) * total).toInt().coerceIn(0, total - 1))
-                    }
-                }
-                .pointerInput(total) {
-                    detectDragGestures { change, _ ->
-                        change.consume()
-                        onSeek(((change.position.x / size.width) * total).toInt().coerceIn(0, total - 1))
-                    }
-                },
-            contentAlignment = Alignment.CenterStart,
-        ) {
-            Box(
-                Modifier
-                    .fillMaxWidth()
-                    .height(2.dp)
-                    .background(Color(0x55FFFFFF)),
-            )
-            Box(
-                Modifier
-                    .fillMaxWidth(((current + 1f) / total).coerceIn(0f, 1f))
-                    .height(2.dp)
-                    .background(skin.accent),
-            )
-        }
-        Text("$total", color = Color(0xCCFFFFFF), fontSize = 10.5.sp)
-    }
-}
-
-/**
  * 按 [ReaderPrefs.onlineLayout] 渲染整本。
  *
  * 五种布局共用同一套「第几页 → 一个格子」的抽象，两个阅读器（地址现成 / 惰性解析）
@@ -1693,7 +1636,7 @@ private fun OnlineReader(
     }
     val refs = remember(urls, refHeaders) { urls.map { PageRef(it, refHeaders ?: emptyMap(), 0) } }
     var showBar by remember { mutableStateOf(true) }
-    var panel by remember { mutableStateOf(ReaderPanel.NONE) }
+    var showSettings by remember { mutableStateOf(false) }
     var current by remember { mutableStateOf(0) }
 
     val spreads = maxOf(1, (urls.size + 1) / 2)
@@ -1705,9 +1648,11 @@ private fun OnlineReader(
     OnlineReaderBars(
         showBar = showBar,
         onShowBar = { showBar = it },
-        panel = panel,
-        onPanel = { panel = it },
         onBack = onBack,
+        settingsOpen = showSettings,
+        chaptersOpen = false,
+        onCloseSettings = { showSettings = false },
+        onCloseChapters = {},
     )
 
     // 预取后两页：翻到哪儿就跟到哪儿，别等真的划过去才下
@@ -1735,38 +1680,23 @@ private fun OnlineReader(
                 }
             },
             onPage = { current = it },
-            onTap = {
-                if (panel != ReaderPanel.NONE) panel = ReaderPanel.NONE else showBar = !showBar
-            },
+            onTap = { if (showSettings) showSettings = false else showBar = !showBar },
         )
         if (showBar) {
-            ReaderTopChrome(
-                title = title,
-                pageLabel = "${current + 1}/${urls.size} 页",
-                prefs = prefs,
-                enhance = enhance,
-                panel = panel,
-                marked = false,
-                hasChapters = false,
-                onPanel = { panel = it },
-                onBack = onBack,
-                onMenu = { showBar = false },
-                onOpenChapters = {},
-                onAddBookmark = {},
-                onShowBookmarks = {},
-                onPrefs = onPrefs,
-                onEnhance = onEnhance,
-                online = true,
-            )
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
+                OnlineTopBar(
+                    title = title,
+                    pageLabel = "${current + 1}/${urls.size} 页",
+                    onBack = onBack,
+                    onChapters = null,
+                    onSettings = { showSettings = true },
+                )
+            }
             if (prefs.onlineLayout == ReaderLayout.PAGED ||
                 prefs.onlineLayout == ReaderLayout.DOUBLE
             ) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
-                    PageSeekBar(
-                        current = current,
-                        total = urls.size,
-                        skin = skinFor(prefs.chromeLight),
-                    ) { target ->
+                    OnlineSeekBar(current, urls.size) { target ->
                         scope.launch {
                             val p = if (prefs.onlineLayout == ReaderLayout.DOUBLE) target / 2 else target
                             pager.scrollToPage(p)
@@ -1774,6 +1704,15 @@ private fun OnlineReader(
                     }
                 }
             }
+        }
+        if (showSettings) {
+            OnlineSettingsSheet(
+                prefs = prefs,
+                enhance = enhance,
+                onPrefs = onPrefs,
+                onEnhance = onEnhance,
+                onDismiss = { showSettings = false },
+            )
         }
     }
 }
@@ -1803,7 +1742,7 @@ private fun OnlineLazyReader(
     val fails = remember { mutableStateMapOf<Int, String>() }
     val inflight = remember { mutableSetOf<Int>() }
     var showBar by remember { mutableStateOf(true) }
-    var panel by remember { mutableStateOf(ReaderPanel.NONE) }
+    var showSettings by remember { mutableStateOf(false) }
     var showChapters by remember { mutableStateOf(false) }
     var current by remember { mutableStateOf(0) }
 
@@ -1816,11 +1755,11 @@ private fun OnlineLazyReader(
     OnlineReaderBars(
         showBar = showBar,
         onShowBar = { showBar = it },
-        panel = panel,
-        onPanel = { panel = it },
         onBack = onBack,
-        modal = showChapters,
-        onCloseModal = { showChapters = false },
+        settingsOpen = showSettings,
+        chaptersOpen = showChapters,
+        onCloseSettings = { showSettings = false },
+        onCloseChapters = { showChapters = false },
     )
 
     fun load(idx: Int) {
@@ -1876,37 +1815,28 @@ private fun OnlineLazyReader(
             onNeed = { i -> load(i) },
             onPage = { current = it },
             onTap = {
-                if (panel != ReaderPanel.NONE) panel = ReaderPanel.NONE else showBar = !showBar
+                if (showSettings) showSettings = false
+                else if (showChapters) showChapters = false
+                else showBar = !showBar
             },
         )
         if (showBar) {
-            ReaderTopChrome(
-                title = nav.title,
-                pageLabel = "${current + 1}/${nav.count} 页",
-                prefs = prefs,
-                enhance = enhance,
-                panel = panel,
-                marked = false,
-                hasChapters = nav.chapters.isNotEmpty(),
-                onPanel = { panel = it },
-                onBack = onBack,
-                onMenu = { showBar = false },
-                onOpenChapters = { showChapters = true },
-                onAddBookmark = {},
-                onShowBookmarks = {},
-                onPrefs = onPrefs,
-                onEnhance = onEnhance,
-                online = true,
-            )
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
+                OnlineTopBar(
+                    title = nav.title,
+                    pageLabel = "${current + 1}/${nav.count} 页",
+                    onBack = onBack,
+                    onChapters = if (nav.chapters.isEmpty()) null else {
+                        { showChapters = true }
+                    },
+                    onSettings = { showSettings = true },
+                )
+            }
             if (prefs.onlineLayout == ReaderLayout.PAGED ||
                 prefs.onlineLayout == ReaderLayout.DOUBLE
             ) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
-                    PageSeekBar(
-                        current = current,
-                        total = nav.count,
-                        skin = skinFor(prefs.chromeLight),
-                    ) { target ->
+                    OnlineSeekBar(current, nav.count) { target ->
                         scope.launch {
                             val p = if (prefs.onlineLayout == ReaderLayout.DOUBLE) target / 2 else target
                             pager.scrollToPage(p)
@@ -1915,68 +1845,46 @@ private fun OnlineLazyReader(
                 }
             }
         }
+        if (showSettings) {
+            OnlineSettingsSheet(
+                prefs = prefs,
+                enhance = enhance,
+                onPrefs = onPrefs,
+                onEnhance = onEnhance,
+                onDismiss = { showSettings = false },
+            )
+        }
         if (showChapters) {
-            val skin = skinFor(prefs.chromeLight)
-            SkinDialog("目录", prefs.chromeLight, onDismiss = { showChapters = false }) {
-                LazyColumn(Modifier.heightIn(max = 400.dp)) {
-                    items(nav.chapters.size) { i ->
-                        val item = nav.chapters[i]
-                        val active = i == nav.index
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    showChapters = false
-                                    if (!active) onPickChapter(i)
-                                }
-                                .padding(vertical = 11.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text(
-                                text = item.second.ifBlank { "第 ${i + 1} 话" },
-                                modifier = Modifier.weight(1f),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                color = if (active) skin.accent else skin.fg,
-                                fontSize = 12.5.sp,
-                                fontWeight = if (active) FontWeight.Medium else FontWeight.Normal,
-                            )
-                            if (active) Text("当前", color = skin.accent, fontSize = 10.5.sp)
-                        }
-                    }
-                }
-            }
+            OnlineChapterSheet(
+                chapters = nav.chapters,
+                index = nav.index,
+                onPick = onPickChapter,
+                onDismiss = { showChapters = false },
+            )
         }
     }
 }
 
-/**
- * 在线阅读器的栏体行为：4 秒自动收起；返回键先收面板、再叫出顶栏、最后才退出。
- *
- * 以前在线阅读只有一条常驻的顶栏，按返回直接走人，面板也没地方开 ——
- * 现在和本地阅读器一样：点画面切换、面板优先关、返回分级。
- */
 @Composable
 private fun OnlineReaderBars(
     showBar: Boolean,
     onShowBar: (Boolean) -> Unit,
-    panel: ReaderPanel,
-    onPanel: (ReaderPanel) -> Unit,
     onBack: () -> Unit,
-    /** 目录这类「开着的时候不能自动收栏」的浮层 */
-    modal: Boolean = false,
-    onCloseModal: () -> Unit = {},
+    settingsOpen: Boolean,
+    chaptersOpen: Boolean,
+    onCloseSettings: () -> Unit,
+    onCloseChapters: () -> Unit,
 ) {
-    LaunchedEffect(showBar, panel, modal) {
-        if (showBar && panel == ReaderPanel.NONE && !modal) {
+    LaunchedEffect(showBar, settingsOpen, chaptersOpen) {
+        if (showBar && !settingsOpen && !chaptersOpen) {
             kotlinx.coroutines.delay(4000)
             onShowBar(false)
         }
     }
     BackHandler {
         when {
-            modal -> onCloseModal()
-            panel != ReaderPanel.NONE -> onPanel(ReaderPanel.NONE)
+            settingsOpen -> onCloseSettings()
+            chaptersOpen -> onCloseChapters()
             !showBar -> onShowBar(true)
             else -> onBack()
         }

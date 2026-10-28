@@ -201,6 +201,7 @@ struct DetailView: View {
 
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var ui: UiStore
+    @EnvironmentObject private var store: LibraryStore
     @Environment(\.appColors) private var c
 
     @State private var entryIndex = 0
@@ -287,6 +288,7 @@ struct DetailView: View {
         // 看起来就不是全屏阅读（本地阅读器一直是 fullScreenCover）。
         .fullScreenCover(item: $reading) { payload in
             ReaderSheet(payload: payload)
+                .environmentObject(store)
         }
     }
 
@@ -500,7 +502,11 @@ struct DetailView: View {
                         comicId: entry.comicId,
                         epId: ep.id,
                         count: n
-                    )
+                    ),
+                    sourceKey: entry.sourceKey,
+                    comicId: entry.comicId,
+                    chapters: chapters.map { ($0.id, $0.title) },
+                    chapterIndex: ep.index
                 )
             }
             return
@@ -511,7 +517,14 @@ struct DetailView: View {
             return
         }
         await MainActor.run {
-            reading = ReadingPayload(title: ep.title, urls: urls)
+            reading = ReadingPayload(
+                title: ep.title,
+                urls: urls,
+                sourceKey: entry.sourceKey,
+                comicId: entry.comicId,
+                chapters: chapters.map { ($0.id, $0.title) },
+                chapterIndex: ep.index
+            )
         }
     }
 }
@@ -884,12 +897,18 @@ struct ReadingPayload: Identifiable {
     let title: String
     let urls: [String]
     var lazy: LazyRef? = nil
+    /// 源 key / 作品 id：换话时要重新请求 pages，非惰性源也得有这两个
+    var sourceKey: String = ""
+    var comicId: String = ""
+    /// 整本目录（id，标题）—— 阅读中直接换话，不用退出去重进
+    var chapters: [(String, String)] = []
+    var chapterIndex: Int = 0
 }
 
-/// 在线章节阅读：竖向无缝连续（跟本地阅读器一个习惯）。
+/// 在线章节阅读。
 ///
-/// 页图走 RemoteImageLoader（带 UA / 15s 超时 / 解码缓存），取不到会直接说哪一页没取到，
-/// 而不是留一个永远转的菊花 —— 之前的版本就是「黑屏两个菊花、还特别卡」。
+/// 界面分成两套：本地书用 ReaderView 那套「两行工具栏」，在线用这里自己的一套
+/// （一行顶栏 + 底部设置面板），因为在线是网页/条漫，顶上两行会一直压着内容。
 struct ReaderSheet: View {
     let payload: ReadingPayload
 
@@ -902,6 +921,7 @@ struct OnlineReader: View {
 
     let payload: ReadingPayload
 
+    @EnvironmentObject private var store: LibraryStore
     @Environment(\.dismiss) private var dismiss
 
     /// 一页：地址 + 源要求的请求头 + 打乱段数。
@@ -917,123 +937,397 @@ struct OnlineReader: View {
     @State private var loading: Set<Int> = []
     @State private var current = 0
     @State private var showBar = true
+    @State private var showSettings = false
+    @State private var showChapters = false
+
+    /// 当前这一话（换话时改）
+    @State private var epId: String
+    @State private var epTitle: String
+    @State private var pageCount: Int
+    @State private var isLazy: Bool
+    @State private var chapterIndex: Int
+    @State private var chapters: [(String, String)]
+    @State private var switching = false
+
+    @State private var savedBrightness: CGFloat = UIScreen.main.brightness
+    @State private var hideTask: Task<Void, Never>?
 
     init(payload: ReadingPayload) {
         self.payload = payload
         var seed: [Int: PageRef] = [:]
         for (i, u) in payload.urls.enumerated() where !u.isEmpty { seed[i] = PageRef(url: u) }
         _pages = State(initialValue: seed)
+        _epId = State(initialValue: payload.lazy?.epId ?? "")
+        _epTitle = State(initialValue: payload.title)
+        _pageCount = State(initialValue: payload.lazy?.count ?? payload.urls.count)
+        _isLazy = State(initialValue: payload.lazy != nil)
+        _chapterIndex = State(initialValue: payload.chapterIndex)
+        _chapters = State(initialValue: payload.chapters)
     }
 
-    private var total: Int { payload.lazy?.count ?? payload.urls.count }
+    private var sourceKey: String { payload.lazy?.key ?? payload.sourceKey }
+    private var comicId: String { payload.lazy?.comicId ?? payload.comicId }
+
+    private var layout: ReaderLayout { store.prefs.onlineLayout }
+    private var spreads: Int { max(1, (pageCount + 1) / 2) }
+
+    /// 页面间距：设置里存的是「视口高度的百分比」
+    private var gap: CGFloat {
+        UIScreen.main.bounds.height * CGFloat(store.prefs.pageGapPercent) / 100
+    }
+
+    private var total: Int { max(pageCount, 0) }
 
     var body: some View {
         ZStack(alignment: .top) {
             Color.black.ignoresSafeArea()
 
-            ScrollView(.vertical, showsIndicators: false) {
-                LazyVStack(spacing: 0) {
-                    ForEach(0..<max(total, 0), id: \.self) { i in
-                        cell(i)
-                            .frame(maxWidth: .infinity)
-                            .onAppear { if current != i { current = i } }
+            content
+
+            if showBar {
+                VStack(spacing: 0) {
+                    OnlineTopBar(
+                        title: epTitle,
+                        pageLabel: total > 0 ? "\(min(current + 1, total)) / \(total) 页" : "0 页",
+                        hasChapters: chapters.count > 1,
+                        onBack: { dismiss() },
+                        onChapters: {
+                            hideTask?.cancel()
+                            withAnimation(.easeOut(duration: 0.22)) { showChapters = true }
+                        },
+                        onSettings: {
+                            hideTask?.cancel()
+                            withAnimation(.easeOut(duration: 0.22)) { showSettings = true }
+                        }
+                    )
+                    Spacer(minLength: 0)
+                    if needsSeekBar {
+                        OnlineSeekBar(current: current, total: total) { target in
+                            seek(to: target)
+                        }
+                    }
+                }
+                .transition(.opacity)
+            }
+
+            if showSettings || showChapters {
+                OnlineSkin.scrim
+                    .ignoresSafeArea()
+                    .onTapGesture { closePanels() }
+                    .transition(.opacity)
+            }
+
+            if showSettings {
+                VStack(spacing: 0) {
+                    Spacer(minLength: 0)
+                    OnlineSettingsPanel(prefs: $store.prefs) { closePanels() }
+                }
+                .ignoresSafeArea(edges: .bottom)
+                .transition(.move(edge: .bottom))
+            }
+
+            if showChapters {
+                VStack(spacing: 0) {
+                    Spacer(minLength: 0)
+                    OnlineChapterPanel(
+                        chapters: chapters,
+                        index: chapterIndex,
+                        onPick: { switchChapter($0) },
+                        onClose: { closePanels() }
+                    )
+                }
+                .ignoresSafeArea(edges: .bottom)
+                .transition(.move(edge: .bottom))
+            }
+
+            if switching {
+                Color.black.opacity(0.4).ignoresSafeArea()
+                ProgressView().tint(.white)
+            }
+        }
+        .statusBarHidden(!showBar)
+        .onAppear {
+            applyScreen()
+            scheduleHide()
+        }
+        .onDisappear {
+            hideTask?.cancel()
+            UIScreen.main.brightness = savedBrightness
+            UIApplication.shared.isIdleTimerDisabled = false
+        }
+        .onChange(of: store.prefs.brightness) { _ in applyScreen() }
+        .onChange(of: store.prefs.autoBrightness) { _ in applyScreen() }
+        .onChange(of: store.prefs.keepScreenOn) { _ in applyScreen() }
+        .onChange(of: store.prefs.onlineLayout) { newValue in
+            // 换阅读器类型时把位置带过去，别又从第 1 页开始
+            if newValue == .double { current = (current / 2) * 2 }
+        }
+    }
+
+    // MARK: - 五种布局
+
+    private var needsSeekBar: Bool {
+        layout == .paged || layout == .double
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch layout {
+        case .webtoon:
+            verticalScroll(zoomable: false)
+        case .free:
+            verticalScroll(zoomable: true)
+        case .slide:
+            slideScroll
+        case .paged:
+            pagedTab
+        case .double:
+            doubleTab
+        }
+    }
+
+    private func verticalScroll(zoomable: Bool) -> some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            LazyVStack(spacing: gap) {
+                ForEach(Array(0..<total), id: \.self) { i in
+                    let cellView = cell(i, fit: false)
+                        .frame(maxWidth: .infinity)
+                    if zoomable {
+                        ZoomablePage { cellView }
+                            .onAppear { current = i }
+                    } else {
+                        cellView.onAppear { current = i }
                     }
                 }
             }
-            .ignoresSafeArea()
-            .simultaneousGesture(
-                SpatialTapGesture().onEnded { _ in toggleBar() }
-            )
-
-            if showBar { bar }
         }
-        .statusBarHidden(!showBar)
+        .ignoresSafeArea()
+        .simultaneousGesture(tapGesture)
     }
 
-    // MARK: 一页
+    private var slideScroll: some View {
+        GeometryReader { geo in
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(spacing: gap) {
+                    ForEach(Array(0..<total), id: \.self) { i in
+                        cell(i, fit: true)
+                            .frame(width: geo.size.width, height: geo.size.height)
+                            .onAppear { current = i }
+                    }
+                }
+            }
+        }
+        .ignoresSafeArea()
+        .simultaneousGesture(tapGesture)
+    }
+
+    private var pagedTab: some View {
+        TabView(selection: pageBinding) {
+            ForEach(Array(0..<total), id: \.self) { i in
+                cell(i, fit: true)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .tag(i)
+            }
+        }
+        .tabViewStyle(.page(indexDisplayMode: .never))
+        .ignoresSafeArea()
+        .simultaneousGesture(tapGesture)
+    }
+
+    private var doubleTab: some View {
+        TabView(selection: spreadBinding) {
+            ForEach(Array(0..<spreads), id: \.self) { s in
+                HStack(spacing: 0) {
+                    cell(s * 2, fit: true)
+                    if s * 2 + 1 < total {
+                        cell(s * 2 + 1, fit: true)
+                    } else {
+                        Color.black
+                    }
+                }
+                .tag(s)
+            }
+        }
+        .tabViewStyle(.page(indexDisplayMode: .never))
+        .ignoresSafeArea()
+        .simultaneousGesture(tapGesture)
+    }
+
+    /// 右到左：把 TabView 的下标反过来映射，图片顺序自然就从右往左
+    private var pageBinding: Binding<Int> {
+        Binding(
+            get: { store.prefs.rightToLeft ? max(total - 1 - current, 0) : current },
+            set: { current = store.prefs.rightToLeft ? max(total - 1 - $0, 0) : $0 }
+        )
+    }
+
+    private var spreadBinding: Binding<Int> {
+        Binding(
+            get: {
+                let s = current / 2
+                return store.prefs.rightToLeft ? max(spreads - 1 - s, 0) : s
+            },
+            set: { value in
+                let s = store.prefs.rightToLeft ? max(spreads - 1 - value, 0) : value
+                current = s * 2
+            }
+        )
+    }
+
+    // MARK: - 一页
 
     @ViewBuilder
-    private func cell(_ i: Int) -> some View {
+    private func cell(_ i: Int, fit: Bool) -> some View {
         if let p = pages[i] {
-            OnlinePageImage(url: p.url, index: i, headers: p.headers, descramble: p.num)
-                .task(id: p.url) { prefetch(i) }
+            OnlinePageImage(
+                url: p.url,
+                index: i,
+                headers: p.headers,
+                descramble: p.num,
+                fit: fit
+            )
+            .task(id: p.url) { prefetch(i) }
         } else if let f = fails[i] {
-            failCell(i, f)
+            failCell(i, f, fit: fit)
         } else {
-            Color.black
-                .aspectRatio(0.72, contentMode: .fit)
-                .overlay(ProgressView().tint(.white.opacity(0.4)))
-                .task(id: "fetch-\(i)") { await ensure(i) }
+            ZStack {
+                Color.black
+                ProgressView().tint(.white.opacity(0.4))
+            }
+            .frame(maxWidth: .infinity)
+            .frame(maxHeight: fit ? .infinity : nil)
+            .aspectRatio(fit ? nil : 0.72, contentMode: .fit)
+            .task(id: "fetch-\(i)") { await ensure(i) }
         }
     }
 
-    private func failCell(_ i: Int, _ message: String) -> some View {
+    private func failCell(_ i: Int, _ message: String, fit: Bool) -> some View {
         VStack(spacing: 9) {
-            Text("第 \(i + 1) 页没取到：\(message)")
-                .font(.system(size: 12.5))
+            Text("第 \(i + 1) 页没取到")
+                .font(.system(size: 13))
+                .foregroundColor(.white.opacity(0.72))
+            Text(message)
+                .font(.system(size: 11))
+                .foregroundColor(.white.opacity(0.45))
+                .lineLimit(2)
                 .multilineTextAlignment(.center)
-                .foregroundColor(.white.opacity(0.75))
             Button {
-                fails[i] = nil
+                fails.removeValue(forKey: i)
                 Task { await ensure(i) }
             } label: {
                 Text("点这里重试")
                     .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(Color(red: 1, green: 0.43, blue: 0.61))
+                    .foregroundColor(OnlineSkin.accent)
             }
             .buttonStyle(.plain)
         }
-        .padding(.horizontal, 24)
+        .padding(.horizontal, 18)
         .frame(maxWidth: .infinity)
-        .frame(height: 220)
+        .frame(maxHeight: fit ? .infinity : nil)
+        .frame(height: fit ? nil : 260)
     }
 
-    private var bar: some View {
-        HStack(spacing: 8) {
-            Button {
-                dismiss()
-            } label: {
-                Image(systemName: "chevron.left")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundColor(.white)
-                    .frame(width: 34, height: 34)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
+    // MARK: - 栏体
 
-            Text(payload.title)
-                .font(.system(size: 13, weight: .medium))
-                .foregroundColor(.white)
-                .lineLimit(1)
-
-            Spacer(minLength: 0)
-
-            Text(total > 0 ? "\(min(current + 1, total)) / \(total) 页" : "0 页")
-                .font(.system(size: 12))
-                .foregroundColor(.white.opacity(0.7))
+    private var tapGesture: some Gesture {
+        SpatialTapGesture().onEnded { _ in
+            guard !showSettings, !showChapters else { return }
+            withAnimation(.easeInOut(duration: 0.16)) { showBar.toggle() }
+            scheduleHide()
         }
-        .padding(.horizontal, 10)
-        .padding(.top, 6)
-        .padding(.bottom, 8)
-        .background(Color.black.opacity(0.55))
     }
 
-    private func toggleBar() {
-        withAnimation(.easeInOut(duration: 0.16)) { showBar.toggle() }
+    private func scheduleHide() {
+        hideTask?.cancel()
+        guard showBar else { return }
+        hideTask = Task {
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            if Task.isCancelled { return }
+            await MainActor.run {
+                guard !showSettings, !showChapters else { return }
+                withAnimation(.easeInOut(duration: 0.2)) { showBar = false }
+            }
+        }
     }
 
-    // MARK: 惰性取图
+    private func closePanels() {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            showSettings = false
+            showChapters = false
+            showBar = true
+        }
+        scheduleHide()
+    }
+
+    private func seek(to target: Int) {
+        current = min(max(target, 0), max(total - 1, 0))
+    }
+
+    // MARK: - 亮度 / 常亮
+
+    private func applyScreen() {
+        UIApplication.shared.isIdleTimerDisabled = store.prefs.keepScreenOn
+        if store.prefs.autoBrightness {
+            UIScreen.main.brightness = savedBrightness
+        } else {
+            UIScreen.main.brightness = min(max(CGFloat(store.prefs.brightness / 100), 0.02), 1)
+        }
+    }
+
+    // MARK: - 换话
+
+    private func switchChapter(_ index: Int) {
+        guard index >= 0, index < chapters.count, index != chapterIndex else { return }
+        let item = chapters[index]
+        chapterIndex = index
+        epId = item.0
+        epTitle = item.1
+        pages = [:]
+        fails = [:]
+        loading = []
+        current = 0
+        showChapters = false
+        showBar = true
+        scheduleHide()
+
+        guard !sourceKey.isEmpty, !comicId.isEmpty else { return }
+        switching = true
+        Task {
+            let r = await SourceEngine.shared.pages(key: sourceKey, comicId: comicId, epId: item.0)
+            await MainActor.run {
+                switching = false
+                guard (r["ok"] as? Bool) == true, let d = r["data"] as? [String: Any] else {
+                    fails[0] = r["error"] as? String ?? "这一话打不开"
+                    pageCount = 0
+                    return
+                }
+                if (d["lazy"] as? Bool) == true {
+                    isLazy = true
+                    pageCount = d["count"] as? Int ?? 0
+                } else {
+                    isLazy = false
+                    let urls = d["images"] as? [String] ?? []
+                    var seed: [Int: PageRef] = [:]
+                    for (i, u) in urls.enumerated() where !u.isEmpty { seed[i] = PageRef(url: u) }
+                    pages = seed
+                    pageCount = urls.count
+                }
+            }
+        }
+    }
+
+    // MARK: - 惰性取图
 
     @MainActor
     private func ensure(_ i: Int) async {
-        guard i >= 0, i < total else { return }
+        guard i >= 0, i < pageCount else { return }
         guard pages[i] == nil, fails[i] == nil, !loading.contains(i) else { return }
-        guard let lz = payload.lazy else { return }
+        guard isLazy, !epId.isEmpty else { return }
         loading.insert(i)
         let r = await SourceEngine.shared.pageImage(
-            key: lz.key,
-            comicId: lz.comicId,
-            epId: lz.epId,
+            key: sourceKey,
+            comicId: comicId,
+            epId: epId,
             index: i
         )
         loading.remove(i)
@@ -1058,7 +1352,7 @@ struct OnlineReader: View {
 
     /// 后面两页顺手解出来，并且把图先下好 —— 往下划的时候直接命中缓存
     private func prefetch(_ i: Int) {
-        guard payload.lazy != nil else { return }
+        guard isLazy else { return }
         for k in 1...2 {
             let next = i + k
             guard next < total, pages[next] == nil, fails[next] == nil, !loading.contains(next) else {
@@ -1073,5 +1367,31 @@ struct OnlineReader: View {
                 )
             }
         }
+    }
+}
+
+/// 「自由放大」：整页双指缩放 1–4 倍，竖向滚动照常（用 simultaneousGesture，不抢滚动）。
+private struct ZoomablePage<Content: View>: View {
+    @ViewBuilder var content: () -> Content
+
+    @State private var scale: CGFloat = 1
+    @State private var lastScale: CGFloat = 1
+
+    var body: some View {
+        content()
+            .scaleEffect(scale)
+            .simultaneousGesture(
+                MagnificationGesture()
+                    .onChanged { value in
+                        scale = min(max(lastScale * value, 1), 4)
+                    }
+                    .onEnded { _ in
+                        lastScale = scale
+                        if scale <= 1.01 {
+                            scale = 1
+                            lastScale = 1
+                        }
+                    }
+            )
     }
 }

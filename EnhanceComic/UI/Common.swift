@@ -263,6 +263,8 @@ struct OnlinePageImage: View {
     var referer: String? = nil
     var headers: [String: String]? = nil
     var descramble: Int = 0
+    /// true = 适应屏幕（相册/双页）；false = 按宽度铺满（Webtoon）
+    var fit: Bool = false
 
     @Environment(\.displayScale) private var scale
     @State private var image: UIImage?
@@ -272,12 +274,19 @@ struct OnlinePageImage: View {
     var body: some View {
         Group {
             if let image {
-                Image(uiImage: image)
-                    .resizable()
-                    .aspectRatio(
-                        image.size.width / max(image.size.height, 1),
-                        contentMode: .fit
-                    )
+                if fit {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    Image(uiImage: image)
+                        .resizable()
+                        .aspectRatio(
+                            image.size.width / max(image.size.height, 1),
+                            contentMode: .fit
+                        )
+                }
             } else if failed {
                 VStack(spacing: 9) {
                     Text("第 \(index + 1) 页没取到")

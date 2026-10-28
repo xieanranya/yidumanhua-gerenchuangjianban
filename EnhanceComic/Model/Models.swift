@@ -8,6 +8,35 @@ enum BookType: String, Codable {
     case folder
 }
 
+/// 在线阅读器的呈现方式。
+///
+/// 本地书走的是 readingMode + 页面布局那一套（原生画布，支持翻页动画 / 裁白边 / 双页），
+/// 在线图片是 SwiftUI 渲染的，两套能力不同，所以单独一个字段，互不干扰。
+enum ReaderLayout: String, Codable, CaseIterable, Identifiable {
+    /// 竖条连续滚动，页与页无缝 —— 看条漫
+    case webtoon
+    /// 单页，左右翻
+    case paged
+    /// 竖条连续 + 双指缩放拖动
+    case free
+    /// 两页并排，左右翻
+    case double
+    /// 横向连续滚动
+    case slide
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .webtoon: return "Webtoon"
+        case .paged: return "相册"
+        case .free: return "自由放大"
+        case .double: return "双页相册"
+        case .slide: return "滑动"
+        }
+    }
+}
+
 enum ReadingMode: String, Codable, CaseIterable, Identifiable {
     case paged
     case vertical
@@ -242,6 +271,8 @@ struct EnhanceSettings: Codable, Equatable, Hashable {
 
 struct ReaderPrefs: Codable, Equatable, Hashable {
     var readingMode: ReadingMode = .paged
+    /// 在线阅读器的呈现方式；和本地书的 readingMode 分开存
+    var onlineLayout: ReaderLayout = .webtoon
     var rightToLeft = true
     var splitWidePages = true
     var autoCropWhiteBorders = false
@@ -276,7 +307,8 @@ struct ReaderPrefs: Codable, Equatable, Hashable {
     init() {}
 
     enum CodingKeys: String, CodingKey {
-        case readingMode, rightToLeft, splitWidePages, autoCropWhiteBorders, doublePage, forceSpread
+        case readingMode, onlineLayout, rightToLeft, splitWidePages, autoCropWhiteBorders
+        case doublePage, forceSpread
         case pageGapPercent, grayscale, autoContrast, invert, blueLight
         case keepScreenOn, autoBrightness, brightness, background, doubleTapZoom, chromeLight
         case scaleMode, tapLeftAction, tapCenterAction, tapRightAction
@@ -285,6 +317,7 @@ struct ReaderPrefs: Codable, Equatable, Hashable {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         readingMode = (try? c.decode(ReadingMode.self, forKey: .readingMode)) ?? .paged
+        onlineLayout = (try? c.decode(ReaderLayout.self, forKey: .onlineLayout)) ?? .webtoon
         rightToLeft = (try? c.decode(Bool.self, forKey: .rightToLeft)) ?? true
         splitWidePages = (try? c.decode(Bool.self, forKey: .splitWidePages)) ?? true
         autoCropWhiteBorders = (try? c.decode(Bool.self, forKey: .autoCropWhiteBorders)) ?? false

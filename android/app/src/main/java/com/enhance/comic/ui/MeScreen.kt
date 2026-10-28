@@ -53,7 +53,6 @@ fun MeScreen(
     onSourceManager: () -> Unit,
     onHistory: () -> Unit,
     onShelf: () -> Unit,
-    onReaderSettings: () -> Unit,
 ) {
     val c = LocalColors.current
     var rows by remember { mutableStateOf<List<SourceRow>>(emptyList()) }
@@ -147,14 +146,6 @@ fun MeScreen(
                     desc = "导入、扫描文件夹",
                     value = "${books.size} 本",
                     onClick = onShelf,
-                )
-                HLine()
-                SettingRow(
-                    glyph = Glyph.GEAR,
-                    title = "阅读设置",
-                    desc = "裁白边、锐化、蓝光、翻页方式",
-                    value = null,
-                    onClick = onReaderSettings,
                 )
                 HLine()
                 SettingRow(

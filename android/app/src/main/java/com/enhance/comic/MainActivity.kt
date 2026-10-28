@@ -33,6 +33,7 @@ import com.enhance.comic.model.Book
 import com.enhance.comic.ui.AppFrame
 import com.enhance.comic.ui.AppTab
 import com.enhance.comic.ui.DiscoverScreen
+import com.enhance.comic.ui.ExploreCache
 import com.enhance.comic.ui.HistoryScreen
 import com.enhance.comic.ui.HomeScreen
 import com.enhance.comic.ui.LocalColors
@@ -40,7 +41,6 @@ import com.enhance.comic.ui.MeScreen
 import com.enhance.comic.ui.OnlineSourceScreen
 import com.enhance.comic.ui.WorkEntry
 import com.enhance.comic.ui.ReaderScreen
-import com.enhance.comic.ui.ReaderSettingsSheet
 import com.enhance.comic.ui.ShelfScreen
 import com.enhance.comic.ui.ThemeMode
 import com.enhance.comic.ui.colorsFor
@@ -54,6 +54,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        // 上次的发现页结果读回内存：一进「发现」直接有内容，不用先看一轮菊花
+        ExploreCache.attach(applicationContext)
         setContent {
             Root()
         }
@@ -118,7 +120,6 @@ private fun Root() {
     var importing by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
     var records by remember { mutableStateOf(ui.records()) }
-    var showReaderSheet by remember { mutableStateOf(false) }
     var prefs by remember { mutableStateOf(store.readerPrefs) }
     var enhance by remember { mutableStateOf(store.enhance) }
     var discoverQuery by remember { mutableStateOf("") }
@@ -322,7 +323,6 @@ private fun Root() {
                                 onSourceManager = { overlay = Overlay.Online(null, null, "") },
                                 onHistory = { overlay = Overlay.History },
                                 onShelf = { switchTab(AppTab.SHELF) },
-                                onReaderSettings = { showReaderSheet = true },
                             )
                         }
                     }
@@ -331,19 +331,4 @@ private fun Root() {
         }
     }
 
-    if (showReaderSheet) {
-        ReaderSettingsSheet(
-            prefs = prefs,
-            enhance = enhance,
-            onPrefsChange = {
-                prefs = it
-                store.readerPrefs = it
-            },
-            onEnhanceChange = {
-                enhance = it
-                store.enhance = it
-            },
-            onDismiss = { showReaderSheet = false },
-        )
-    }
 }

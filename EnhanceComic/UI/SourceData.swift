@@ -322,35 +322,114 @@ enum ExploreCache {
         let works: [Work]
         let ok: Int
         let fail: Int
+        /// 10 分钟内拉的：界面直接用，连网络都不用打
+        let fresh: Bool
     }
 
-    private static let ttl: TimeInterval = 3 * 60
-    private static var sig = ""
-    private static var at: Date = .distantPast
-    private static var works: [Work] = []
-    private static var ok = 0
-    private static var fail = 0
+    private final class Entry {
+        let works: [Work]
+        let ok: Int
+        let fail: Int
+        let at: Date
+        init(_ works: [Work], _ ok: Int, _ fail: Int, _ at: Date) {
+            self.works = works; self.ok = ok; self.fail = fail; self.at = at
+        }
+    }
+
+    private static let freshInterval: TimeInterval = 10 * 60
+    private static let keepInterval: TimeInterval = 7 * 24 * 3600
+    private static let maxEntries = 4
+    private static let storeKey = "explore.cache.v2"
+
+    private static var slots: [String: Entry] = load()
 
     static func get(_ key: String) -> Hit? {
-        guard !key.isEmpty, key == sig, !works.isEmpty else { return nil }
-        guard Date().timeIntervalSince(at) <= ttl else { return nil }
-        return Hit(works: works, ok: ok, fail: fail)
+        guard !key.isEmpty, let e = slots[key], !e.works.isEmpty else { return nil }
+        let age = Date().timeIntervalSince(e.at)
+        if age > keepInterval {
+            slots.removeValue(forKey: key)
+            save()
+            return nil
+        }
+        return Hit(works: e.works, ok: e.ok, fail: e.fail, fresh: age <= freshInterval)
     }
 
     static func put(_ key: String, _ list: [Work], _ okCount: Int, _ failCount: Int) {
         guard !key.isEmpty, !list.isEmpty else { return }
-        sig = key
-        at = Date()
-        works = list
-        ok = okCount
-        fail = failCount
+        if slots.count >= maxEntries, slots[key] == nil, let first = slots.keys.first {
+            slots.removeValue(forKey: first)
+        }
+        slots[key] = Entry(Array(list.prefix(240)), okCount, failCount, Date())
+        save()
     }
 
     static func clear() {
-        sig = ""
-        at = .distantPast
-        works = []
-        ok = 0
-        fail = 0
+        slots = [:]
+        save()
+    }
+
+    // MARK: - 落盘
+    // 发现页/首页的推荐要能跨启动直接显示，不能每次都重新问一遍源。
+
+    private static func save() {
+        var root: [String: Any] = [:]
+        for (k, e) in slots {
+            root[k] = [
+                "at": e.at.timeIntervalSince1970,
+                "ok": e.ok,
+                "fail": e.fail,
+                "works": e.works.map { workDict($0) },
+            ]
+        }
+        UserDefaults.standard.set(root, forKey: storeKey)
+    }
+
+    private static func load() -> [String: Entry] {
+        guard let root = UserDefaults.standard.dictionary(forKey: storeKey) else { return [:] }
+        var out: [String: Entry] = [:]
+        for (k, v) in root {
+            guard let o = v as? [String: Any],
+                  let ts = o["at"] as? Double,
+                  let arr = o["works"] as? [[String: Any]] else { continue }
+            let works = arr.compactMap { workFromDict($0) }
+            if works.isEmpty { continue }
+            out[k] = Entry(works, (o["ok"] as? Int) ?? 0, (o["fail"] as? Int) ?? 0,
+                           Date(timeIntervalSince1970: ts))
+        }
+        return out
+    }
+
+    private static func workDict(_ w: Work) -> [String: Any] {
+        [
+            "n": w.norm,
+            "t": w.title,
+            "c": w.cover,
+            "e": w.entries.map { e in
+                ["sk": e.sourceKey, "sn": e.sourceName, "id": e.comicId, "t": e.title, "c": e.cover]
+            },
+        ]
+    }
+
+    private static func workFromDict(_ o: [String: Any]) -> Work? {
+        guard let arr = o["e"] as? [[String: Any]], !arr.isEmpty else { return nil }
+        var entries: [WorkEntry] = []
+        for e in arr {
+            guard let id = e["id"] as? String, !id.isEmpty else { continue }
+            entries.append(WorkEntry(
+                sourceKey: e["sk"] as? String ?? "",
+                sourceName: e["sn"] as? String ?? "",
+                comicId: id,
+                title: e["t"] as? String ?? "",
+                cover: e["c"] as? String ?? ""
+            ))
+        }
+        guard !entries.isEmpty else { return nil }
+        let title = o["t"] as? String ?? ""
+        return Work(
+            norm: (o["n"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? normalizeTitle(title),
+            title: title,
+            cover: o["c"] as? String ?? "",
+            entries: entries
+        )
     }
 }

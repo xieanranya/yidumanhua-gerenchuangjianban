@@ -224,7 +224,11 @@ struct DiscoverScreen: View {
                 return
             }
             let cacheSig = "v|" + q + "|" + targets.map { $0.key }.joined(separator: ",")
+            // 缓存两档：10 分钟内直接当结果用；更早的先画出来，再后台静默更新。
+            // 以前只有 3 分钟内存缓存，过了就整页重拉，每次点「发现」都要等一轮。
+            var stale = false
             if let hit = ExploreCache.get(cacheSig) {
+                let fresh = hit.fresh
                 await MainActor.run {
                     works = hit.works
                     sections = []
@@ -233,7 +237,8 @@ struct DiscoverScreen: View {
                     busy = false
                     error = nil
                 }
-                return
+                if fresh { return }
+                stale = true
             }
             var all: [ComicRow] = []
             var ok = 0
@@ -265,12 +270,15 @@ struct DiscoverScreen: View {
                         let snapshot = groupWorks(all, sort: false)
                         let okNow = ok
                         let badNow = bad
-                        await MainActor.run {
-                            works = snapshot
-                            sections = []
-                            okSources = okNow
-                            failedSources = badNow
-                            if busy { busy = false }
+                        // 屏幕上是上次的完整结果时，刷新过程中别把它缩成一两个源
+                        if !stale {
+                            await MainActor.run {
+                                works = snapshot
+                                sections = []
+                                okSources = okNow
+                                failedSources = badNow
+                                if busy { busy = false }
+                            }
                         }
                     } else {
                         bad += 1

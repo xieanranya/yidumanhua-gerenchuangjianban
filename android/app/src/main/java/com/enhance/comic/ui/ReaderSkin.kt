@@ -769,6 +769,28 @@ private fun FilterPanel(
         Modifier.fillMaxWidth(),
         hint = "低清源更明显",
     ) { onEnhance(enhance.copy(sharpen = it)) }
+    // 强度和降噪原来只在「我的 → 阅读设置」那个旧面板里，现在并到这里，
+    // 阅读器一套面板就是全部设置，不再有第二个入口。
+    if (enhance.sharpen) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text("锐化强度", color = skin.dim, fontSize = 10.5.sp)
+            Spacer(Modifier.weight(1f))
+            Text("${enhance.sharpenAmount}", color = skin.accent, fontSize = 10.5.sp)
+        }
+        SkinSlider(
+            value = enhance.sharpenAmount.toFloat(),
+            range = 0f..100f,
+            skin = skin,
+            modifier = Modifier.fillMaxWidth(),
+        ) { onEnhance(enhance.copy(sharpenAmount = it.toInt().coerceIn(0, 100))) }
+    }
+    SkinCheckRow(
+        "降噪（Kuwahara）",
+        enhance.denoise,
+        skin,
+        Modifier.fillMaxWidth(),
+        hint = "低清源更干净，翻页稍慢",
+    ) { onEnhance(enhance.copy(denoise = it)) }
     SkinCheckRow("反色", prefs.invert, skin, Modifier.fillMaxWidth()) {
         onPrefs(prefs.copy(invert = it))
     }

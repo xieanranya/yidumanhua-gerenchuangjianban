@@ -83,11 +83,7 @@ fun DiscoverScreen(
     var srcs by remember { mutableStateOf<org.json.JSONArray?>(null) }
 
     LaunchedEffect(selected, query, tick, sourceRev) {
-        busy = true
         err = null
-        failures = 0
-        okCount = 0
-        works = emptyList()
         sections = emptyList()
         if (srcs == null) {
             runCatching { srcs = engine.sources() }
@@ -105,14 +101,25 @@ fun DiscoverScreen(
 
         if (selected.isBlank()) {
             val targets = onRows.take(8)
-            // 3 分钟内刚拉过同一批源、同一个关键词：直接用上次的结果
-            ExploreCache.get("v|" + query + "|" + targets.joinToString(",") { it.key })?.let { hit ->
+            val cacheSig = "v|" + query + "|" + targets.joinToString(",") { it.key }
+            // 缓存分两档：
+            //   10 分钟内 = fresh，直接用，连网络都不打
+            //   更早的     = 先把旧内容画出来（不转圈），再在后台悄悄更新
+            // 以前只有 3 分钟内存缓存，过了就一直重拉 —— 每次点「发现」都要等一轮。
+            val hit = ExploreCache.get(cacheSig)
+            var stale = false
+            if (hit != null) {
                 works = hit.works
                 okCount = hit.ok
                 failures = hit.fail
                 busy = false
-                err = null
-                return@LaunchedEffect
+                if (hit.fresh) return@LaunchedEffect
+                stale = true
+            } else {
+                works = emptyList()
+                okCount = 0
+                failures = 0
+                busy = true
             }
             if (targets.isEmpty()) {
                 busy = false
@@ -127,7 +134,6 @@ fun DiscoverScreen(
             // 引擎的 JS 是同步桥，多个源其实在同一个线程上排队，
             // 「等全部跑完再画」= 等所有源依次跑完，用户就以为卡死了。
             val acc = ArrayList<ComicRow>()
-            val cacheSig = "v|" + query + "|" + targets.joinToString(",") { it.key }
             var done = 0
             coroutineScope {
                 targets.forEach { s ->
@@ -161,8 +167,11 @@ fun DiscoverScreen(
                             okCount += 1
                             acc.addAll(got)
                             // sort=false：先按到达顺序摆，否则每来一个源整片格子都重排一次，看着在跳
-                            works = groupWorks(acc.toList(), sort = false)
-                            if (busy) busy = false
+                            // stale：屏幕上已经是上次的完整结果，别让它在刷新过程中缩成一两个源
+                            if (!stale) {
+                                works = groupWorks(acc.toList(), sort = false)
+                                if (busy) busy = false
+                            }
                         } else {
                             failures += 1
                         }
@@ -183,6 +192,10 @@ fun DiscoverScreen(
                 }
             }
         } else {
+            works = emptyList()
+            okCount = 0
+            failures = 0
+            busy = true
             val row = rows.firstOrNull { it.key == selected }
             if (row == null) {
                 busy = false

@@ -228,25 +228,59 @@ fun groupWorks(list: List<ComicRow>, sort: Boolean = true): List<Work> {
  * 只放内存（进程退了就没了），空结果不缓存——下次进来还应该再试一次。
  */
 object ExploreCache {
-    private const val TTL_MS = 3 * 60 * 1000L
-    private const val MAX_ENTRIES = 6
+    /** 这么短时间内再次进来：直接用，不刷新 */
+    private const val FRESH_MS = 10 * 60 * 1000L
+    /** 超过这个时间就别拿出来了（宁可见一次菊花，也不要显示半个月前的内容） */
+    private const val KEEP_MS = 7L * 24 * 3600 * 1000
+    private const val MAX_ENTRIES = 4
+    private const val FILE = "explore_cache.json"
 
-    data class Hit(val works: List<Work>, val ok: Int, val fail: Int)
+    data class Hit(val works: List<Work>, val ok: Int, val fail: Int, val fresh: Boolean)
 
     private class Entry(val works: List<Work>, val ok: Int, val fail: Int, val at: Long)
 
     private val slots = LinkedHashMap<String, Entry>()
+    private var file: java.io.File? = null
 
+    private val io = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+        Thread(r, "explore-cache").apply { isDaemon = true }
+    }
+
+    /** 启动时调一次：把上次的结果读回内存，发现页一进去就有内容 */
+    @Synchronized
+    fun attach(ctx: android.content.Context) {
+        if (file != null) return
+        val f = java.io.File(ctx.filesDir, FILE)
+        file = f
+        runCatching {
+            if (!f.exists()) return
+            val root = org.json.JSONObject(f.readText())
+            val it = root.keys()
+            while (it.hasNext()) {
+                val k = it.next()
+                val o = root.optJSONObject(k) ?: continue
+                val works = worksFromJson(o.optJSONArray("works"))
+                if (works.isEmpty()) continue
+                slots[k] = Entry(works, o.optInt("ok"), o.optInt("fail"), o.optLong("at"))
+            }
+        }
+    }
+
+    /**
+     * 内存 → 磁盘。过期（超过 KEEP_MS）的条目直接丢掉。
+     * [Hit.fresh] = 10 分钟内拉的，界面可以完全不刷新；false 就先拿旧的顶上，后台静默更新。
+     */
     @Synchronized
     fun get(key: String): Hit? {
         if (key.isBlank()) return null
         val e = slots[key] ?: return null
-        if (System.currentTimeMillis() - e.at > TTL_MS) {
+        val age = System.currentTimeMillis() - e.at
+        if (age > KEEP_MS) {
             slots.remove(key)
             return null
         }
         if (e.works.isEmpty()) return null
-        return Hit(e.works, e.ok, e.fail)
+        return Hit(e.works, e.ok, e.fail, age <= FRESH_MS)
     }
 
     @Synchronized
@@ -255,11 +289,85 @@ object ExploreCache {
         if (!slots.containsKey(key) && slots.size >= MAX_ENTRIES) {
             slots.keys.firstOrNull()?.let { slots.remove(it) }
         }
-        slots[key] = Entry(list, okCount, failCount, System.currentTimeMillis())
+        slots[key] = Entry(list.take(240), okCount, failCount, System.currentTimeMillis())
+        persistLocked()
     }
 
     @Synchronized
     fun clear() {
         slots.clear()
+        persistLocked()
     }
+
+    private fun persistLocked() {
+        val f = file ?: return
+        val snapshot = slots.mapValues { (_, e) ->
+            org.json.JSONObject().apply {
+                put("at", e.at)
+                put("ok", e.ok)
+                put("fail", e.fail)
+                put("works", worksToJson(e.works))
+            }
+        }
+        val root = org.json.JSONObject()
+        snapshot.forEach { (k, v) -> root.put(k, v) }
+        val text = root.toString()
+        io.execute {
+            runCatching { f.writeText(text) }
+        }
+    }
+}
+
+// ------------------------------------------------------------------ 缓存落盘用的编解码
+// 发现页/首页的推荐结果要能跨启动直接显示，所以 Work 得能存成 JSON。
+
+fun workToJson(w: Work): JSONObject = JSONObject().apply {
+    put("n", w.norm)
+    put("t", w.title)
+    put("c", w.cover)
+    val arr = JSONArray()
+    w.entries.forEach { e ->
+        arr.put(JSONObject().apply {
+            put("sk", e.sourceKey)
+            put("sn", e.sourceName)
+            put("id", e.comicId)
+            put("t", e.title)
+            put("c", e.cover)
+        })
+    }
+    put("e", arr)
+}
+
+fun workFromJson(o: JSONObject?): Work? {
+    o ?: return null
+    val arr = o.optJSONArray("e") ?: return null
+    val entries = ArrayList<WorkEntry>(arr.length())
+    for (i in 0 until arr.length()) {
+        val e = arr.optJSONObject(i) ?: continue
+        val id = e.optString("id")
+        if (id.isBlank()) continue
+        entries += WorkEntry(
+            sourceKey = e.optString("sk"),
+            sourceName = e.optString("sn"),
+            comicId = id,
+            title = e.optString("t"),
+            cover = e.optString("c"),
+        )
+    }
+    if (entries.isEmpty()) return null
+    return Work(
+        norm = o.optString("n").ifBlank { normalizeTitle(o.optString("t")) },
+        title = o.optString("t"),
+        cover = o.optString("c"),
+        entries = entries,
+    )
+}
+
+fun worksToJson(list: List<Work>): JSONArray = JSONArray().apply { list.forEach { put(workToJson(it)) } }
+
+fun worksFromJson(arr: JSONArray?): List<Work> {
+    arr ?: return emptyList()
+    val out = ArrayList<Work>(arr.length())
+    for (i in 0 until arr.length()) workFromJson(arr.optJSONObject(i))?.let { out += it }
+    return out
 }

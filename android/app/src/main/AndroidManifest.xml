@@ -3,6 +3,8 @@
 
     <!-- 在线漫画源、登录、封面/正文取图、线路探测全靠它 -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 只用来看「VPN 是不是开着」：开了就说明墙外源能连，别把它们当成坏源跳过 -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <application
         android:allowBackup="true"

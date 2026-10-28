@@ -221,25 +221,66 @@ fun groupWorks(list: List<ComicRow>, sort: Boolean = true): List<Work> {
 }
 
 /**
- * 发现页「全部源」的结果缓存。
+ * 发现页 / 首页的结果缓存（内存 + 磁盘）。
  *
- * 引擎的 JS 是同步桥，多个源只能排队跑，一次全量要十几秒。切回发现页时如果 3 分钟内
- * 刚拉过同一批源、同一个关键词，就直接把上次的结果画出来，不再重新打一遍网络。
- * 只放内存（进程退了就没了），空结果不缓存——下次进来还应该再试一次。
+ * 分两层，签名不同：
+ *  - `w|…` 聚合结果（跨源合并后的 Work 列表）：首页热门、「全部」用
+ *  - `s|<源>|<关键词>` 单个源自己那一段：点某个源的 chip 时直接用它
+ *
+ * 为什么必须有「单源」这一层 —— 引擎是同步桥，一次发 8 个源其实是让它们排队，
+ * 点单源时新请求排在 8 个后面，表现就是「点了源一直在转」。有了单源缓存，
+ * 点进去先把上次的结果画出来，只有过了新鲜期才真的去刷。
+ *
+ * [Hit.fresh] = 新鲜期内，界面可以连网络都不打；否则先拿旧的顶上、后台静默更新。
+ * 空结果不缓存（下次进来还应该再试一次）。
  */
 object ExploreCache {
-    /** 这么短时间内再次进来：直接用，不刷新 */
-    private const val FRESH_MS = 10 * 60 * 1000L
+    /** 新鲜期。发现页的内容不需要分钟级同步，半小时内直接用最省事 */
+    private const val FRESH_MS = 30 * 60 * 1000L
     /** 超过这个时间就别拿出来了（宁可见一次菊花，也不要显示半个月前的内容） */
     private const val KEEP_MS = 7L * 24 * 3600 * 1000
-    private const val MAX_ENTRIES = 4
+    private const val MAX_WORKS = 8
+    private const val MAX_SECTIONS = 40
+    /**
+     * 失败几次算「这个源现在连不上」。
+     *
+     * 实测（国内直连）：jm/copy/Komiic 各 1.2~1.4 秒，而 ehentai / htmanga / mh18
+     * 各要 10 秒以上然后失败 —— 8 个源串行就是 37 秒，用户看到的就是「一直在加载」。
+     * 所以失败一次就先跳过：这些站要么要代理要么要登录，短期不会自己好。
+     * 单个点进去仍然会试（用户明确要看），成功一次就恢复。
+     */
+    private const val FAIL_LIMIT_NO_VPN = 1
+    private const val FAIL_LIMIT_VPN = 2
+    /** 没开 VPN 时：多半是被墙，15 分钟后再试 */
+    private const val COOL_MS_NO_VPN = 15 * 60 * 1000L
+    /** 开着 VPN 时：那多半是这个源自己抽风，3 分钟就再试 */
+    private const val COOL_MS_VPN = 3 * 60 * 1000L
     private const val FILE = "explore_cache.json"
 
     data class Hit(val works: List<Work>, val ok: Int, val fail: Int, val fresh: Boolean)
 
-    private class Entry(val works: List<Work>, val ok: Int, val fail: Int, val at: Long)
+    data class SectionHit(val sections: List<ExploreSection>, val fresh: Boolean)
 
-    private val slots = LinkedHashMap<String, Entry>()
+    private class WorkEntry(val works: List<Work>, val ok: Int, val fail: Int, val at: Long)
+
+    private class SectionEntry(
+        val sections: List<ExploreSection>,
+        val at: Long,
+        /** 上次这个源花了多久（毫秒），用来决定刷新顺序：快的先跑，首屏更快 */
+        val cost: Long,
+    )
+
+    private class FailEntry(val count: Int, val at: Long)
+
+    private val worksSlots = LinkedHashMap<String, WorkEntry>()
+    private val sectionSlots = LinkedHashMap<String, SectionEntry>()
+    private val failSlots = LinkedHashMap<String, FailEntry>()
+
+    private var appCtx: android.content.Context? = null
+
+    /** 当前是否有 VPN 网络。用户基本常开，开了就不该把墙外源当坏源 */
+    @Volatile
+    private var vpn = false
     private var file: java.io.File? = null
 
     private val io = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
@@ -249,34 +290,105 @@ object ExploreCache {
     /** 启动时调一次：把上次的结果读回内存，发现页一进去就有内容 */
     @Synchronized
     fun attach(ctx: android.content.Context) {
+        appCtx = ctx.applicationContext
         if (file != null) return
         val f = java.io.File(ctx.filesDir, FILE)
         file = f
         runCatching {
             if (!f.exists()) return
             val root = org.json.JSONObject(f.readText())
-            val it = root.keys()
-            while (it.hasNext()) {
-                val k = it.next()
-                val o = root.optJSONObject(k) ?: continue
-                val works = worksFromJson(o.optJSONArray("works"))
-                if (works.isEmpty()) continue
-                slots[k] = Entry(works, o.optInt("ok"), o.optInt("fail"), o.optLong("at"))
+            // v1 是扁平的 {sig: {works:…}}，v2 分成 w / s 两组
+            val wRoot = root.optJSONObject("w")
+            val sRoot = root.optJSONObject("s")
+            if (wRoot == null && sRoot == null) {
+                val it = root.keys()
+                while (it.hasNext()) {
+                    val k = it.next()
+                    val o = root.optJSONObject(k) ?: continue
+                    val works = worksFromJson(o.optJSONArray("works"))
+                    if (works.isEmpty()) continue
+                    worksSlots[k] = WorkEntry(works, o.optInt("ok"), o.optInt("fail"), o.optLong("at"))
+                }
+                return@runCatching
+            }
+            wRoot?.let { wr ->
+                val it = wr.keys()
+                while (it.hasNext()) {
+                    val k = it.next()
+                    val o = wr.optJSONObject(k) ?: continue
+                    val works = worksFromJson(o.optJSONArray("works"))
+                    if (works.isEmpty()) continue
+                    worksSlots[k] = WorkEntry(works, o.optInt("ok"), o.optInt("fail"), o.optLong("at"))
+                }
+            }
+            root.optJSONObject("f")?.let { fr ->
+                val it = fr.keys()
+                while (it.hasNext()) {
+                    val k = it.next()
+                    val o = fr.optJSONObject(k) ?: continue
+                    failSlots[k] = FailEntry(o.optInt("n"), o.optLong("at"))
+                }
+            }
+            sRoot?.let { sr ->
+                val it = sr.keys()
+                while (it.hasNext()) {
+                    val k = it.next()
+                    val o = sr.optJSONObject(k) ?: continue
+                    val secs = sectionsFromJson(o.optJSONArray("secs"))
+                    if (secs.isEmpty()) continue
+                    sectionSlots[k] = SectionEntry(secs, o.optLong("at"), o.optLong("cost"))
+                }
             }
         }
     }
 
+    /** 有没有 VPN 网络（TRANSPORT_VPN）。分应用代理排除本 App 时会误判，但那是少数情况。 */
+    private fun detectVpn(ctx: android.content.Context): Boolean = runCatching {
+        val cm = ctx.getSystemService(android.content.Context.CONNECTIVITY_SERVICE)
+                as android.net.ConnectivityManager
+        cm.allNetworks.any { n ->
+            cm.getNetworkCapabilities(n)
+                ?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN) == true
+        }
+    }.getOrDefault(false)
+
     /**
-     * 内存 → 磁盘。过期（超过 KEEP_MS）的条目直接丢掉。
-     * [Hit.fresh] = 10 分钟内拉的，界面可以完全不刷新；false 就先拿旧的顶上，后台静默更新。
+     * VPN 开关状态变了 → 之前的「连不上」全部作废。
+     *
+     * 关着 VPN 时 ehentai/htmanga 这些必然失败，一旦跳过了，用户后来打开 VPN 也还是被跳过 ——
+     * 那就成了「明明能连却一直不给内容」。所以每次判断前先看一眼，变了就清空。
      */
+    private fun refreshVpnLocked() {
+        val ctx = appCtx ?: return
+        val now = detectVpn(ctx)
+        if (now == vpn) return
+        vpn = now
+        if (failSlots.isNotEmpty()) {
+            failSlots.clear()
+            persistLocked()
+        }
+    }
+
+    /** 给界面用：现在是不是走着 VPN */
+    @Synchronized
+    fun vpnOn(): Boolean {
+        refreshVpnLocked()
+        return vpn
+    }
+
+    private fun failLimit(): Int = if (vpn) FAIL_LIMIT_VPN else FAIL_LIMIT_NO_VPN
+
+    private fun coolMs(): Long = if (vpn) COOL_MS_VPN else COOL_MS_NO_VPN
+
+    // ------------------------------------------------------------------ 聚合结果
+
     @Synchronized
     fun get(key: String): Hit? {
         if (key.isBlank()) return null
-        val e = slots[key] ?: return null
+        val e = worksSlots[key] ?: return null
         val age = System.currentTimeMillis() - e.at
         if (age > KEEP_MS) {
-            slots.remove(key)
+            worksSlots.remove(key)
             return null
         }
         if (e.works.isEmpty()) return null
@@ -286,36 +398,189 @@ object ExploreCache {
     @Synchronized
     fun put(key: String, list: List<Work>, okCount: Int, failCount: Int) {
         if (key.isBlank() || list.isEmpty()) return
-        if (!slots.containsKey(key) && slots.size >= MAX_ENTRIES) {
-            slots.keys.firstOrNull()?.let { slots.remove(it) }
+        if (!worksSlots.containsKey(key) && worksSlots.size >= MAX_WORKS) {
+            worksSlots.keys.firstOrNull()?.let { worksSlots.remove(it) }
         }
-        slots[key] = Entry(list.take(240), okCount, failCount, System.currentTimeMillis())
+        worksSlots[key] = WorkEntry(list.take(240), okCount, failCount, System.currentTimeMillis())
+        persistLocked()
+    }
+
+    // ------------------------------------------------------------------ 单源结果
+
+    @Synchronized
+    fun getSections(key: String): SectionHit? {
+        if (key.isBlank()) return null
+        val e = sectionSlots[key] ?: return null
+        val age = System.currentTimeMillis() - e.at
+        if (age > KEEP_MS) {
+            sectionSlots.remove(key)
+            return null
+        }
+        if (e.sections.isEmpty()) return null
+        return SectionHit(e.sections, age <= FRESH_MS)
+    }
+
+    /**
+     * @param costMs 这次请求花了多久；下次刷新按它排序，快的源先跑，首屏更快
+     */
+    @Synchronized
+    fun putSections(key: String, secs: List<ExploreSection>, costMs: Long = 0) {
+        val alive = secs.filter { it.comics.isNotEmpty() }
+        if (key.isBlank() || alive.isEmpty()) return
+        if (!sectionSlots.containsKey(key) && sectionSlots.size >= MAX_SECTIONS) {
+            sectionSlots.keys.firstOrNull()?.let { sectionSlots.remove(it) }
+        }
+        sectionSlots[key] = SectionEntry(alive, System.currentTimeMillis(), costMs)
+        persistLocked()
+    }
+
+    /**
+     * 这个源是不是「暂时连不上」。
+     *
+     * 国内直连 ehentai / wnacg / picacg 这类站必然超时，每个要等满 14 秒；
+     * 「全部」一次跑 8 个源，光等它们就 40 秒 —— 表现就是永远在加载。
+     * 连续失败两次就先跳过它（单个点进去仍然会试），半小时后再放出来。
+     */
+    @Synchronized
+    fun isCooling(key: String): Boolean {
+        refreshVpnLocked()
+        val e = failSlots[key] ?: return false
+        if (e.count < failLimit()) return false
+        if (System.currentTimeMillis() - e.at > coolMs()) {
+            failSlots.remove(key)
+            return false
+        }
+        return true
+    }
+
+    /** 请求失败（超时 / 站点拒绝）记一次 */
+    @Synchronized
+    fun markFail(key: String) {
+        if (key.isBlank()) return
+        refreshVpnLocked()
+        val e = failSlots[key]
+        failSlots[key] = FailEntry((e?.count ?: 0) + 1, System.currentTimeMillis())
+        persistLocked()
+    }
+
+    /** 成功一次就把失败计数清掉 */
+    @Synchronized
+    fun markOk(key: String) {
+        if (failSlots.remove(key) != null) persistLocked()
+    }
+
+    /** 上次这个源用了多久；没记录返回 0（调用方自己定默认值） */
+    @Synchronized
+    fun cost(key: String): Long = sectionSlots[key]?.cost ?: 0
+
+    /**
+     * 只清聚合结果，保留每个源自己那份。
+     *
+     * 改源开关/排序时用这个：聚合签名确实变了要重算，但单个源的内容没变 ——
+     * 以前一律 clear()，结果「关掉一个源」就把所有源的缓存也清了，
+     * 再点任何 chip 都得重新拉一遍，这就是「又在重复加载」。
+     */
+    @Synchronized
+    fun clearAggregates() {
+        worksSlots.clear()
         persistLocked()
     }
 
     @Synchronized
     fun clear() {
-        slots.clear()
+        worksSlots.clear()
+        sectionSlots.clear()
         persistLocked()
     }
 
     private fun persistLocked() {
         val f = file ?: return
-        val snapshot = slots.mapValues { (_, e) ->
-            org.json.JSONObject().apply {
+        val root = org.json.JSONObject()
+        val w = org.json.JSONObject()
+        worksSlots.forEach { (k, e) ->
+            w.put(k, org.json.JSONObject().apply {
                 put("at", e.at)
                 put("ok", e.ok)
                 put("fail", e.fail)
                 put("works", worksToJson(e.works))
-            }
+            })
         }
-        val root = org.json.JSONObject()
-        snapshot.forEach { (k, v) -> root.put(k, v) }
+        val sr = org.json.JSONObject()
+        sectionSlots.forEach { (k, e) ->
+            sr.put(k, org.json.JSONObject().apply {
+                put("at", e.at)
+                put("cost", e.cost)
+                put("secs", sectionsToJson(e.sections))
+            })
+        }
+        val fr = org.json.JSONObject()
+        failSlots.forEach { (k, e) ->
+            fr.put(k, org.json.JSONObject().apply {
+                put("n", e.count)
+                put("at", e.at)
+            })
+        }
+        root.put("w", w)
+        root.put("s", sr)
+        root.put("f", fr)
         val text = root.toString()
         io.execute {
             runCatching { f.writeText(text) }
         }
     }
+}
+
+/**
+ * 单源缓存的签名。首页热门和发现页共用同一份 —— 首页拉过的源，点进发现页的 chip
+ * 就不用再拉一次（以前两边签名不同，等于把所有源拉了两遍）。
+ */
+internal fun exploreSig(key: String, q: String): String = "s|" + key + "|" + q
+
+/** 单源分段结果的编解码（发现页点某个源时用它做即时显示）。 */
+fun comicRowToJson(c: ComicRow): JSONObject = JSONObject().apply {
+    put("id", c.id)
+    put("t", c.title)
+    put("c", c.cover)
+    put("sub", c.sub)
+    put("sk", c.sourceKey)
+    put("sn", c.sourceName)
+}
+
+fun comicRowFromJson(o: JSONObject?): ComicRow? {
+    o ?: return null
+    val id = o.optString("id")
+    if (id.isBlank()) return null
+    return ComicRow(
+        id = id,
+        title = o.optString("t"),
+        cover = o.optString("c"),
+        sub = o.optString("sub"),
+        sourceKey = o.optString("sk"),
+        sourceName = o.optString("sn"),
+    )
+}
+
+fun sectionsToJson(secs: List<ExploreSection>): JSONArray = JSONArray().apply {
+    secs.forEach { s ->
+        put(JSONObject().apply {
+            put("t", s.title)
+            put("c", JSONArray().apply { s.comics.forEach { put(comicRowToJson(it)) } })
+        })
+    }
+}
+
+fun sectionsFromJson(arr: JSONArray?): List<ExploreSection> {
+    arr ?: return emptyList()
+    val out = ArrayList<ExploreSection>(arr.length())
+    for (i in 0 until arr.length()) {
+        val o = arr.optJSONObject(i) ?: continue
+        val cArr = o.optJSONArray("c") ?: continue
+        val comics = ArrayList<ComicRow>(cArr.length())
+        for (j in 0 until cArr.length()) comicRowFromJson(cArr.optJSONObject(j))?.let { comics += it }
+        if (comics.isEmpty()) continue
+        out += ExploreSection(o.optString("t"), comics)
+    }
+    return out
 }
 
 // ------------------------------------------------------------------ 缓存落盘用的编解码

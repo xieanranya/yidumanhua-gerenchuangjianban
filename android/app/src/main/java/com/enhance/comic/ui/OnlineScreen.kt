@@ -230,8 +230,8 @@ private fun SourcesScreen(
     fun toggle(key: String, on: Boolean) {
         ui?.setSourceEnabled(key, on)
         rows = rows.map { if (it.key == key) it.copy(enabled = on) else it }
-        // 源集合变了，发现页那份「刚拉过的结果」就不再对应当前这批源，丢掉
-        ExploreCache.clear()
+        // 源集合变了，聚合结果不再对应当前这批源；但单源结果还能用，别一起清
+        ExploreCache.clearAggregates()
         onChanged()
     }
 
@@ -245,7 +245,7 @@ private fun SourcesScreen(
         }
         ui?.setSourceOrder(reordered)
         rows = reordered.mapNotNull { k -> rows.firstOrNull { it.key == k } }
-        ExploreCache.clear()
+        ExploreCache.clearAggregates()
         onChanged()
     }
 

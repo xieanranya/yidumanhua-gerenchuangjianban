@@ -33,9 +33,11 @@ import com.enhance.comic.model.Book
 import com.enhance.comic.ui.AppFrame
 import com.enhance.comic.ui.AppTab
 import com.enhance.comic.ui.DiscoverScreen
+import com.enhance.comic.ui.DiscoverState
 import com.enhance.comic.ui.ExploreCache
 import com.enhance.comic.ui.HistoryScreen
 import com.enhance.comic.ui.HomeScreen
+import com.enhance.comic.ui.HomeState
 import com.enhance.comic.ui.LocalColors
 import com.enhance.comic.ui.MeScreen
 import com.enhance.comic.ui.OnlineSourceScreen
@@ -123,6 +125,10 @@ private fun Root() {
     var prefs by remember { mutableStateOf(store.readerPrefs) }
     var enhance by remember { mutableStateOf(store.enhance) }
     var discoverQuery by remember { mutableStateOf("") }
+    // 发现页状态提到这里：Tab 是 when 渲染的，放在页面里的 remember 会随切 Tab 一起丢，
+    // 一回来就变成「重新读源 + 重新拉 8 个源」。
+    val discoverState = remember { DiscoverState() }
+    val homeState = remember { HomeState() }
     // 源开关/顺序改一次就 +1，让首页、发现、我的知道该重新读源列表
     var sourceRev by remember { mutableStateOf(0) }
 
@@ -256,6 +262,7 @@ private fun Root() {
                                 books = books,
                                 engine = engine,
                                 ui = ui,
+                                state = homeState,
                                 sourceRev = sourceRev,
                                 onOpenBook = { openBook = it },
                                 onDiscover = { switchTab(AppTab.DISCOVER) },
@@ -272,6 +279,7 @@ private fun Root() {
                             AppTab.DISCOVER -> DiscoverScreen(
                                 engine = engine,
                                 ui = ui,
+                                state = discoverState,
                                 sourceRev = sourceRev,
                                 initialQuery = discoverQuery,
                                 onOpenWork = { w ->

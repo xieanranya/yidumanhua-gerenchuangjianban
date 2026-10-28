@@ -310,6 +310,19 @@ class SourceEngine private constructor(private val app: Context) {
         "uuid" -> java.util.UUID.randomUUID().toString()
         "delay" -> null
         "getPlatform" -> "android"
+        // 网络环境：只看 VPN 是否开着。引擎用它决定「先直连原站还是先走镜像」，
+        // 界面用它决定「墙外源该不该多试几次」。
+        "net_state" -> {
+            val vpn = runCatching {
+                val cm = app.getSystemService(android.content.Context.CONNECTIVITY_SERVICE)
+                        as android.net.ConnectivityManager
+                cm.allNetworks.any { n ->
+                    cm.getNetworkCapabilities(n)
+                        ?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN) == true
+                }
+            }.getOrDefault(false)
+            JSONObject().put("vpn", vpn).put("online", true)
+        }
         "getLocale" -> "zh"
         "log" -> null
         // 禁漫会问宿主「有没有原生 UI 增强」，回 false 让它用源自带的默认 UI。

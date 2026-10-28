@@ -57,8 +57,10 @@ final class RemoteImageLoader {
         cache.totalCostLimit = 96 << 20
     }
 
-    func cached(_ url: String, maxPixel: CGFloat, headers: [String: String]? = nil, num: Int = 0) -> UIImage? {
-        cache.object(forKey: Self.cacheKey(url, maxPixel, headers, num) as NSString)
+    func cached(
+        _ url: String, maxPixel: CGFloat, headers: [String: String]? = nil, num: Int = 0, crop: Int = 0
+    ) -> UIImage? {
+        cache.object(forKey: Self.cacheKey(url, maxPixel, headers, num, crop) as NSString)
     }
 
     /// maxPixel 是物理像素上限：图再大也只解到这个尺寸（省内存也省 CPU）
@@ -69,7 +71,8 @@ final class RemoteImageLoader {
         referer: String? = nil,
         headers: [String: String]? = nil,
         num: Int = 0,
-        maxPixel: CGFloat = 1200
+        maxPixel: CGFloat = 1200,
+        crop: Int = 0
     ) async -> UIImage? {
         guard !url.isEmpty else { return nil }
         let key = Self.cacheKey(url, maxPixel, headers, num)
@@ -87,6 +90,7 @@ final class RemoteImageLoader {
                 headers: headers,
                 num: num,
                 maxPixel: maxPixel,
+                crop: crop,
                 session: RemoteImageLoader.session
             )
         }
@@ -106,7 +110,8 @@ final class RemoteImageLoader {
     }
 
     private static func cacheKey(
-        _ url: String, _ maxPixel: CGFloat, _ headers: [String: String]? = nil, _ num: Int = 0
+        _ url: String, _ maxPixel: CGFloat, _ headers: [String: String]? = nil, _ num: Int = 0,
+        _ crop: Int = 0
     ) -> String {
         let bucket = Int(max(320, maxPixel) / 320)
         // 请求头会改变拿到的图（Referer 不同可能一个是 403），必须进 key，否则会串图
@@ -114,7 +119,8 @@ final class RemoteImageLoader {
         if let headers, !headers.isEmpty {
             for k in headers.keys.sorted() { h = h &* 31 &+ k.hashValue &+ (headers[k]?.hashValue ?? 0) }
         }
-        return "\(bucket)|\(num)|\(h)|\(url)"
+        // crop 也进 key：裁过和没裁过是两张图，混用会让开关看起来没反应
+        return "\(bucket)|\(num)|\(crop)|\(h)|\(url)"
     }
 
     private static func cost(_ image: UIImage) -> Int {
@@ -128,6 +134,7 @@ final class RemoteImageLoader {
         headers: [String: String]?,
         num: Int,
         maxPixel: CGFloat,
+        crop: Int,
         session: URLSession
     ) async -> UIImage? {
         guard let u = URL(string: url) else { return nil }
@@ -160,10 +167,80 @@ final class RemoteImageLoader {
             }
             guard !data.isEmpty else { return nil }
             guard let img = downsample(data, maxPixel: maxPixel) else { return nil }
-            return num > 1 ? (descramble(img, num: num) ?? img) : img
+            let straight = num > 1 ? (descramble(img, num: num) ?? img) : img
+            // 裁白边放在最后：先还原分块，再按真实画面找边界
+            return crop > 0 ? cropWhite(straight, level: crop - 1) : straight
         } catch {
             return nil
         }
+    }
+
+    /// 自动裁白边：只切「整行 / 整列都是白」的那种边。
+    ///
+    /// 在线源的图经常四周留白，铺到手机上就是左右两条白杠，画面又小又空。
+    /// 画面里的白色气泡不会被切 —— 只要那一行有一个像素不是白的，整行就保留。
+    ///
+    /// - Parameter level: 0 保守 / 1 中 / 2 激进
+    static func cropWhite(_ image: UIImage, level: Int) -> UIImage {
+        guard let cg = image.cgImage else { return image }
+        let w = cg.width
+        let h = cg.height
+        guard w >= 16, h >= 16 else { return image }
+
+        let bytesPerRow = w * 4
+        var buffer = [UInt8](repeating: 0, count: bytesPerRow * h)
+        guard let ctx = CGContext(
+            data: &buffer,
+            width: w,
+            height: h,
+            bitsPerComponent: 8,
+            bytesPerRow: bytesPerRow,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return image }
+        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+
+        let th: UInt8 = level <= 0 ? 232 : (level >= 2 ? 250 : 244)
+
+        func white(_ x: Int, _ y: Int) -> Bool {
+            let o = y * bytesPerRow + x * 4
+            return buffer[o] >= th && buffer[o + 1] >= th && buffer[o + 2] >= th
+        }
+        func rowWhite(_ y: Int) -> Bool {
+            var x = 0
+            while x < w {
+                if !white(x, y) { return false }
+                x += 3
+            }
+            return true
+        }
+        func colWhite(_ x: Int) -> Bool {
+            var y = 0
+            while y < h {
+                if !white(x, y) { return false }
+                y += 3
+            }
+            return true
+        }
+
+        var top = 0
+        while top < h - 1 && rowWhite(top) { top += 1 }
+        var bottom = h - 1
+        while bottom > top && rowWhite(bottom) { bottom -= 1 }
+        var left = 0
+        while left < w - 1 && colWhite(left) { left += 1 }
+        var right = w - 1
+        while right > left && colWhite(right) { right -= 1 }
+
+        let nw = right - left + 1
+        let nh = bottom - top + 1
+        // 裁掉一半以上多半是误判（纯白页 / 白底文字页），宁可不裁
+        if CGFloat(nw) < CGFloat(w) * 0.45 || CGFloat(nh) < CGFloat(h) * 0.45 { return image }
+        if left == 0 && top == 0 && nw == w && nh == h { return image }
+        guard let cropped = cg.cropping(to: CGRect(x: left, y: top, width: nw, height: nh)) else {
+            return image
+        }
+        return UIImage(cgImage: cropped, scale: image.scale, orientation: image.imageOrientation)
     }
 
     /// 禁漫把一页按高度切成 num 段再倒序拼回去。还原 = 第 num-1 段放最上、第 0 段放最下。
@@ -265,6 +342,8 @@ struct OnlinePageImage: View {
     var descramble: Int = 0
     /// true = 适应屏幕（相册/双页）；false = 按宽度铺满（Webtoon）
     var fit: Bool = false
+    /// 0 = 不裁白边；1/2/3 = 裁（等级 + 1）
+    var crop: Int = 0
 
     @Environment(\.displayScale) private var scale
     @State private var image: UIImage?
@@ -311,18 +390,20 @@ struct OnlinePageImage: View {
             }
         }
         .frame(maxWidth: .infinity)
-        .task(id: "\(url)|\(descramble)|\(attempt)") { await load() }
+        .task(id: "\(url)|\(descramble)|\(crop)|\(attempt)") { await load() }
     }
 
     private func load() async {
         let width = UIScreen.main.bounds.width * max(scale, 2)
-        if let hit = RemoteImageLoader.shared.cached(url, maxPixel: width, headers: headers, num: descramble) {
+        if let hit = RemoteImageLoader.shared.cached(
+            url, maxPixel: width, headers: headers, num: descramble, crop: crop
+        ) {
             image = hit
             failed = false
             return
         }
         let got = await RemoteImageLoader.shared.image(
-            url, referer: referer, headers: headers, num: descramble, maxPixel: width
+            url, referer: referer, headers: headers, num: descramble, maxPixel: width, crop: crop
         )
         if Task.isCancelled { return }
         image = got

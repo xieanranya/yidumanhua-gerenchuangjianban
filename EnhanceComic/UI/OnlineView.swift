@@ -978,6 +978,11 @@ struct OnlineReader: View {
 
     private var total: Int { max(pageCount, 0) }
 
+    /// 裁白边的强度；0 = 关（1/2/3 对应 保守/中/激进）
+    private var cropLevel: Int {
+        store.prefs.autoCropOnline ? store.prefs.cropLevel + 1 : 0
+    }
+
     var body: some View {
         ZStack(alignment: .top) {
             Color.black.ignoresSafeArea()
@@ -1184,7 +1189,8 @@ struct OnlineReader: View {
                 index: i,
                 headers: p.headers,
                 descramble: p.num,
-                fit: fit
+                fit: fit,
+                crop: cropLevel
             )
             .task(id: p.url) { prefetch(i) }
         } else if let f = fails[i] {
@@ -1363,7 +1369,7 @@ struct OnlineReader: View {
                 guard let p = pages[next] else { return }
                 let width = UIScreen.main.bounds.width * 3
                 _ = await RemoteImageLoader.shared.image(
-                    p.url, headers: p.headers, num: p.num, maxPixel: width
+                    p.url, headers: p.headers, num: p.num, maxPixel: width, crop: cropLevel
                 )
             }
         }

@@ -273,6 +273,10 @@ struct ReaderPrefs: Codable, Equatable, Hashable {
     var readingMode: ReadingMode = .paged
     /// 在线阅读器的呈现方式；和本地书的 readingMode 分开存
     var onlineLayout: ReaderLayout = .webtoon
+    /// 在线看图时自动裁掉四周白边（只裁整行/整列全白的边）
+    var autoCropOnline = false
+    /// 白边识别强度：0 保守 / 1 中 / 2 激进
+    var cropLevel = 1
     var rightToLeft = true
     var splitWidePages = true
     var autoCropWhiteBorders = false
@@ -307,7 +311,8 @@ struct ReaderPrefs: Codable, Equatable, Hashable {
     init() {}
 
     enum CodingKeys: String, CodingKey {
-        case readingMode, onlineLayout, rightToLeft, splitWidePages, autoCropWhiteBorders
+        case readingMode, onlineLayout, autoCropOnline, cropLevel
+        case rightToLeft, splitWidePages, autoCropWhiteBorders
         case doublePage, forceSpread
         case pageGapPercent, grayscale, autoContrast, invert, blueLight
         case keepScreenOn, autoBrightness, brightness, background, doubleTapZoom, chromeLight
@@ -318,6 +323,8 @@ struct ReaderPrefs: Codable, Equatable, Hashable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         readingMode = (try? c.decode(ReadingMode.self, forKey: .readingMode)) ?? .paged
         onlineLayout = (try? c.decode(ReaderLayout.self, forKey: .onlineLayout)) ?? .webtoon
+        autoCropOnline = (try? c.decode(Bool.self, forKey: .autoCropOnline)) ?? false
+        cropLevel = min(max((try? c.decode(Int.self, forKey: .cropLevel)) ?? 1, 0), 2)
         rightToLeft = (try? c.decode(Bool.self, forKey: .rightToLeft)) ?? true
         splitWidePages = (try? c.decode(Bool.self, forKey: .splitWidePages)) ?? true
         autoCropWhiteBorders = (try? c.decode(Bool.self, forKey: .autoCropWhiteBorders)) ?? false

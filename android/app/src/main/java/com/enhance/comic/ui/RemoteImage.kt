@@ -74,9 +74,80 @@ private val imageScope = kotlinx.coroutines.CoroutineScope(
 )
 private val inflight = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.Deferred<Bitmap?>>()
 
-private fun cacheKey(url: String, descramble: Int, targetWidth: Int): String {
+private fun cacheKey(url: String, descramble: Int, targetWidth: Int, crop: Int = 0): String {
     val bucket = if (targetWidth <= 0) 0 else ((targetWidth + 159) / 160) * 160
-    return "$bucket|$descramble|$url"
+    // crop 进 key：裁过和没裁过是两张不同的图，混用会让开关看起来没反应
+    return "$bucket|$descramble|$crop|$url"
+}
+
+/**
+ * 自动裁白边：只切「整行 / 整列都是白」的那种边。
+ *
+ * 在线源的图经常四周留白，铺到手机上就是左右两条白杠，画面又小又空。
+ * 画面里的白色气泡不会被切 —— 只要那一行有一个像素不是白的，整行就保留。
+ *
+ * @param level 0 保守 / 1 中 / 2 激进（阈值越高越容易判成白）
+ */
+fun cropWhiteEdges(src: Bitmap, level: Int): Bitmap {
+    val w = src.width
+    val h = src.height
+    if (w < 16 || h < 16) return src
+    val pixels = try {
+        IntArray(w * h).also { src.getPixels(it, 0, w, 0, 0, w, h) }
+    } catch (e: Throwable) {
+        return src
+    }
+    val th = when (level) {
+        0 -> 232
+        2 -> 250
+        else -> 244
+    }
+
+    fun white(x: Int, y: Int): Boolean {
+        val c = pixels[y * w + x]
+        val r = (c shr 16) and 0xFF
+        val g = (c shr 8) and 0xFF
+        val b = c and 0xFF
+        return r >= th && g >= th && b >= th
+    }
+
+    fun rowWhite(y: Int): Boolean {
+        var x = 0
+        while (x < w) {
+            if (!white(x, y)) return false
+            x += 3
+        }
+        return true
+    }
+
+    fun colWhite(x: Int): Boolean {
+        var y = 0
+        while (y < h) {
+            if (!white(x, y)) return false
+            y += 3
+        }
+        return true
+    }
+
+    var top = 0
+    while (top < h - 1 && rowWhite(top)) top++
+    var bottom = h - 1
+    while (bottom > top && rowWhite(bottom)) bottom--
+    var left = 0
+    while (left < w - 1 && colWhite(left)) left++
+    var right = w - 1
+    while (right > left && colWhite(right)) right--
+
+    val nw = right - left + 1
+    val nh = bottom - top + 1
+    // 裁掉一半以上多半是误判（纯白页 / 白底文字页），宁可不裁
+    if (nw < w * 0.45f || nh < h * 0.45f) return src
+    if (left == 0 && top == 0 && nw == w && nh == h) return src
+    return try {
+        Bitmap.createBitmap(src, left, top, nw, nh)
+    } catch (e: Throwable) {
+        src
+    }
 }
 
 /** 按长边算 2 的幂采样率，保证解出来的图不超过目标宽度的两倍 */
@@ -128,9 +199,11 @@ suspend fun loadRemoteBitmap(
     headers: Map<String, String>? = null,
     descramble: Int = 0,
     targetWidth: Int = 0,
+    /** 0 = 不裁；1/2/3 = 裁白边（等级 + 1） */
+    crop: Int = 0,
 ): Bitmap? {
     if (url.isBlank()) return null
-    val key = cacheKey(url, descramble, targetWidth)
+    val key = cacheKey(url, descramble, targetWidth, crop)
     RemoteImageCache.get(key)?.let { return it }
 
     // 已经在下的直接等同一个任务，别重复开连接
@@ -253,16 +326,17 @@ fun RemotePageImage(
     val density = LocalDensity.current
     val cfg = LocalConfiguration.current
     val targetPx = with(density) { cfg.screenWidthDp.dp.roundToPx() }
-    val key = cacheKey(url, descramble, targetPx)
+    val crop = if (prefs?.autoCropOnline == true) prefs.cropLevel + 1 else 0
+    val key = cacheKey(url, descramble, targetPx, crop)
 
-    var bmp by remember(url, descramble) { mutableStateOf(RemoteImageCache.get(key)) }
-    var failed by remember(url, descramble) { mutableStateOf(false) }
+    var bmp by remember(url, descramble, crop) { mutableStateOf(RemoteImageCache.get(key)) }
+    var failed by remember(url, descramble, crop) { mutableStateOf(false) }
     var attempt by remember(url) { mutableStateOf(0) }
 
-    LaunchedEffect(url, descramble, attempt) {
+    LaunchedEffect(url, descramble, crop, attempt) {
         if (bmp != null) return@LaunchedEffect
         failed = false
-        val got = loadRemoteBitmap(url, headers, descramble, targetPx)
+        val got = loadRemoteBitmap(url, headers, descramble, targetPx, crop)
         if (got != null) bmp = got else failed = true
     }
 
@@ -353,8 +427,14 @@ private fun readerColorFilter(gray: Boolean, invert: Boolean): androidx.compose.
 }
 
 /** 预取：先把下一两页下好，划下去直接命中缓存 */
-suspend fun prefetchPage(url: String, headers: Map<String, String>?, descramble: Int, targetWidth: Int) {
+suspend fun prefetchPage(
+    url: String,
+    headers: Map<String, String>?,
+    descramble: Int,
+    targetWidth: Int,
+    crop: Int = 0,
+) {
     if (url.isBlank()) return
-    if (RemoteImageCache.get(cacheKey(url, descramble, targetWidth)) != null) return
-    loadRemoteBitmap(url, headers, descramble, targetWidth)
+    if (RemoteImageCache.get(cacheKey(url, descramble, targetWidth, crop)) != null) return
+    loadRemoteBitmap(url, headers, descramble, targetWidth, crop)
 }

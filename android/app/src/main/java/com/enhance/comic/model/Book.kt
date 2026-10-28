@@ -181,6 +181,10 @@ data class ReaderPrefs(
     val readingMode: ReadingMode = ReadingMode.PAGED,
     /** 在线阅读器的呈现方式；和本地书的 readingMode 分开存 */
     val onlineLayout: ReaderLayout = ReaderLayout.WEBTOON,
+    /** 在线看图时自动裁掉四周白边（只裁整行/整列全白的边） */
+    val autoCropOnline: Boolean = false,
+    /** 白边识别强度：0 保守 / 1 中 / 2 激进 */
+    val cropLevel: Int = 1,
     val rightToLeft: Boolean = true,
     val splitWidePages: Boolean = true,
     val autoCropWhiteBorders: Boolean = false,
@@ -225,6 +229,8 @@ data class ReaderPrefs(
         put("forceSpread", forceSpread)
         put("pageGapPercent", pageGapPercent)
         put("onlineLayout", onlineLayout.name)
+        put("autoCropOnline", autoCropOnline)
+        put("cropLevel", cropLevel)
         put("grayscale", grayscale)
         put("autoContrast", autoContrast)
         put("invert", invert)
@@ -249,6 +255,8 @@ data class ReaderPrefs(
                 .getOrDefault(ReadingMode.PAGED),
             onlineLayout = runCatching { ReaderLayout.valueOf(o.optString("onlineLayout")) }
                 .getOrDefault(ReaderLayout.WEBTOON),
+            autoCropOnline = o.optBoolean("autoCropOnline"),
+            cropLevel = o.optInt("cropLevel", 1).coerceIn(0, 2),
             rightToLeft = o.optBoolean("rightToLeft", true),
             splitWidePages = o.optBoolean("splitWidePages", true),
             autoCropWhiteBorders = o.optBoolean("autoCropWhiteBorders"),

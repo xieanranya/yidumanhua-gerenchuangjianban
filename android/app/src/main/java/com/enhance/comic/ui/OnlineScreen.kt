@@ -1635,6 +1635,8 @@ private fun OnlineReader(
         if (referer.isNullOrBlank()) null else mapOf("Referer" to referer)
     }
     val refs = remember(urls, refHeaders) { urls.map { PageRef(it, refHeaders ?: emptyMap(), 0) } }
+    // 预取也要按「裁不裁白边」分开，否则缓存 key 对不上，预取等于白做
+    val crop = if (prefs.autoCropOnline) prefs.cropLevel + 1 else 0
     var showBar by remember { mutableStateOf(true) }
     var showSettings by remember { mutableStateOf(false) }
     var current by remember { mutableStateOf(0) }
@@ -1659,7 +1661,7 @@ private fun OnlineReader(
     LaunchedEffect(current) {
         for (k in 1..2) {
             val j = current + k
-            if (j < urls.size) prefetchPage(urls[j], refHeaders, 0, targetPx)
+            if (j < urls.size) prefetchPage(urls[j], refHeaders, 0, targetPx, crop)
         }
     }
 
@@ -1676,7 +1678,7 @@ private fun OnlineReader(
             onRetry = {},
             onNeed = { i ->
                 urls.getOrNull(i)?.let { u ->
-                    scope.launch { prefetchPage(u, refHeaders, 0, targetPx) }
+                    scope.launch { prefetchPage(u, refHeaders, 0, targetPx, crop) }
                 }
             },
             onPage = { current = it },
@@ -1739,6 +1741,7 @@ private fun OnlineLazyReader(
     val cfg = LocalConfiguration.current
     val targetPx = with(density) { cfg.screenWidthDp.dp.roundToPx() }
     val pages = remember { mutableStateMapOf<Int, PageRef>() }
+    val crop = if (prefs.autoCropOnline) prefs.cropLevel + 1 else 0
     val fails = remember { mutableStateMapOf<Int, String>() }
     val inflight = remember { mutableSetOf<Int>() }
     var showBar by remember { mutableStateOf(true) }
@@ -1783,11 +1786,11 @@ private fun OnlineLazyReader(
                     pages[idx] = page
                     // 拿到地址就顺手把图和后两页解出来，划下去不再每页等
                     scope.launch {
-                        prefetchPage(page.url, page.headers, page.num, targetPx)
+                        prefetchPage(page.url, page.headers, page.num, targetPx, crop)
                         for (k in 1..2) {
                             val j = idx + k
                             if (j < nav.count) {
-                                pages[j]?.let { prefetchPage(it.url, it.headers, it.num, targetPx) }
+                                pages[j]?.let { prefetchPage(it.url, it.headers, it.num, targetPx, crop) }
                             }
                         }
                     }

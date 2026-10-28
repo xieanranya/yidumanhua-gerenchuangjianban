@@ -955,6 +955,8 @@ private fun AccountScreen(
     var notice by remember { mutableStateOf<String?>(null) }
     // Cookie 登录（E-Hentai 这类）要按源声明的字段数填，比如 ipb_member_id / ipb_pass_hash / igneous / star
     var cookieVals by remember { mutableStateOf<List<String>>(emptyList()) }
+    // 网页登录（绅士漫画要过滑块，账号密码接口过不去）
+    var webLogin by remember { mutableStateOf(false) }
 
     suspend fun refresh() {
         val r = engine.account(key)
@@ -1024,6 +1026,22 @@ private fun AccountScreen(
     val canWeb = info?.optBoolean("canWebLogin") == true
     val registerUrl = info?.optString("registerUrl").orEmpty()
     val webUrl = info?.optString("loginWebUrl").orEmpty()
+
+    if (webLogin) {
+        WebLoginScreen(
+            engine = engine,
+            key = key,
+            url = webUrl.ifBlank { "https://www.wnacg.com/users-login.html" },
+            name = name,
+            onBack = { webLogin = false },
+            onDone = {
+                webLogin = false
+                notice = "登录成功"
+                scope.launch { refresh() }
+            },
+        )
+        return
+    }
 
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
         SubTopBar("账号", onBack)
@@ -1208,6 +1226,20 @@ private fun AccountScreen(
                         } else {
                             Text("登录", color = c.accentInk, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold)
                         }
+                    }
+                    if (canWeb) {
+                        Spacer(Modifier.height(12.dp))
+                        HLine()
+                        Spacer(Modifier.height(10.dp))
+                        Text(
+                            "如果登录时要求滑块验证（比如绅士漫画），账号密码接口过不去，" +
+                                "点下面在网页里登录一次：滑块拖一下，之后 Cookie 自动带上。",
+                            color = c.fg3,
+                            fontSize = 10.5.sp,
+                            lineHeight = 15.sp,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        MiniButton("网页登录（带滑块）", { webLogin = true }, accent = true)
                     }
                     if (registerUrl.isNotBlank()) {
                         Spacer(Modifier.height(10.dp))
@@ -1498,5 +1530,82 @@ private fun ReaderOverlayBar(title: String, pageLabel: String, onBack: () -> Uni
             modifier = Modifier.weight(1f),
         )
         Text(pageLabel, color = Color(0xCCFFFFFF), fontSize = 11.5.sp, modifier = Modifier.padding(end = 10.dp))
+    }
+}
+
+// ==================================================================================== 网页登录
+
+/**
+ * 网页登录：真 WebView 打开站点的登录页，滑块/验证码都由用户自己完成，
+ * 点「已完成」时把 CookieManager 里的 Cookie 交给引擎存起来。
+ * 绅士漫画（wnacg）现在必须这么登 —— 账号密码接口会被滑块拦死。
+ */
+@Composable
+private fun WebLoginScreen(
+    engine: SourceEngine,
+    key: String,
+    url: String,
+    name: String,
+    onBack: () -> Unit,
+    onDone: () -> Unit,
+) {
+    val c = LocalColors.current
+    val scope = rememberCoroutineScope()
+    var busy by remember { mutableStateOf(false) }
+    var msg by remember { mutableStateOf<String?>(null) }
+
+    Column(Modifier.fillMaxSize().background(c.bg).statusBarsPadding()) {
+        SubTopBar("网页登录 · $name", onBack, action = {
+            MiniButton(if (busy) "校验中…" else "已完成", {
+                if (busy) return@MiniButton
+                busy = true
+                msg = null
+                val cookies = runCatching {
+                    android.webkit.CookieManager.getInstance().getCookie(url)
+                }.getOrNull().orEmpty()
+                scope.launch {
+                    val r = engine.loginWithCookieString(key, url, cookies)
+                    busy = false
+                    if (r.optBoolean("ok")) {
+                        onDone()
+                    } else {
+                        msg = r.optString("error", "登录失败")
+                    }
+                }
+            }, accent = true)
+        })
+        Text(
+            "在下面的网页里完成登录（有滑块就拖一下）。看到自己的账号 / 已登录状态后，" +
+                "点右上角「已完成」。",
+            color = c.fg2,
+            fontSize = 11.sp,
+            lineHeight = 16.sp,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+        )
+        msg?.let {
+            Text(
+                it,
+                color = c.bad,
+                fontSize = 11.sp,
+                lineHeight = 16.sp,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
+            )
+        }
+        androidx.compose.ui.viewinterop.AndroidView(
+            modifier = Modifier.fillMaxWidth().weight(1f),
+            factory = { context ->
+                android.webkit.WebView(context).apply {
+                    settings.javaScriptEnabled = true
+                    settings.domStorageEnabled = true
+                    settings.javaScriptCanOpenWindowsAutomatically = true
+                    settings.userAgentString = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 " +
+                            "(KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36"
+                    runCatching { android.webkit.CookieManager.getInstance().setAcceptCookie(true) }
+                    webViewClient = android.webkit.WebViewClient()
+                    loadUrl(url)
+                }
+            },
+            onRelease = { w -> runCatching { w.destroy() } },
+        )
     }
 }

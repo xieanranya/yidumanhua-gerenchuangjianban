@@ -264,7 +264,10 @@ final class SourceEngine {
             defaults.set(msg["value"], forKey: kvKey(msg, "s_", "setting_key"))
             return nil
         case "isLogged":
-            return defaults.bool(forKey: "logged_\(msg["key"] as? String ?? "")")
+            // 登录态只有一处真相：引擎写的 d_<key>___logged。
+            // 原来读 logged_<key>（从来没人写）→ 恒 false，源里的 this.isLogged 永远「没登录」。
+            let k = (msg["key"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "default"
+            return defaults.object(forKey: "d_\(k)___logged") != nil
         case "UI":
             return (msg["function"] as? String) == "showDialog" ? 0 : nil
         case "random":

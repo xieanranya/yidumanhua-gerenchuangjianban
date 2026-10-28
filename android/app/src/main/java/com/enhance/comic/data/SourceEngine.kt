@@ -220,6 +220,14 @@ class SourceEngine private constructor(private val app: Context) {
     suspend fun account(key: String): JSONObject =
         callAsync("account", JSONObject.quote(key))
 
+    /** 网页登录：把可见 WebView 登录成功后的 Cookie 交给引擎（绅士漫画要过滑块） */
+    suspend fun loginWithCookieString(key: String, url: String, cookie: String): JSONObject =
+        callAsync(
+            "loginWithCookieString",
+            JSONObject.quote(key), JSONObject.quote(url), JSONObject.quote(cookie),
+            timeoutMs = 40_000,
+        )
+
     // ---------------------------------------------------------------- JS 侧调用进来
 
     /** JS 同步桥。@JavascriptInterface 方法在 JS 线程同步返回，正好当同步 RPC 用。 */
@@ -289,7 +297,10 @@ class SourceEngine private constructor(private val app: Context) {
             prefs.edit().putString("s_" + srcKey(msg) + "_" + msg.optString("setting_key"),
                 msg.opt("value").toString()).apply(); null
         }
-        "isLogged" -> prefs.getBoolean("logged_" + msg.optString("key"), false)
+        // 登录态只有一处真相：引擎写进 d_<key>___logged 的那条。
+        // 以前这里读的是 logged_<key>，从来没被写过 → 恒 false，
+        // 源脚本里的 this.isLogged 就永远是「没登录」（EH 的收藏/观看页就是这么挂的）。
+        "isLogged" -> prefs.getString("d_" + srcKey(msg) + "___logged", null) != null
         "UI" -> if (msg.optString("function") == "showDialog") 0 else null
         "random" -> {
             val min = if (msg.has("min")) msg.optDouble("min") else 0.0

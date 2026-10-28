@@ -190,6 +190,24 @@ class WnacgComicSource extends ComicSource {
 
     account = {
         registerWebsite: 'https://www.wnacg.com/albums.html',
+        // 站点现在登录要过滑块，账号密码这条接口过不去 —— 走网页登录：
+        // App 里弹一个真 WebView，用户自己把滑块拖过去，我们把 Cookie 收下来。
+        loginWithWebview: {
+            url: 'https://www.wnacg.com/users-login.html',
+            checkStatus: () => false,
+            onLoginSuccess: async () => {
+                // 用刚存下的 Cookie 看一眼首页：还是游客页就说明滑块没过 / 没登进去
+                let html = ''
+                try {
+                    html = String(await this.get(this.baseUrl))
+                } catch (e) {
+                    throw new Error('登录后校验失败：' + (e && e.message ? e.message : e))
+                }
+                if (!/users-logout|logout|登出|退出|用戶中心|用户中心|mycollect/i.test(html)) {
+                    throw new Error('看起来还没登进去：请在弹出的网页里完成滑块，看到自己的账号后再点「已完成」')
+                }
+            },
+        },
         login: async (account, pwd) => {
             const body = await this.post('/users-check_login.html',
                 'login_name=' + encodeURIComponent(account) + '&login_pass=' + encodeURIComponent(pwd))

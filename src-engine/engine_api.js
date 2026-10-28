@@ -415,6 +415,42 @@
       });
     },
 
+    /**
+     * 网页登录：把可见 WebView 里登录成功后拿到的 Cookie 交给引擎。
+     * 有些站（绅士漫画）的账号密码接口必须过滑块，只能让用户在网页里登一次，
+     * 我们把 Cookie 收下来存进本地的 Cookie 表，之后所有请求自动带上。
+     *
+     * @param url       登录页地址（cookie 会按这个 host 存）
+     * @param cookieHeader  形如 "a=1; b=2" 的请求头
+     */
+    loginWithCookieString: function (key, url, cookieHeader) {
+      return run(async function () {
+        var s = inst(key);
+        var acc = s.account || null;
+        if (!url) throw new Error('缺少登录地址');
+        var list = [];
+        String(cookieHeader || '').split(';').forEach(function (p) {
+          var i = p.indexOf('=');
+          if (i <= 0) return;
+          var n = p.slice(0, i).trim();
+          var v = p.slice(i + 1).trim();
+          if (n) list.push({ name: n, value: v, domain: '' });
+        });
+        if (!list.length) throw new Error('没有拿到 Cookie：请确认网页里已经登录成功');
+        sendMessage({ method: 'cookie', function: 'set', url: url, cookies: list });
+        if (acc && acc.loginWithWebview && typeof acc.loginWithWebview.onLoginSuccess === 'function') {
+          await acc.loginWithWebview.onLoginSuccess();
+        }
+        try {
+          sendMessage({
+            method: 'save_data', key: key, data_key: '__logged',
+            data: { at: Date.now(), account: 'webview' }
+          });
+        } catch (e) { }
+        return { ok: true, count: list.length };
+      });
+    },
+
     logout: function (key) {
       return run(async function () {
         var s = inst(key);

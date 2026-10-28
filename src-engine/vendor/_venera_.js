@@ -1135,10 +1135,18 @@ class ComicSource {
      * @returns {boolean}
      */
     get isLogged() {
-        return sendMessage({
-            method: 'isLogged',
-            key: this.key,
-        });
+        // 宿主那条 isLogged 从来没有跟 save_data('__logged') 对齐过（永远 false），
+        // 于是「登录成功、源自己却以为没登录」：EH 的收藏/观看页、绅士漫画的收藏都被它挡住。
+        // 登录态只有一处真相：__logged。这里直接读它，三端行为一致。
+        try {
+            return !!sendMessage({
+                method: 'load_data',
+                key: this.key,
+                data_key: '__logged',
+            });
+        } catch (e) {
+            return false;
+        }
     }
 
     translation = {}

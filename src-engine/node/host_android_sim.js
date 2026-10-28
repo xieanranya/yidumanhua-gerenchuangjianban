@@ -127,7 +127,8 @@ function makeHost(opts) {
       case 'delete_data': delete kv['d_' + key + '_' + msg.data_key]; return null;
       case 'load_setting': return settings['s_' + key + '_' + msg.setting_key] ?? null;
       case 'save_setting': settings['s_' + key + '_' + msg.setting_key] = msg.value; return null;
-      case 'isLogged': return false;
+      // 与两端原生一致：登录态读的是引擎写的 d_<key>___logged
+      case 'isLogged': return kv['d_' + key + '___logged'] != null;
       case 'UI': return msg.function === 'showDialog' ? 0 : null;
       case 'random': return Math.random();
       case 'uuid': return crypto.randomUUID();

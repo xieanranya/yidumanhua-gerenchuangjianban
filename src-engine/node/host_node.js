@@ -210,7 +210,7 @@ function __hostCall(msg) {
     case 'save_data': { const kv = loadKV(CURRENT_KEY); kv.data = kv.data || {}; kv.data[msg.data_key] = msg.data; saveKV(CURRENT_KEY, kv); return null; }
     case 'delete_data': { const kv = loadKV(CURRENT_KEY); if (kv.data) delete kv.data[msg.data_key]; saveKV(CURRENT_KEY, kv); return null; }
     case 'load_setting': { const kv = loadKV(CURRENT_KEY); return kv.setting && msg.setting_key in kv.setting ? kv.setting[msg.setting_key] : null; }
-    case 'isLogged': { const kv = loadKV(CURRENT_KEY); return !!(kv.logged && kv.logged[msg.key]); }
+    case 'isLogged': { const kv = loadKV(CURRENT_KEY); return !!(kv.data && kv.data['__logged']); }
     case 'UI': console.error('[UI]', msg.function, msg.title || '', msg.message || msg.content || ''); return msg.function === 'showDialog' ? 0 : null;
     case 'random': return Math.random() * ((msg.max ?? 1) - (msg.min ?? 0)) + (msg.min ?? 0);
     case 'uuid': return crypto.randomUUID();

@@ -57,8 +57,13 @@ function runLogin(cookieSet) {
   const vals = JSON.stringify(['123', 'abc', '', '']);
   const id = vm.runInContext(`SourceEngine.login("ehentai", ${JSON.stringify(vals)}, "")`, ctx);
   return new Promise(res => {
-    waiters[id] = o => res({ result: o, logged: vm.runInContext('SourceEngine.isLogged("ehentai")', ctx) });
-    setTimeout(() => res({ result: { ok: false, error: '测试超时' }, logged: null }), 8000);
+    waiters[id] = o => res({
+      result: o,
+      logged: vm.runInContext('SourceEngine.isLogged("ehentai")', ctx),
+      // 源脚本里的 this.isLogged 走的是宿主 isLogged 方法（曾经恒 false，EH 的收藏/观看页就是被它挡住的）
+      hostLogged: JSON.parse(host.__hostRaw(JSON.stringify({ method: 'isLogged', key: 'ehentai' }))).v,
+    });
+    setTimeout(() => res({ result: { ok: false, error: '测试超时' }, logged: null, hostLogged: null }), 8000);
   });
 }
 
@@ -68,7 +73,9 @@ function runLogin(cookieSet) {
   const newRun = await runLogin(true);
   console.log('[新实现 1.9.18] Cookie 登录:', JSON.stringify({ ok: newRun.result.ok, error: newRun.result.error }), 'isLogged:', newRun.logged);
 
-  const ok = !oldRun.result.ok && /Cookie 无效/.test(String(oldRun.result.error)) && newRun.result.ok && newRun.logged === true;
+  console.log('           宿主 isLogged（源脚本看到的那条）:', newRun.hostLogged);
+  const ok = !oldRun.result.ok && /Cookie 无效/.test(String(oldRun.result.error))
+    && newRun.result.ok && newRun.logged === true && newRun.hostLogged === true;
   console.log(ok ? '\n✓ 复现了旧版「Cookie 填对也提示无效」，并确认新版能登录' : '\n✗ 结果不符合预期');
   process.exit(ok ? 0 : 1);
 })();

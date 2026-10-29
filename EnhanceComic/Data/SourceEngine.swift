@@ -157,6 +157,15 @@ final class SourceEngine {
         await asyncCall("logout", [jsLiteral(key)])
     }
 
+    /// 网页登录：把 WKWebView 里登录成功后拿到的 Cookie 交给引擎（绅士漫画要过滑块）。
+    func loginWithCookieString(key: String, url: String, cookie: String) async -> [String: Any] {
+        await asyncCall(
+            "loginWithCookieString",
+            [jsLiteral(key), jsLiteral(url), jsLiteral(cookie)],
+            timeout: 40
+        )
+    }
+
     /// 账号页：登录态 + 源自己声明的信息项（account.infoItems）
     func account(key: String) async -> [String: Any] {
         await asyncCall("account", [jsLiteral(key)])

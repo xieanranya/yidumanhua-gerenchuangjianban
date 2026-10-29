@@ -1312,15 +1312,15 @@ private fun AccountScreen(
 
                 canWeb -> {
                     Text(
-                        "这个源不支持账号密码，登录在网页里完成（靠 Cookie）。" +
-                            "公开内容不登录也能看。",
+                        "这个源在网页里登录（有滑块也在网页里拖）。登录后 Cookie 会存在本机，" +
+                            "之后所有请求自动带上。",
                         color = c.fg2,
                         fontSize = 12.sp,
                         lineHeight = 18.sp,
                     )
                     if (webUrl.isNotBlank()) {
                         Spacer(Modifier.height(14.dp))
-                        MiniButton("打开登录网页", { runCatching { uri.openUri(webUrl) } }, accent = true)
+                        MiniButton("网页登录（带滑块）", { webLogin = true }, accent = true)
                     }
                     if (registerUrl.isNotBlank()) {
                         Spacer(Modifier.height(10.dp))
@@ -1973,9 +1973,18 @@ private fun WebLoginScreen(
                 if (busy) return@MiniButton
                 busy = true
                 msg = null
-                val cookies = runCatching {
-                    android.webkit.CookieManager.getInstance().getCookie(url)
-                }.getOrNull().orEmpty()
+                // 把几个可能的主机都读一遍再合并：登录页在 www.x.com，源请求的可能是 x.com，
+                // 只读登录页那一个 URL 会漏掉站点写到父域上的 Cookie。
+                val candidates = LinkedHashSet<String>()
+                candidates.add(url)
+                runCatching {
+                    val u = java.net.URL(url)
+                    candidates.add("${u.protocol}://${u.host}/")
+                    if (u.host.startsWith("www.")) candidates.add("${u.protocol}://${u.host.removePrefix("www.")}/")
+                }
+                val cookies = candidates.mapNotNull { c ->
+                    runCatching { android.webkit.CookieManager.getInstance().getCookie(c) }.getOrNull()
+                }.filter { it.isNotBlank() }.joinToString("; ")
                 scope.launch {
                     val r = engine.loginWithCookieString(key, url, cookies)
                     busy = false

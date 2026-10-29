@@ -551,6 +551,8 @@ struct AccountView: View {
     @State private var notice: String?
     /// Cookie 登录（E-Hentai 这类）按源声明的字段数填，比如 ipb_member_id / ipb_pass_hash / igneous / star
     @State private var cookieVals: [String] = []
+    /// 网页登录（绅士漫画要过滑块，账号密码接口过不去）
+    @State private var webLogin = false
 
     private var name: String {
         let n = info["name"] as? String ?? ""
@@ -704,6 +706,12 @@ struct AccountView: View {
                             }
                             .padding(.horizontal, 18)
                             .padding(.top, 12)
+                            if canWeb && !webUrl.isEmpty {
+                                MiniButton(text: "改用网页登录（带滑块）") {
+                                    webLogin = true
+                                }
+                                .padding(.top, 10)
+                            }
                             Text("账号密码只存在本机，不会上传。登录后这个源才能搜索和看图。")
                                 .font(.system(size: 10))
                                 .foregroundColor(c.fg3)
@@ -712,15 +720,15 @@ struct AccountView: View {
                         }
                     } else if canWeb {
                         NoteBar(
-                            text: "这个源不支持账号密码，登录是在网页里完成的（靠 Cookie）。公开内容不登录也能看。",
+                            text: "这个源在网页里登录（有滑块也在网页里拖）。登录后 Cookie 存在本机，之后所有请求自动带上。",
                             tone: .neutral,
                             inset: false
                         )
                         .padding(.horizontal, 18)
                         .padding(.top, 12)
                         if !webUrl.isEmpty {
-                            MiniButton(text: "打开登录网页", accent: true) {
-                                if let u = URL(string: webUrl) { openURL(u) }
+                            MiniButton(text: "网页登录（带滑块）", accent: true) {
+                                webLogin = true
                             }
                             .padding(.horizontal, 18)
                             .padding(.top, 10)
@@ -743,6 +751,19 @@ struct AccountView: View {
         }
         .background(c.bg.ignoresSafeArea())
         .toolbar(.hidden, for: .navigationBar)
+        .fullScreenCover(isPresented: $webLogin) {
+            WebLoginView(
+                key: key,
+                url: webUrl,
+                sourceName: name,
+                onDone: {
+                    webLogin = false
+                    notice = "登录成功"
+                    Task { await refresh() }
+                },
+                onCancel: { webLogin = false }
+            )
+        }
         .task { await refresh() }
     }
 

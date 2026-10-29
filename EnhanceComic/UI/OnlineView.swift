@@ -938,7 +938,6 @@ struct OnlineReader: View {
     @State private var current = 0
     @State private var showBar = true
     @State private var showSettings = false
-    @State private var showChapters = false
 
     /// 当前这一话（换话时改）
     @State private var epId: String
@@ -994,12 +993,7 @@ struct OnlineReader: View {
                     OnlineTopBar(
                         title: epTitle,
                         pageLabel: total > 0 ? "\(min(current + 1, total)) / \(total) 页" : "0 页",
-                        hasChapters: chapters.count > 1,
                         onBack: { dismiss() },
-                        onChapters: {
-                            hideTask?.cancel()
-                            withAnimation(.easeOut(duration: 0.22)) { showChapters = true }
-                        },
                         onSettings: {
                             hideTask?.cancel()
                             withAnimation(.easeOut(duration: 0.22)) { showSettings = true }
@@ -1015,7 +1009,7 @@ struct OnlineReader: View {
                 .transition(.opacity)
             }
 
-            if showSettings || showChapters {
+            if showSettings {
                 OnlineSkin.scrim
                     .ignoresSafeArea()
                     .onTapGesture { closePanels() }
@@ -1025,19 +1019,11 @@ struct OnlineReader: View {
             if showSettings {
                 VStack(spacing: 0) {
                     Spacer(minLength: 0)
-                    OnlineSettingsPanel(prefs: $store.prefs) { closePanels() }
-                }
-                .ignoresSafeArea(edges: .bottom)
-                .transition(.move(edge: .bottom))
-            }
-
-            if showChapters {
-                VStack(spacing: 0) {
-                    Spacer(minLength: 0)
-                    OnlineChapterPanel(
+                    OnlineSettingsPanel(
+                        prefs: $store.prefs,
                         chapters: chapters,
-                        index: chapterIndex,
-                        onPick: { switchChapter($0) },
+                        chapterIndex: chapterIndex,
+                        onPickChapter: { switchChapter($0) },
                         onClose: { closePanels() }
                     )
                 }
@@ -1237,7 +1223,7 @@ struct OnlineReader: View {
 
     private var tapGesture: some Gesture {
         SpatialTapGesture().onEnded { _ in
-            guard !showSettings, !showChapters else { return }
+            guard !showSettings else { return }
             withAnimation(.easeInOut(duration: 0.16)) { showBar.toggle() }
             scheduleHide()
         }
@@ -1250,7 +1236,7 @@ struct OnlineReader: View {
             try? await Task.sleep(nanoseconds: 4_000_000_000)
             if Task.isCancelled { return }
             await MainActor.run {
-                guard !showSettings, !showChapters else { return }
+                guard !showSettings else { return }
                 withAnimation(.easeInOut(duration: 0.2)) { showBar = false }
             }
         }
@@ -1259,7 +1245,6 @@ struct OnlineReader: View {
     private func closePanels() {
         withAnimation(.easeInOut(duration: 0.2)) {
             showSettings = false
-            showChapters = false
             showBar = true
         }
         scheduleHide()
@@ -1292,7 +1277,7 @@ struct OnlineReader: View {
         fails = [:]
         loading = []
         current = 0
-        showChapters = false
+        showSettings = false
         showBar = true
         scheduleHide()
 

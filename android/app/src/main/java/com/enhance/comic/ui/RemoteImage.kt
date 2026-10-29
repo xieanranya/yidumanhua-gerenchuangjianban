@@ -211,7 +211,9 @@ suspend fun loadRemoteBitmap(
     val job = imageScope.async(start = kotlinx.coroutines.CoroutineStart.LAZY) {
         imageGate.withPermit {
             RemoteImageCache.get(key)?.let { return@withPermit it }
-            withContext(Dispatchers.IO) { downloadAndDecode(url, headers, descramble, targetWidth, key) }
+            withContext(Dispatchers.IO) {
+                downloadAndDecode(url, headers, descramble, targetWidth, key, crop)
+            }
         }
     }
     val prev = inflight.putIfAbsent(key, job)
@@ -230,6 +232,7 @@ private fun downloadAndDecode(
     descramble: Int,
     targetWidth: Int,
     key: String,
+    crop: Int = 0,
 ): Bitmap? = runCatching {
     val conn = URL(url).openConnection() as HttpURLConnection
     conn.connectTimeout = 12_000
@@ -270,7 +273,9 @@ private fun downloadAndDecode(
         inPreferredConfig = Bitmap.Config.ARGB_8888
     }
     val raw = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts) ?: return@runCatching null
-    val fixed = if (descramble > 1) descramble(raw, descramble) else raw
+    val straight = if (descramble > 1) descramble(raw, descramble) else raw
+    // 裁白边放在最后：先把分块还原成整图，再按真实画面找边界
+    val fixed = if (crop > 0) cropWhiteEdges(straight, crop - 1) else straight
     RemoteImageCache.put(key, fixed)
     fixed
 }.getOrNull()

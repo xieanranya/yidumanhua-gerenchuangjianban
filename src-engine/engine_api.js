@@ -437,7 +437,27 @@
           if (n) list.push({ name: n, value: v, domain: '' });
         });
         if (!list.length) throw new Error('没有拿到 Cookie：请确认网页里已经登录成功');
-        sendMessage({ method: 'cookie', function: 'set', url: url, cookies: list });
+        // Cookie 要写到「所有可能被请求的 host」下：带 www 的、不带 www 的、
+        // 以及源自己声明的域名。只写登录页那一个 host 时，源用 baseUrl（可能是
+        // 不带 www 的域名或另一个别名）去请求就还是游客 —— 滑块登录「成功但没登上」多半是这个。
+        var hosts = [];
+        try {
+          var u = new URL(url);
+          hosts.push(u.host);
+          if (u.host.indexOf('www.') === 0) hosts.push(u.host.slice(4));
+        } catch (e) { }
+        try {
+          var doms = (s.link && s.link.domains) || [];
+          for (var di = 0; di < doms.length; di++) {
+            var d = String(doms[di] || '');
+            if (d && hosts.indexOf(d) < 0) hosts.push(d);
+          }
+        } catch (e) { }
+        for (var hi = 0; hi < hosts.length; hi++) {
+          try {
+            sendMessage({ method: 'cookie', function: 'set', url: 'https://' + hosts[hi] + '/', cookies: list });
+          } catch (e) { }
+        }
         if (acc && acc.loginWithWebview && typeof acc.loginWithWebview.onLoginSuccess === 'function') {
           await acc.loginWithWebview.onLoginSuccess();
         }
@@ -515,6 +535,34 @@
       });
       return items;
     }
+    function isPlainObj(x) {
+      return !!x && typeof x === 'object' && !Array.isArray(x) && !isMap(x);
+    }
+    /** 普通对象当 Map 用：{ id: '标题' } → items */
+    function objToItems(m) {
+      var items = [];
+      Object.keys(m).forEach(function (k) {
+        items.push({ id: String(k), title: titleOf(m[k], String(k)) });
+      });
+      return items;
+    }
+    /**
+     * 这个对象是不是「id → 标题/章节对象」的 Map。
+     *
+     * 关键：源脚本用的是**普通对象**（不是 Map），以前只认 Map，
+     * 于是 { 分组名: { 章节id: 标题 } } 被当成「一个分组、一个章节」，
+     * 章节 id 变成了分组名（拷贝漫画的「默認」就是这么来的，点进去 404）。
+     */
+    function looksLikeMap(v) {
+      if (!isPlainObj(v)) return false;
+      var ks = Object.keys(v);
+      if (!ks.length) return false;
+      return ks.every(function (k) {
+        var x = v[k];
+        return typeof x === 'string'
+          || (!!x && typeof x === 'object' && (typeof x.title === 'string' || x.id !== undefined));
+      });
+    }
     if (isMap(ch)) {
       var flat = [], hasNested = false;
       ch.forEach(function (v, k) {
@@ -529,15 +577,30 @@
       return groups;
     }
     if (typeof ch === 'object') {
-      Object.keys(ch).forEach(function (g) {
+      var keys = Object.keys(ch);
+      // 全是最内层的 { 章节id: 标题 } → 一个不分组的平铺列表
+      var flatStrings = keys.length > 0 && keys.every(function (k) {
+        return typeof ch[k] === 'string';
+      });
+      if (flatStrings) {
+        return [{ title: '', items: objToItems(ch) }];
+      }
+      keys.forEach(function (g) {
         var v = ch[g];
         if (v === undefined || v === null) return;
         if (Array.isArray(v)) {
           groups.push({ title: g, items: v.filter(Boolean).map(function (c) { return { id: String(c.id), title: titleOf(c, '') }; }) });
         } else if (isMap(v)) {
           groups.push({ title: g, items: mapToItems(v) });
-        } else if (typeof v === 'object') {
-          groups.push({ title: g, items: [{ id: String(v.id === undefined ? g : v.id), title: titleOf(v, g) }] });
+        } else if (isPlainObj(v)) {
+          // 先看它是不是「单个章节」({id,title})，再看是不是「id → 标题」的表。
+          // 顺序反了会把 {id:'a',title:'A'} 当成 {id:…, title:…} 两个章节。
+          if (v.id !== undefined || typeof v.title === 'string') {
+            groups.push({ title: g, items: [{ id: String(v.id === undefined ? g : v.id), title: titleOf(v, g) }] });
+          } else {
+            // { 分组名: { 章节id: 标题 } } —— 普通对象当 Map
+            groups.push({ title: g, items: objToItems(v) });
+          }
         } else if (typeof v === 'string') {
           groups.push({ title: g, items: [{ id: g, title: v }] });
         }
@@ -648,6 +711,9 @@
   }
 
   function c2s(o) { return o && o.title ? o.title : ''; }
+
+  // 仅供本地回归测试用（运行时没人读它）
+  API.__normalizeChapters = normalizeChapters;
 
   S.SourceEngine = API;
 })();

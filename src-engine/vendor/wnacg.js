@@ -194,18 +194,27 @@ class WnacgComicSource extends ComicSource {
         // App 里弹一个真 WebView，用户自己把滑块拖过去，我们把 Cookie 收下来。
         loginWithWebview: {
             url: 'https://www.wnacg.com/users-login.html',
+            // 登录页固定在主站：镜像/别名的 Cookie 会由引擎按源声明的 domains 一起写入
             checkStatus: () => false,
             onLoginSuccess: async () => {
-                // 用刚存下的 Cookie 看一眼首页：还是游客页就说明滑块没过 / 没登进去
-                let html = ''
+                // 校验方式：请求「必须登录才能看」的收藏页。
+                // 没登进去时 this.get() 会认出登录表单并抛 'Login expired'，
+                // 所以只要它能正常返回，就说明 Cookie 真的生效了。
+                // （以前是拿首页正则找 users-logout，站点改版后那段文字根本不存在 → 明明登上了也报失败）
                 try {
-                    html = String(await this.get(this.baseUrl))
+                    await this.get('/users-users_fav-page-1-c-0.html')
+                    return
                 } catch (e) {
-                    throw new Error('登录后校验失败：' + (e && e.message ? e.message : e))
+                    const msg = String((e && e.message) ? e.message : e)
+                    if (!/Login expired/.test(msg)) {
+                        // 收藏页本身出错（5xx 之类）不算登录失败，再退一步看首页
+                        try {
+                            const home = String(await this.get(this.baseUrl))
+                            if (!/users-login\.html/i.test(home)) return
+                        } catch (e2) { }
+                    }
                 }
-                if (!/users-logout|logout|登出|退出|用戶中心|用户中心|mycollect/i.test(html)) {
-                    throw new Error('看起来还没登进去：请在弹出的网页里完成滑块，看到自己的账号后再点「已完成」')
-                }
+                throw new Error('看起来还没登进去：请在弹出的网页里完成滑块，看到自己的账号后再点「已完成」')
             },
         },
         login: async (account, pwd) => {

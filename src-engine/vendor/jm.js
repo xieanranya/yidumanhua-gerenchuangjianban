@@ -23,19 +23,24 @@ class JM extends ComicSource {
     dailyCheckInInProgress = false
 
     static fallbackServers = [
-        "www.cdntwice.org",
-        "www.cdnsha.org",
-        "www.cdnaspa.cc",
-        "www.cdnntr.cc",
+        "www.cdnhjk.net",
+        "www.cdnutc.cc",
+        "www.cdngwc.net",
+        "www.cdngwc.club",
+        "www.cdnutc.me",
     ];
+
+    /** 本次运行里实测可用的域名下标 */
+    static activeIdx = null
 
     // 内置一份域名，刷新失败/还没刷新完时 baseUrl 也是合法的。
     // 以前这里没有初值，构造函数一取 baseUrl 就是 apiDomains[NaN] → 直接抛异常。
     static apiDomains = [
-        "www.cdntwice.org",
-        "www.cdnsha.org",
-        "www.cdnaspa.cc",
-        "www.cdnntr.cc",
+        "www.cdnhjk.net",
+        "www.cdnutc.cc",
+        "www.cdngwc.net",
+        "www.cdngwc.club",
+        "www.cdnutc.me",
     ]
 
     static imageUrl = "https://cdn-msp.jmapinodeudzn.net"
@@ -70,8 +75,43 @@ class JM extends ComicSource {
     }
 
     get baseUrl() {
+        if (JM.activeIdx != null && JM.apiDomains[JM.activeIdx]) {
+            return `https://${JM.apiDomains[JM.activeIdx]}`
+        }
         let index = parseInt(this.loadSetting('apiDomain')) - 1
+        if (!(index >= 0 && index < JM.apiDomains.length)) index = 0
         return `https://${JM.apiDomains[index]}`
+    }
+
+    /**
+     * 换着域名重试。
+     *
+     * 站点会随时下线某条线路（旧的 www.cdntwice.org 现在直接是「域名出售」页），
+     * 用户设置里存的又是固定下标，一条死了整个源就用不了。
+     * 403/404/5xx/网络错误才换，401（没登录）不换。
+     */
+    async withDomain(url, run) {
+        const cur = JM.activeIdx != null
+            ? JM.activeIdx
+            : Math.max(0, Math.min(JM.apiDomains.length - 1, (parseInt(this.loadSetting('apiDomain')) - 1) || 0))
+        const base = `https://${JM.apiDomains[cur]}`
+        let last = null
+        for (let i = 0; i < JM.apiDomains.length; i++) {
+            const idx = (cur + i) % JM.apiDomains.length
+            const target = idx === cur ? url : url.replace(base, `https://${JM.apiDomains[idx]}`)
+            try {
+                const r = await run(target)
+                JM.activeIdx = idx
+                return r
+            } catch (e) {
+                last = e
+                const msg = String(e)
+                const retry = /Invalid Status Code: (403|404|5\d\d)/.test(msg)
+                    || /network|timeout|timed out|failed|econn|enotfound/i.test(msg)
+                if (!retry) throw e
+            }
+        }
+        throw last
     }
 
     get imageUrl() {
@@ -292,6 +332,10 @@ class JM extends ComicSource {
      * @returns {Promise<string>}
      */
     async get(url) {
+        return this.withDomain(url, target => this._getOnce(target))
+    }
+
+    async _getOnce(url) {
         let time = Math.floor(Date.now() / 1000)
         let kJmSecret = "185Hcomic3PAPP7R"
         let res = await Network.get(url, this.getApiHeaders(time))
@@ -315,6 +359,10 @@ class JM extends ComicSource {
     }
 
     async post(url, body) {
+        return this.withDomain(url, target => this._postOnce(target, body))
+    }
+
+    async _postOnce(url, body) {
         let time = Math.floor(Date.now() / 1000)
         let kJmSecret = "185Hcomic3PAPP7R"
         let res = await Network.post(url, {

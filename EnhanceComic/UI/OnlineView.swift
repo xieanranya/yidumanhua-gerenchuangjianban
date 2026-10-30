@@ -17,6 +17,8 @@ struct BrowseView: View {
     @State private var searched = false
     @State private var logged = false
     @State private var tick = 0
+    // 点「12 本 ›」打开的分区全部列表
+    @State private var openSection: ExploreSection?
 
     private let columns = [
         GridItem(.flexible(minimum: 0, maximum: .infinity), spacing: 9),
@@ -25,6 +27,18 @@ struct BrowseView: View {
     ]
 
     var body: some View {
+        if let sec = openSection {
+            SectionListView(
+                title: sec.title.isEmpty ? sourceName : sec.title,
+                comics: sec.comics,
+                onBack: { openSection = nil }
+            )
+        } else {
+            browseContent
+        }
+    }
+
+    private var browseContent: some View {
         VStack(spacing: 0) {
             SubHeader(
                 title: sourceName,
@@ -66,7 +80,12 @@ struct BrowseView: View {
                     VStack(alignment: .leading, spacing: 0) {
                         ForEach(sections) { sec in
                             if !sec.title.isEmpty {
-                                SectionHeader(title: sec.title, more: "\(sec.comics.count) 本", inset: false)
+                                SectionHeader(
+                                    title: sec.title,
+                                    more: "\(sec.comics.count) 本",
+                                    onMore: { openSection = sec },
+                                    inset: false
+                                )
                                     .padding(.horizontal, 18)
                             }
                             LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {

@@ -529,6 +529,64 @@ struct SectionHeader: View {
     }
 }
 
+/// 分区的「全部条目」列表页：发现页点「12 本 ›」进来看这一区的完整内容。
+/// 聚合发现页和单源发现页共用；点击行为统一走跨源合并的 DetailView。
+struct SectionListView: View {
+    let title: String
+    let comics: [ComicRow]
+    let onBack: () -> Void
+
+    @Environment(\.appColors) private var c
+
+    private let columns = [
+        GridItem(.flexible(minimum: 0, maximum: .infinity), spacing: 9),
+        GridItem(.flexible(minimum: 0, maximum: .infinity), spacing: 9),
+        GridItem(.flexible(minimum: 0, maximum: .infinity), spacing: 9),
+    ]
+
+    var body: some View {
+        VStack(spacing: 0) {
+            SubHeader(
+                title: title,
+                subtitle: "\(comics.count) 本",
+                onBack: onBack,
+                trailing: nil
+            )
+            HLine()
+            if comics.isEmpty {
+                Spacer()
+                Text("这一区没有内容")
+                    .font(.system(size: 12))
+                    .foregroundColor(c.fg3)
+                Spacer()
+            } else {
+                ScrollView {
+                    LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
+                        ForEach(Array(comics.enumerated()), id: \.offset) { _, comic in
+                            NavigationLink {
+                                DetailView(work: comic.asWork)
+                            } label: {
+                                ComicCell(
+                                    title: comic.title,
+                                    cover: comic.cover,
+                                    sub: comic.sub.isEmpty ? nil : comic.sub,
+                                    seed: comic.title.hashValue
+                                )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal, 18)
+                    .padding(.top, 12)
+                    .padding(.bottom, 26)
+                }
+            }
+        }
+        .background(c.bg.ignoresSafeArea())
+        .toolbar(.hidden, for: .navigationBar)
+    }
+}
+
 struct Pill: View {
     let text: String
     var tone: Tone = .neutral
@@ -537,8 +595,7 @@ struct Pill: View {
     @Environment(\.appColors) private var c
 
     var body: some View {
-        Text(text)
-            .font(.system(size: fontSize, weight: .medium))
+        Text(text)            .font(.system(size: fontSize, weight: .medium))
             .foregroundColor(tone.fg(c))
             .lineLimit(1)
             .padding(.horizontal, 7)

@@ -21,6 +21,8 @@ struct DiscoverScreen: View {
     @State private var okSources = 0
     @State private var failedSources = 0
     @State private var reloadTick = 0
+    // 点「12 本 ›」打开的分区全部列表
+    @State private var openSection: ExploreSection?
 
     private let columns = [
         GridItem(.flexible(minimum: 0, maximum: .infinity), spacing: 9),
@@ -29,6 +31,18 @@ struct DiscoverScreen: View {
     ]
 
     var body: some View {
+        if let sec = openSection {
+            SectionListView(
+                title: sec.title.isEmpty ? "发现" : sec.title,
+                comics: sec.comics,
+                onBack: { openSection = nil }
+            )
+        } else {
+            discoverContent
+        }
+    }
+
+    private var discoverContent: some View {
         VStack(spacing: 0) {
             BigTitle(text: "发现", sub: subline, inset: false)
                 .padding(.horizontal, 18)
@@ -167,6 +181,7 @@ struct DiscoverScreen: View {
                     SectionHeader(
                         title: sec.title,
                         more: "\(sec.comics.count) 本",
+                        onMore: { openSection = sec },
                         inset: false
                     )
                     .padding(.horizontal, 18)

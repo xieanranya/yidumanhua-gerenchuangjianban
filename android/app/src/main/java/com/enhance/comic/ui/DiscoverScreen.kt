@@ -1,5 +1,7 @@
 package com.enhance.comic.ui
 
+import androidx.activity.compose.BackHandler
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -91,6 +93,8 @@ class DiscoverState {
     var seeded by mutableStateOf(false)
     /** 当前是否走着 VPN（只影响提示文案和「要不要多试几次」） */
     var vpn by mutableStateOf(false)
+    /** 点「12 本 ›」打开的分区全部列表（切 Tab 不丢） */
+    var openSection by mutableStateOf<ExploreSection?>(null)
 }
 
 /** 单个源一次请求最多等这么久。超过就别再等了，换下一个源。 */
@@ -163,6 +167,18 @@ fun DiscoverScreen(
             state.progress = ""
             state.settledFor = sig
         }
+    }
+
+    // 点「12 本 ›」：这一区的完整列表
+    BackHandler(enabled = state.openSection != null) { state.openSection = null }
+    state.openSection?.let { sec ->
+        SectionListScreen(
+            title = sec.title.ifBlank { "发现" },
+            comics = sec.comics,
+            onBack = { state.openSection = null },
+            onOpenComic = { onOpenWork(it.asWork()) },
+        )
+        return
     }
 
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
@@ -255,6 +271,7 @@ fun DiscoverScreen(
                             SectionHeader(
                                 title = sec.title,
                                 more = "${sec.comics.size} 本",
+                                onMore = { state.openSection = sec },
                                 inset = false,
                             )
                         }

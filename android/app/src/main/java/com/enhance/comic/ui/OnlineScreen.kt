@@ -491,6 +491,18 @@ private fun BrowseScreen(
     var searched by remember { mutableStateOf(false) }
     var logged by remember { mutableStateOf(false) }
     var canLogin by remember { mutableStateOf(true) }
+    // 点「12 本 ›」看这一区的完整列表
+    var openSection by remember { mutableStateOf<ExploreSection?>(null) }
+    BackHandler(enabled = openSection != null) { openSection = null }
+    openSection?.let { sec ->
+        SectionListScreen(
+            title = sec.title.ifBlank { title },
+            comics = sec.comics,
+            onBack = { openSection = null },
+            onOpenComic = { onOpen(it.id, it.title) },
+        )
+        return
+    }
 
     LaunchedEffect(tick) {
         busy = true
@@ -595,7 +607,11 @@ private fun BrowseScreen(
                 sections.forEachIndexed { si, sec ->
                     if (sec.title.isNotBlank()) {
                         item(span = { GridItemSpan(maxLineSpan) }, key = "h$si") {
-                            SectionHeader(sec.title, more = "${sec.comics.size} 本")
+                            SectionHeader(
+                                sec.title,
+                                more = "${sec.comics.size} 本",
+                                onMore = { openSection = sec },
+                            )
                         }
                     }
                     itemsIndexed(sec.comics, key = { i, it -> "c$si-$i-" + it.id }) { _, comic ->

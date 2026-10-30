@@ -7,6 +7,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
@@ -15,8 +16,12 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
@@ -123,6 +128,46 @@ fun SectionHeader(
                     .widthIn(max = 168.dp)
                     .then(if (onMore != null) Modifier.clickable(onClick = onMore) else Modifier),
             )
+        }
+    }
+}
+
+/**
+ * 分区的「全部条目」列表页：发现页点「12 本 ›」进来看这一区的完整内容。
+ * 聚合发现页和单源发现页共用，点击行为由调用方决定（聚合走 Work 合并、单源直进详情）。
+ */
+@Composable
+fun SectionListScreen(
+    title: String,
+    comics: List<ComicRow>,
+    onBack: () -> Unit,
+    onOpenComic: (ComicRow) -> Unit,
+) {
+    val c = LocalColors.current
+    Column(Modifier.fillMaxSize().background(c.bg).statusBarsPadding()) {
+        SubTopBar(title, onBack)
+        if (comics.isEmpty()) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text("这一区没有内容", color = c.fg3, fontSize = 12.sp)
+            }
+            return@Column
+        }
+        LazyVerticalGrid(
+            columns = GridCells.Fixed(3),
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(start = 18.dp, end = 18.dp, bottom = 22.dp),
+            horizontalArrangement = Arrangement.spacedBy(GridGap),
+            verticalArrangement = Arrangement.spacedBy(GridGapV),
+        ) {
+            itemsIndexed(comics, key = { i, it -> "sl$i-" + it.id }) { _, comic ->
+                ComicCell(
+                    cover = comic.cover,
+                    title = comic.title,
+                    sub = comic.sub,
+                    seed = comic.title.hashCode(),
+                    onClick = { onOpenComic(comic) },
+                )
+            }
         }
     }
 }

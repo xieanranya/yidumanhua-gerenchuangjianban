@@ -2,11 +2,46 @@
 
 | 平台 | 文件 | 大小 | 要求 |
 |---|---|---|---|
-| Android | `EnhanceComic-Android-v1.9.39.apk` | 14.5 MB | Android 8.0 (API 26) 及以上，直接覆盖安装 |
+| Android | `EnhanceComic-Android-v1.9.40.apk` | 14.5 MB | Android 8.0 (API 26) 及以上，直接覆盖安装 |
 | iOS | `EnhanceComic-iOS-v1.9.35.ipa` | 约 1.4 MB | iOS 16.0 及以上，**未签名**，需 Sideloadly / AltStore 签名 |
 
-- Android 当前 **`1.9.39 (50)`**，签名没变（`d5084caf…`），直接覆盖安装，书库和登录态都保留。
+- Android 当前 **`1.9.40 (51)`**，签名没变（`d5084caf…`），直接覆盖安装，书库和登录态都保留。
 - iOS **暂停更新**，停留在 `1.9.35 (46)`。
+
+## v1.9.40（仅安卓）：E-Hentai 登录判定端点换 `home.php` —— **你的 Cookie 是好的**
+
+### 实测真相
+
+用真实网络测试了 EH：
+
+| 测试 | 结果 |
+|---|---|
+| 首页（游客） vs 首页（带你的 Cookie） | **HTML 完全一样** —— EH 首页根本不显示登录态，靠首页判定永远失败 |
+| `forums`（1.9.39 之前用的） | Cloudflare 防护常年 403，走不通 |
+| `home.php`（游客） | 302 弹回首页 |
+| `home.php`（带**你截图里的 Cookie**） | **200 + 个人页（GP 统计）——Cookie 有效！** |
+
+也就是说：**你填的 Cookie 没有任何问题，是 App 的判定端点选错了**。
+首页对登录/游客返回一模一样的页面，之前两版（主站首页/showuser 链接）都判不出来。
+
+### 修法
+
+验证端点换成 `home.php`：游客被 302 弹回首页，登录才返回个人页。
+用页面里的 `GP Gained`（个人页才有的统计）做判定，不受 302 自动跟随影响。
+另外空着的 igneous / star 不再写入脏 Cookie。
+
+### 结论
+
+覆盖安装 v1.9.40 后，用原来的两项 Cookie **直接再点一次登录**就应该成功了。
+
+### 校验
+
+| 检查项 | 结果 |
+|---|---|
+| Android versionCode / versionName | `51` / `1.9.40` |
+| Android 签名 SHA-256 | `d5084caf…`（未变，可覆盖安装） |
+| 包内 `bundle.js` md5 | `555e0ca2…` |
+| 引擎回归 | Cookie 登录 ✓ / convert 14 ✓ / 章节 9 ✓ |
 
 ## v1.9.39（仅安卓）：E-Hentai 登录验证换主站，绕开 forums 的 403
 

@@ -2,11 +2,39 @@
 
 | 平台 | 文件 | 大小 | 要求 |
 |---|---|---|---|
-| Android | `EnhanceComic-Android-v1.9.35.apk` | 14.5 MB | Android 8.0 (API 26) 及以上，直接覆盖安装 |
+| Android | `EnhanceComic-Android-v1.9.36.apk` | 14.5 MB | Android 8.0 (API 26) 及以上，直接覆盖安装 |
 | iOS | `EnhanceComic-iOS-v1.9.35.ipa` | 约 1.4 MB | iOS 16.0 及以上，**未签名**，需 Sideloadly / AltStore 签名 |
 
-版本：**两端统一 `1.9.35 (46)`**。装完在首页/我的页能看到版本号，两端显示一致就是同一版。
-签名没变（`d5084caf…`），Android 可以直接覆盖安装，书库和登录态都保留。
+- Android 当前 **`1.9.36 (47)`**，签名没变（`d5084caf…`），直接覆盖安装，书库和登录态都保留。
+- iOS **暂停更新**，停留在 `1.9.35 (46)`。1.9.36 的改动只涉及安卓的网页登录，
+  iOS 上本来就没有这个问题，不装新版没有任何功能缺失。
+
+## v1.9.36（仅安卓）：登录窗口「网页组件起不来」
+
+### 1.9.35 装上后的实测结果
+
+**不闪退了**——独立进程方案起效，崩溃被接住。但登录窗口里显示
+「网页组件起不来：RuntimeException」。
+
+### 原因：Android 9+ 的第二个多进程检查
+
+Android 9 起 Chromium 还有另一条规矩：**多个进程不能共用同一个 WebView 数据目录**。
+主进程的引擎 WebView 占着默认目录 `app_webview`，`:login` 进程再建 WebView 就撞上
+`Using WebView from more than one process at once with the same data directory`。
+
+### 修法（一行）
+
+`:login` 进程在创建任何 WebView 之前调用
+`WebView.setDataDirectorySuffix("login")`——登录进程用自己独立的数据目录，
+两边互不相碰。Cookie 照旧走交接文件传回主界面，不受影响。
+
+### 校验
+
+| 检查项 | 结果 |
+|---|---|
+| Android versionCode / versionName | `47` / `1.9.36` |
+| Android 签名 SHA-256 | `d5084caf…`（未变，可覆盖安装） |
+| 包内 `bundle.js` md5 | `8ff300ed…`（引擎未动） |
 
 ## v1.9.35（双端）：滑块登录闪退 · 根治（登录挪进独立进程）
 

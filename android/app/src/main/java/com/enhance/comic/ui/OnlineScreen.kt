@@ -1967,8 +1967,12 @@ private fun WebLoginScreen(
 ) {
     val c = LocalColors.current
     val scope = rememberCoroutineScope()
+    val uri = LocalUriHandler.current
     var busy by remember { mutableStateOf(false) }
     var msg by remember { mutableStateOf<String?>(null) }
+    // WebView 建不起来（机型限制 / provider 异常 / 与引擎那个 WebView 冲突）就降级成外部浏览器，
+    // 绝不让「点一下登录」把整个 App 带崩。
+    var webviewBroken by remember { mutableStateOf(false) }
 
     Column(Modifier.fillMaxSize().background(c.bg).statusBarsPadding()) {
         SubTopBar("网页登录 · $name", onBack, action = {
@@ -2016,21 +2020,68 @@ private fun WebLoginScreen(
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
             )
         }
-        androidx.compose.ui.viewinterop.AndroidView(
-            modifier = Modifier.fillMaxWidth().weight(1f),
-            factory = { context ->
-                android.webkit.WebView(context).apply {
-                    settings.javaScriptEnabled = true
-                    settings.domStorageEnabled = true
-                    settings.javaScriptCanOpenWindowsAutomatically = true
-                    settings.userAgentString = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 " +
-                            "(KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36"
-                    runCatching { android.webkit.CookieManager.getInstance().setAcceptCookie(true) }
-                    webViewClient = android.webkit.WebViewClient()
-                    loadUrl(url)
-                }
-            },
-            onRelease = { w -> runCatching { w.destroy() } },
-        )
+        if (webviewBroken) {
+            // 降级：内嵌 WebView 起不来时，退回「系统浏览器登录」。
+            Column(
+                Modifier.fillMaxWidth().weight(1f).padding(20.dp),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text(
+                    "这台设备的内嵌网页起不来，改用系统浏览器登录：\n" +
+                        "登录完成后回到这里点「已完成」，Cookie 会自动收回。",
+                    color = c.fg2,
+                    fontSize = 12.sp,
+                    lineHeight = 18.sp,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                )
+                Spacer(Modifier.height(14.dp))
+                MiniButton("用系统浏览器打开登录页", {
+                    runCatching { uri.openUri(url) }
+                }, accent = true)
+            }
+        } else {
+            androidx.compose.ui.viewinterop.AndroidView(
+                modifier = Modifier.fillMaxWidth().weight(1f),
+                factory = { context ->
+                    // 创建失败的兜底：返回一个占位 TextView，并把界面切到降级模式
+                    val w = runCatching {
+                        android.webkit.WebView(context).apply {
+                            settings.javaScriptEnabled = true
+                            settings.domStorageEnabled = true
+                            settings.javaScriptCanOpenWindowsAutomatically = true
+                            settings.userAgentString = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 " +
+                                    "(KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36"
+                            runCatching { android.webkit.CookieManager.getInstance().setAcceptCookie(true) }
+                            // 滑块验证码（TCaptcha / 极验）跑在第三方 iframe 里，
+                            // 不开第三方 Cookie 滑块会一直转圈失败。
+                            runCatching {
+                                android.webkit.CookieManager.getInstance()
+                                    .setAcceptThirdPartyCookies(this, true)
+                            }
+                            webViewClient = android.webkit.WebViewClient()
+                            webChromeClient = android.webkit.WebChromeClient()
+                            loadUrl(url)
+                        }
+                    }.getOrElse {
+                        context.post { webviewBroken = true }
+                        android.widget.TextView(context).apply { text = "网页组件初始化失败" }
+                    }
+                    w
+                },
+                onRelease = { w ->
+                    runCatching {
+                        (w as? android.webkit.WebView)?.let {
+                            it.stopLoading()
+                            it.destroy()
+                        }
+                    }
+                },
+            )
+        }
     }
+}
+
+private fun android.content.Context.post(block: () -> Unit) {
+    android.os.Handler(android.os.Looper.getMainLooper()).post(block)
 }

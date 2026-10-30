@@ -55,6 +55,19 @@ import kotlinx.coroutines.withContext
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // 闪退日志落到外部存储（Android/data/com.enhance.comic/files/crash.log），
+        // 自己用的 App 没法远程看 logcat，出问题让用户把这一个文件发来就能定位。
+        val previous = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { t, e ->
+            runCatching {
+                java.io.File(getExternalFilesDir(null), "crash.log").appendText(
+                    "\n===== " + java.text.SimpleDateFormat("MM-dd HH:mm:ss", java.util.Locale.US)
+                        .format(java.util.Date()) + " thread=" + t.name + " =====\n" +
+                        android.util.Log.getStackTraceString(e) + "\n"
+                )
+            }
+            previous?.uncaughtException(t, e)
+        }
         enableEdgeToEdge()
         // 上次的发现页结果读回内存：一进「发现」直接有内容，不用先看一轮菊花
         ExploreCache.attach(applicationContext)

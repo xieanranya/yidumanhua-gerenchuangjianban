@@ -125,6 +125,10 @@ class Ehentai extends ComicSource {
                 }
                 let cookies = []
                 for (let i = 0; i < values.length; i++) {
+                    // igneous / star 允许为空：空的就不写（写空值 cookie 反而是脏数据）
+                    if (values[i].length === 0) {
+                        continue
+                    }
                     cookies.push(new Cookie({
                         name: this.account.loginWithCookies.fields[i],
                         value: values[i],
@@ -141,13 +145,16 @@ class Ehentai extends ComicSource {
                     .filter(cookie => !this.account.loginWithCookies.fields.includes(cookie.name))
                 Network.deleteCookies('https://e-hentai.org')
                 Network.setCookies('https://e-hentai.org', [...preservedCookies, ...cookies])
-                // forums.e-hentai.org 挂着 Cloudflare 类防护，对非浏览器请求（尤其 VPN 机房 IP）
-                // 常年回 403 挑战页 —— 「填对的 Cookie」也永远验证失败。
-                // 改用主站验证：登录后右上角有指向论坛个人页的链接（showuser=<你的id>），游客没有。
+                // 验证端点的选择（实测结论）：
+                //   forums.e-hentai.org  → 挂 Cloudflare 类防护，非浏览器请求常年 403，走不通；
+                //   e-hentai.org 首页    → 登录/游客的 HTML 完全一样，判定不出登录态；
+                //   e-hentai.org/home.php → 游客 302 弹回首页，登录才给个人页（GP 统计）。
+                // 宿主会自动跟随 302，所以不能用状态码判定，要认页面内容：
+                // "GP Gained" 只出现在登录后的 home 页，首页列表里没有。
                 let res
                 try {
                     res = await Network.get(
-                        "https://e-hentai.org/",
+                        "https://e-hentai.org/home.php",
                         {
                             "referer": "https://e-hentai.org/",
                             "accept":
@@ -162,14 +169,13 @@ class Ehentai extends ComicSource {
                 if (res.status !== 200) {
                     throw new Error('e-hentai.org 回了 HTTP ' + res.status + '，Cookie 没能被验证（多半是代理出口被站点拦，换个节点再试）');
                 }
-                let document = new HtmlDocument(res.body)
-                // 优先精确匹配填的 ipb_member_id（纯数字），再宽松兜底：
-                // 只要页面上出现 showuser 链接，就说明服务器认了这套 Cookie（游客页没有这个链接）
-                const idNum = String(values[0]).replace(/[^0-9]/g, '')
-                let hit = (idNum ? document.querySelector('a[href*="showuser=' + idNum + '"]') : null)
-                    || document.querySelector('a[href*="showuser="]')
-                document.dispose()
-                return hit != null
+                const body = String(res.body || '');
+                // 登录个人页特征：GP 统计表（"GP Gained"）+ 可选的 Hath 统计
+                if (body.indexOf('GP Gained') >= 0 || body.indexOf('Hath Gained') >= 0) {
+                    return true
+                }
+                // 302 被跟回了首页（游客）/ 页面正常但没有个人页内容 → Cookie 没被服务器认
+                return false
             }
         },
 

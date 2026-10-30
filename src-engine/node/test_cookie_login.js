@@ -11,10 +11,11 @@ const { makeHost } = require('./host_android_sim');
 const BUNDLE = fs.readFileSync(path.join(__dirname, '..', 'bundle.js'), 'utf8');
 const ROUTES = fs.readFileSync(path.join(__dirname, '..', 'routes.json'), 'utf8');
 
-// 登录后主站右上角有指向论坛个人页的链接（showuser=<id>），游客没有 —— 源靠这个判断
-const MEMBER_HTML = '<html><body><p class="ip">Visited: <a href="https://forums.e-hentai.org/index.php?showuser=123">tester</a></p></body></html>';
-// 游客页没有 showuser 链接
-const GUEST_HTML = '<html><body><p class="ip">Not logged in</p></body></html>';
+// 登录后 home.php 给个人页（GP 统计），游客 302 被宿主跟随回首页（首页无登录态）
+// —— 源靠页面里有没有 "GP Gained" 判断
+const MEMBER_HTML = '<html><body><h2>GP Gained</h2><table><tr><td>from gallery visits</td></tr></table></body></html>';
+// 游客被 302 弹回首页：列表页 HTML，没有任何 GP 统计
+const GUEST_HTML = '<html><body><div id="nb"><a href="/">Front Page</a><a href="/watched">Watched</a></div><div class="gl1c">list</div></body></html>';
 
 function ehApi(msg) {
   const url = String(msg.url || '');

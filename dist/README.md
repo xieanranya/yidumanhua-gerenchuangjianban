@@ -2,11 +2,44 @@
 
 | 平台 | 文件 | 大小 | 要求 |
 |---|---|---|---|
-| Android | `EnhanceComic-Android-v1.9.37.apk` | 14.5 MB | Android 8.0 (API 26) 及以上，直接覆盖安装 |
+| Android | `EnhanceComic-Android-v1.9.38.apk` | 14.5 MB | Android 8.0 (API 26) 及以上，直接覆盖安装 |
 | iOS | `EnhanceComic-iOS-v1.9.35.ipa` | 约 1.4 MB | iOS 16.0 及以上，**未签名**，需 Sideloadly / AltStore 签名 |
 
-- Android 当前 **`1.9.37 (48)`**，签名没变（`d5084caf…`），直接覆盖安装，书库和登录态都保留。
-- iOS **暂停更新**，停留在 `1.9.35 (46)`。安卓这几版的改动都不涉及 iOS，不装没有功能缺失。
+- Android 当前 **`1.9.38 (49)`**，签名没变（`d5084caf…`），直接覆盖安装，书库和登录态都保留。
+- iOS **暂停更新**，停留在 `1.9.35 (46)`。
+
+## v1.9.38（仅安卓）：E-Hentai「Cookie 无效」报错不准确
+
+### 现象
+
+EH 的 Cookie 登录提示「Cookie 无效或已过期」，但 Cookie 未必真错了。
+
+### 原因
+
+EH 的登录校验会请求 `forums.e-hentai.org` 判断登录态。这个域名**国内必须走代理**——
+连不上的时候，旧逻辑把「网络失败」和「Cookie 填错」混在一起，一律报「Cookie 无效」，
+误导用户反复复制 Cookie。
+
+另外一个隐患：校验请求带了 `br` 压缩头，宿主如果不解 br 压缩，拿到的是乱码 HTML，
+同样会误判成「Cookie 无效」。
+
+### 修法
+
+- 连不上 forums → 明确报「E-Hentai 需要代理，开好代理（确认分流规则覆盖 e-hentai.org）再登录」；
+- 站点回了非 200 → 报具体状态码；
+- 只有页面正常返回、但找不到登录态 → 才报「Cookie 无效或已过期」。
+
+**所以下次再遇到 EH 报 Cookie 无效，就真的是 Cookie 的问题了**；提示需要代理的话，
+检查你的 VPN 分流规则里有没有覆盖 `e-hentai.org` / `forums.e-hentai.org` / `exhentai.org`。
+
+### 校验
+
+| 检查项 | 结果 |
+|---|---|
+| Android versionCode / versionName | `49` / `1.9.38` |
+| Android 签名 SHA-256 | `d5084caf…`（未变，可覆盖安装） |
+| 包内 `bundle.js` md5 | `c2b7649b…`（引擎改动：EH validate 错误细分） |
+| 引擎回归 | Cookie 登录 ✓ / convert 14 ✓ / 章节 9 ✓ |
 
 ## v1.9.37（仅安卓）：登录窗口被系统状态栏挡住
 

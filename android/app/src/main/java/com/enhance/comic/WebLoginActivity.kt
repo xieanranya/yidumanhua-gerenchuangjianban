@@ -75,6 +75,13 @@ class WebLoginActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(BG)
         }
+        // targetSdk 35+ 默认 edge-to-edge，内容会顶到状态栏/手势条下面，
+        // 把系统状态栏和导航条的 insets 变成根布局的 padding，顶栏才点得到
+        androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(root) { v, insets ->
+            val bars = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+            v.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+            androidx.core.view.WindowInsetsCompat.CONSUMED
+        }
 
         // ---- 顶栏：返回 / 标题 / 已完成 ----------------------------------
         val bar = LinearLayout(this).apply {

@@ -299,7 +299,10 @@
         // 图库类源（E-Hentai）没有章节，正文就是 maxPage 张图。
         // 不合成一个章节，界面会永远停在「0 章」进不去。
         if (!groups.length || !groups.some(function (g) { return g.items && g.items.length; })) {
-          groups = [{ title: '', items: [{ id: '', title: '全部页面' }] }];
+          // 「整本一话」的源（NoyACG / E-Hentai）没有章节表，loadEp 直接拿整本。
+          // id 不能给空串：两端的详情页会把空 id 的章节当脏数据过滤掉，
+          // 结果就是「没解析到章节」。给个占位 id，loadEp 反正不用它。
+          groups = [{ title: '', items: [{ id: '-', title: '全部页面' }] }];
         }
         return {
           id: id,

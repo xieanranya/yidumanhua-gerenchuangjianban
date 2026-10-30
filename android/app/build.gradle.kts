@@ -14,8 +14,8 @@ android {
         targetSdk = 36
         // versionCode 只会增加；versionName 也只会增加，绝不允许回退，
         // 否则国产 ROM 的安装器会判定为降级并拒绝覆盖安装。
-        versionCode = 42
-        versionName = "1.9.31"
+        versionCode = 43
+        versionName = "1.9.32"
     }
 
     // 固定签名：密钥随项目走，任何机器、任何次构建都是同一把 key，

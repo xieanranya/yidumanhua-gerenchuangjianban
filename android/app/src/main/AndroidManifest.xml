@@ -22,6 +22,15 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!-- 网页登录跑在独立进程里：主进程的源引擎 JS 桥 WebView 建在后台 Looper 线程，
+             Chromium 只允许在一个线程初始化，主进程再建登录 WebView 是 native 崩溃。
+             独立进程 = 全新进程，Chromium 第一次初始化就在主线程，从根上绕开。 -->
+        <activity
+            android:name=".WebLoginActivity"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
+            android:exported="false"
+            android:label="网页登录"
+            android:process=":login" />
     </application>
 
 </manifest>

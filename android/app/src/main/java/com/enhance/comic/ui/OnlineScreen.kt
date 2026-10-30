@@ -1952,9 +1952,12 @@ private fun pageGap(prefs: ReaderPrefs): Dp {
 // ==================================================================================== 网页登录
 
 /**
- * 网页登录：真 WebView 打开站点的登录页，滑块/验证码都由用户自己完成，
- * 点「已完成」时把 CookieManager 里的 Cookie 交给引擎存起来。
- * 绅士漫画（wnacg）现在必须这么登 —— 账号密码接口会被滑块拦死。
+ * 网页登录：登录 WebView 在独立进程 WebLoginActivity（android:process=":login"）里跑。
+ * 主进程里源引擎的 JS 桥 WebView 建在后台 Looper 线程上，Chromium 只允许在一个线程
+ * 初始化 —— 主进程再建登录 WebView 就是 native 崩溃，try/catch 都接不住
+ * （1.9.34 防御式创建实测无效）。所以这里只负责：拉起独立进程 → 等回来 →
+ * 从交接文件 web_login.json 里读 Cookie 交给引擎。
+ * 绅士漫画（wnacg）必须这么登 —— 账号密码接口会被滑块拦死。
  */
 @Composable
 private fun WebLoginScreen(
@@ -1966,34 +1969,36 @@ private fun WebLoginScreen(
     onDone: () -> Unit,
 ) {
     val c = LocalColors.current
+    val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
-    val uri = LocalUriHandler.current
     var busy by remember { mutableStateOf(false) }
     var msg by remember { mutableStateOf<String?>(null) }
-    // WebView 建不起来（机型限制 / provider 异常 / 与引擎那个 WebView 冲突）就降级成外部浏览器，
-    // 绝不让「点一下登录」把整个 App 带崩。
-    var webviewBroken by remember { mutableStateOf(false) }
 
-    Column(Modifier.fillMaxSize().background(c.bg).statusBarsPadding()) {
-        SubTopBar("网页登录 · $name", onBack, action = {
-            MiniButton(if (busy) "校验中…" else "已完成", {
-                if (busy) return@MiniButton
-                busy = true
-                msg = null
-                // 把几个可能的主机都读一遍再合并：登录页在 www.x.com，源请求的可能是 x.com，
-                // 只读登录页那一个 URL 会漏掉站点写到父域上的 Cookie。
-                val candidates = LinkedHashSet<String>()
-                candidates.add(url)
-                runCatching {
-                    val u = java.net.URL(url)
-                    candidates.add("${u.protocol}://${u.host}/")
-                    if (u.host.startsWith("www.")) candidates.add("${u.protocol}://${u.host.removePrefix("www.")}/")
+    val launcher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult(),
+    ) {
+        // 从独立进程回来了：读交接文件 → 交给引擎 → 删文件
+        busy = true
+        scope.launch {
+            val f = webLoginResultFile(ctx)
+            val read = runCatching {
+                if (f.exists()) org.json.JSONObject(f.readText()) else null
+            }.getOrNull()
+            runCatching { f.delete() }
+            val j = read
+            when {
+                j == null -> {
+                    busy = false
+                    msg = "没有收到登录结果：请在网页里完成登录后，点登录页右上角「已完成」。"
                 }
-                val cookies = candidates.mapNotNull { c ->
-                    runCatching { android.webkit.CookieManager.getInstance().getCookie(c) }.getOrNull()
-                }.filter { it.isNotBlank() }.joinToString("; ")
-                scope.launch {
-                    val r = engine.loginWithCookieString(key, url, cookies)
+                j.optString("key") != key -> {
+                    busy = false
+                    msg = "登录结果和当前源对不上，请重试一次。"
+                }
+                else -> {
+                    val cookies = j.optString("cookies")
+                    val loginUrl = j.optString("url", url).ifBlank { url }
+                    val r = engine.loginWithCookieString(key, loginUrl, cookies)
                     busy = false
                     if (r.optBoolean("ok")) {
                         onDone()
@@ -2001,87 +2006,56 @@ private fun WebLoginScreen(
                         msg = r.optString("error", "登录失败")
                     }
                 }
-            }, accent = true)
-        })
-        Text(
-            "在下面的网页里完成登录（有滑块就拖一下）。看到自己的账号 / 已登录状态后，" +
-                "点右上角「已完成」。",
-            color = c.fg2,
-            fontSize = 11.sp,
-            lineHeight = 16.sp,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-        )
-        msg?.let {
-            Text(
-                it,
-                color = c.bad,
-                fontSize = 11.sp,
-                lineHeight = 16.sp,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
-            )
+            }
         }
-        if (webviewBroken) {
-            // 降级：内嵌 WebView 起不来时，退回「系统浏览器登录」。
-            Column(
-                Modifier.fillMaxWidth().weight(1f).padding(20.dp),
-                verticalArrangement = Arrangement.Center,
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
+    }
+
+    // 进这个页面就拉起独立进程登录页
+    LaunchedEffect(Unit) {
+        runCatching {
+            launcher.launch(com.enhance.comic.WebLoginActivity.intentOf(ctx, key, url, name))
+        }.onFailure {
+            msg = "这台设备打不开内置登录页：${it.javaClass.simpleName}"
+        }
+    }
+
+    Column(Modifier.fillMaxSize().background(c.bg).statusBarsPadding()) {
+        SubTopBar("网页登录 · $name", onBack)
+        Column(
+            Modifier.fillMaxWidth().weight(1f).padding(20.dp),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            if (busy) {
+                LoadingBox(96.dp)
+                Spacer(Modifier.height(14.dp))
+                Text("正在收回登录状态…", color = c.fg2, fontSize = 12.sp)
+            } else {
                 Text(
-                    "这台设备的内嵌网页起不来，改用系统浏览器登录：\n" +
-                        "登录完成后回到这里点「已完成」，Cookie 会自动收回。",
+                    "登录页在单独的窗口里打开。\n在网页里完成登录（有滑块就拖一下），\n" +
+                        "然后点那个窗口右上角的「已完成」，\n回到这里登录状态会自动收回。",
                     color = c.fg2,
                     fontSize = 12.sp,
-                    lineHeight = 18.sp,
+                    lineHeight = 19.sp,
                     textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                 )
-                Spacer(Modifier.height(14.dp))
-                MiniButton("用系统浏览器打开登录页", {
-                    runCatching { uri.openUri(url) }
+                Spacer(Modifier.height(12.dp))
+                MiniButton("再打开一次登录窗口", {
+                    if (busy) return@MiniButton
+                    runCatching {
+                        launcher.launch(com.enhance.comic.WebLoginActivity.intentOf(ctx, key, url, name))
+                    }
                 }, accent = true)
             }
-        } else {
-            androidx.compose.ui.viewinterop.AndroidView(
-                modifier = Modifier.fillMaxWidth().weight(1f),
-                factory = { context ->
-                    // 创建失败的兜底：返回一个占位 TextView，并把界面切到降级模式
-                    val w = runCatching {
-                        android.webkit.WebView(context).apply {
-                            settings.javaScriptEnabled = true
-                            settings.domStorageEnabled = true
-                            settings.javaScriptCanOpenWindowsAutomatically = true
-                            settings.userAgentString = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 " +
-                                    "(KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36"
-                            runCatching { android.webkit.CookieManager.getInstance().setAcceptCookie(true) }
-                            // 滑块验证码（TCaptcha / 极验）跑在第三方 iframe 里，
-                            // 不开第三方 Cookie 滑块会一直转圈失败。
-                            runCatching {
-                                android.webkit.CookieManager.getInstance()
-                                    .setAcceptThirdPartyCookies(this, true)
-                            }
-                            webViewClient = android.webkit.WebViewClient()
-                            webChromeClient = android.webkit.WebChromeClient()
-                            loadUrl(url)
-                        }
-                    }.getOrElse {
-                        context.post { webviewBroken = true }
-                        android.widget.TextView(context).apply { text = "网页组件初始化失败" }
-                    }
-                    w
-                },
-                onRelease = { w ->
-                    runCatching {
-                        (w as? android.webkit.WebView)?.let {
-                            it.stopLoading()
-                            it.destroy()
-                        }
-                    }
-                },
-            )
+            msg?.let {
+                Spacer(Modifier.height(12.dp))
+                Text(it, color = c.bad, fontSize = 11.sp, lineHeight = 16.sp)
+            }
         }
     }
 }
 
-private fun android.content.Context.post(block: () -> Unit) {
-    android.os.Handler(android.os.Looper.getMainLooper()).post(block)
-}
+/** Cookie 交接文件：与 WebLoginActivity（:login 进程）写入的是同一路径 */
+private fun webLoginResultFile(ctx: android.content.Context): java.io.File =
+    java.io.File(ctx.getExternalFilesDir(null) ?: ctx.filesDir,
+        com.enhance.comic.WebLoginActivity.RESULT_FILE)

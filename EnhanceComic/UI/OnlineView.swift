@@ -441,11 +441,16 @@ struct DetailView: View {
         for g in (d["groups"] as? [[String: Any]] ?? []) {
             let gt = g["title"] as? String ?? ""
             for o in (g["items"] as? [[String: Any]] ?? []) {
-                guard let id = o["id"] as? String, !id.isEmpty else { continue }
+                // 「整本一话」的源（NoyACG）章节 id 可能是空的，只有标题也要保留
+                let rid = o["id"] as? String ?? ""
+                let rtitle = o["title"] as? String ?? ""
+                guard !rid.isEmpty || !rtitle.isEmpty else { continue }
+                let id = rid.isEmpty ? "-" : rid
+                let title = rtitle.isEmpty ? "全部页面" : rtitle
                 flat.append(
                     EpRef(
                         id: id,
-                        title: o["title"] as? String ?? id,
+                        title: title,
                         index: flat.count,
                         group: gt
                     )

@@ -725,8 +725,11 @@ private fun DetailScreen(
             for (i in 0 until arr.length()) {
                 val o = arr.optJSONObject(i) ?: continue
                 val cid = o.optString("id")
-                if (cid.isBlank()) continue
-                out += Chap(cid, o.optString("title").ifBlank { cid }, out.size)
+                val ctitle = o.optString("title")
+                // 「整本一话」的源（NoyACG）章节 id 可能是空的，只要还有标题就要保留，
+                // 否则详情页会变成「没解析到章节」。
+                if (cid.isBlank() && ctitle.isBlank()) continue
+                out += Chap(cid, ctitle.ifBlank { cid.ifBlank { "全部页面" } }, out.size)
             }
         }
         out

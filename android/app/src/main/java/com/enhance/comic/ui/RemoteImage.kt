@@ -74,10 +74,10 @@ private val imageScope = kotlinx.coroutines.CoroutineScope(
 )
 private val inflight = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.Deferred<Bitmap?>>()
 
-private fun cacheKey(url: String, descramble: Int, targetWidth: Int, crop: Int = 0): String {
+private fun cacheKey(url: String, descramble: Int, targetWidth: Int, crop: Int = 0, colorize: Int = 0): String {
     val bucket = if (targetWidth <= 0) 0 else ((targetWidth + 159) / 160) * 160
-    // crop 进 key：裁过和没裁过是两张不同的图，混用会让开关看起来没反应
-    return "$bucket|$descramble|$crop|$url"
+    // crop / colorize 进 key：裁没裁、上没上色是两张不同的图，混用会让开关看起来没反应
+    return "$bucket|$descramble|$crop|$colorize|$url"
 }
 
 /**
@@ -201,9 +201,11 @@ suspend fun loadRemoteBitmap(
     targetWidth: Int = 0,
     /** 0 = 不裁；1/2/3 = 裁白边（等级 + 1） */
     crop: Int = 0,
+    /** 0 = 原图；1 = 黑白 AI 上色 */
+    colorize: Int = 0,
 ): Bitmap? {
     if (url.isBlank()) return null
-    val key = cacheKey(url, descramble, targetWidth, crop)
+    val key = cacheKey(url, descramble, targetWidth, crop, colorize)
     RemoteImageCache.get(key)?.let { return it }
 
     // 已经在下的直接等同一个任务，别重复开连接
@@ -212,7 +214,7 @@ suspend fun loadRemoteBitmap(
         imageGate.withPermit {
             RemoteImageCache.get(key)?.let { return@withPermit it }
             withContext(Dispatchers.IO) {
-                downloadAndDecode(url, headers, descramble, targetWidth, key, crop)
+                downloadAndDecode(url, headers, descramble, targetWidth, key, crop, colorize)
             }
         }
     }
@@ -226,13 +228,14 @@ suspend fun loadRemoteBitmap(
     }
 }
 
-private fun downloadAndDecode(
+private suspend fun downloadAndDecode(
     url: String,
     headers: Map<String, String>?,
     descramble: Int,
     targetWidth: Int,
     key: String,
     crop: Int = 0,
+    colorize: Int = 0,
 ): Bitmap? = runCatching {
     val conn = URL(url).openConnection() as HttpURLConnection
     conn.connectTimeout = 12_000
@@ -276,8 +279,15 @@ private fun downloadAndDecode(
     val straight = if (descramble > 1) descramble(raw, descramble) else raw
     // 裁白边放在最后：先把分块还原成整图，再按真实画面找边界
     val fixed = if (crop > 0) cropWhiteEdges(straight, crop - 1) else straight
-    RemoteImageCache.put(key, fixed)
-    fixed
+    // 黑白上色在裁白边之后：模型吃的是「干净的画面」；失败回原图
+    val out = if (colorize > 0) {
+        // 上色失败就回原图
+        com.enhance.comic.data.ColorizeEngine.colorize(fixed) ?: fixed
+    } else {
+        fixed
+    }
+    RemoteImageCache.put(key, out)
+    out
 }.getOrNull()
 
 @Composable
@@ -332,16 +342,17 @@ fun RemotePageImage(
     val cfg = LocalConfiguration.current
     val targetPx = with(density) { cfg.screenWidthDp.dp.roundToPx() }
     val crop = if (prefs?.autoCropOnline == true) prefs.cropLevel + 1 else 0
-    val key = cacheKey(url, descramble, targetPx, crop)
+    val colorize = if (prefs?.colorizeOnline == true) 1 else 0
+    val key = cacheKey(url, descramble, targetPx, crop, colorize)
 
-    var bmp by remember(url, descramble, crop) { mutableStateOf(RemoteImageCache.get(key)) }
-    var failed by remember(url, descramble, crop) { mutableStateOf(false) }
+    var bmp by remember(url, descramble, crop, colorize) { mutableStateOf(RemoteImageCache.get(key)) }
+    var failed by remember(url, descramble, crop, colorize) { mutableStateOf(false) }
     var attempt by remember(url) { mutableStateOf(0) }
 
-    LaunchedEffect(url, descramble, crop, attempt) {
+    LaunchedEffect(url, descramble, crop, colorize, attempt) {
         if (bmp != null) return@LaunchedEffect
         failed = false
-        val got = loadRemoteBitmap(url, headers, descramble, targetPx, crop)
+        val got = loadRemoteBitmap(url, headers, descramble, targetPx, crop, colorize)
         if (got != null) bmp = got else failed = true
     }
 
@@ -438,8 +449,9 @@ suspend fun prefetchPage(
     descramble: Int,
     targetWidth: Int,
     crop: Int = 0,
+    colorize: Int = 0,
 ) {
     if (url.isBlank()) return
-    if (RemoteImageCache.get(cacheKey(url, descramble, targetWidth, crop)) != null) return
-    loadRemoteBitmap(url, headers, descramble, targetWidth, crop)
+    if (RemoteImageCache.get(cacheKey(url, descramble, targetWidth, crop, colorize)) != null) return
+    loadRemoteBitmap(url, headers, descramble, targetWidth, crop, colorize)
 }

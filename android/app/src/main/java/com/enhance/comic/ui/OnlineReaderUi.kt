@@ -42,6 +42,11 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.runtime.collectAsState
+import kotlinx.coroutines.launch
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.material3.LinearProgressIndicator
+import com.enhance.comic.data.ColorizeEngine
 import com.enhance.comic.model.EnhanceSettings
 import com.enhance.comic.model.ReaderLayout
 import com.enhance.comic.model.ReaderPrefs
@@ -121,6 +126,7 @@ private const val PAGE_LAYOUT = "layout"
 private const val PAGE_DIR = "dir"
 private const val PAGE_GAP = "gap"
 private const val PAGE_CROP = "crop"
+private const val PAGE_COLORIZE = "colorize"
 private const val PAGE_BRIGHT = "bright"
 private const val PAGE_BLUE = "blue"
 private const val PAGE_FILTER = "filter"
@@ -140,6 +146,9 @@ internal fun OnlineSettingsSheet(
     onDismiss: () -> Unit,
 ) {
     var page by remember { mutableStateOf(PAGE_HOME) }
+    val sheetScope = rememberCoroutineScope()
+    val colorizeState = ColorizeEngine.downloadState.collectAsState().value
+    val colorizeProgress = ColorizeEngine.downloadProgress.collectAsState().value
 
     Box(Modifier.fillMaxSize()) {
         Box(
@@ -246,6 +255,55 @@ internal fun OnlineSettingsSheet(
                     SheetNote("只裁「整行 / 整列都是白」的那种边，画面里的白色气泡不会被切。")
                 }
 
+                PAGE_COLORIZE -> SheetScreen("黑白上色", { page = PAGE_HOME }, onDismiss) {
+                    SheetToggleRow("开启", prefs.colorizeOnline) {
+                        onPrefs(prefs.copy(colorizeOnline = it))
+                    }
+                    if (prefs.colorizeOnline) {
+                        Spacer(Modifier.height(8.dp))
+                        when (val st = colorizeState) {
+                            is ColorizeEngine.ModelState.Ready ->
+                                SheetNote("模型已就绪。黑白页面会自动上色，每页首次打开要等几秒，"
+                                    + "看过的页有缓存会秒开。彩色源和本地书不受影响。")
+                            is ColorizeEngine.ModelState.Downloading -> {
+                                LinearProgressIndicator(
+                                    progress = { colorizeProgress },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    color = OnlineAccent,
+                                    trackColor = Color(0x33FFFFFF),
+                                )
+                                Spacer(Modifier.height(6.dp))
+                                Text(
+                                    "正在下载上色模型（约 59MB，只下载一次）… "
+                                        + (colorizeProgress * 100).toInt() + "%",
+                                    color = OnlineHint,
+                                    fontSize = 11.sp,
+                                )
+                                Spacer(Modifier.height(12.dp))
+                                SheetNote("下载完成前先显示原图。")
+                            }
+                            is ColorizeEngine.ModelState.Idle -> {
+                                MiniButton("下载上色模型（约 59MB，仅一次）", {
+                                    sheetScope.launch { ColorizeEngine.download() }
+                                }, accent = true)
+                                Spacer(Modifier.height(12.dp))
+                                SheetNote("模型来自 DDColor（开源 Apache-2.0，达摩院）。"
+                                    + "下载完成前先显示原图。")
+                            }
+                            is ColorizeEngine.ModelState.Failed -> {
+                                MiniButton("下载失败，点这里重试", {
+                                    sheetScope.launch { ColorizeEngine.download() }
+                                })
+                                Spacer(Modifier.height(8.dp))
+                                SheetNote(st.message)
+                            }
+                        }
+                    } else {
+                        SheetNote("打开后黑白漫画会自动上色（模型约 59MB，仅下载一次）。"
+                            + "彩色源和本地书不受影响。")
+                    }
+                }
+
                 PAGE_BRIGHT -> SheetScreen("亮度", { page = PAGE_HOME }, onDismiss) {
                     SheetToggleRow("跟随系统", prefs.autoBrightness) {
                         onPrefs(prefs.copy(autoBrightness = it))
@@ -336,6 +394,11 @@ private fun SettingsHome(
                     "关"
                 },
             ) { onOpen(PAGE_CROP) }
+            EntryRow(
+                Glyph.SPARK,
+                "黑白上色",
+                if (prefs.colorizeOnline) "开" else "关",
+            ) { onOpen(PAGE_COLORIZE) }
             EntryRow(
                 Glyph.SUN,
                 "亮度",

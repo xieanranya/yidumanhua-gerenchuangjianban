@@ -185,6 +185,8 @@ data class ReaderPrefs(
     val autoCropOnline: Boolean = false,
     /** 白边识别强度：0 保守 / 1 中 / 2 激进 */
     val cropLevel: Int = 1,
+    /** 在线黑白漫画 AI 上色（DDColor，模型约 59MB 首次使用时下载） */
+    val colorizeOnline: Boolean = false,
     val rightToLeft: Boolean = true,
     val splitWidePages: Boolean = true,
     val autoCropWhiteBorders: Boolean = false,
@@ -231,6 +233,7 @@ data class ReaderPrefs(
         put("onlineLayout", onlineLayout.name)
         put("autoCropOnline", autoCropOnline)
         put("cropLevel", cropLevel)
+        put("colorizeOnline", colorizeOnline)
         put("grayscale", grayscale)
         put("autoContrast", autoContrast)
         put("invert", invert)
@@ -257,6 +260,7 @@ data class ReaderPrefs(
                 .getOrDefault(ReaderLayout.WEBTOON),
             autoCropOnline = o.optBoolean("autoCropOnline"),
             cropLevel = o.optInt("cropLevel", 1).coerceIn(0, 2),
+            colorizeOnline = o.optBoolean("colorizeOnline"),
             rightToLeft = o.optBoolean("rightToLeft", true),
             splitWidePages = o.optBoolean("splitWidePages", true),
             autoCropWhiteBorders = o.optBoolean("autoCropWhiteBorders"),

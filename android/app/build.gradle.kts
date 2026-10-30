@@ -14,8 +14,12 @@ android {
         targetSdk = 36
         // versionCode 只会增加；versionName 也只会增加，绝不允许回退，
         // 否则国产 ROM 的安装器会判定为降级并拒绝覆盖安装。
-        versionCode = 53
-        versionName = "1.9.42"
+        versionCode = 54
+        versionName = "1.9.43"
+        // 真机都是 arm；x86 系只有模拟器用，带上会把 onnxruntime 的体积翻倍
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+        }
     }
 
     // 固定签名：密钥随项目走，任何机器、任何次构建都是同一把 key，
@@ -71,6 +75,8 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.11.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     implementation("androidx.documentfile:documentfile:1.0.1")
+    // 黑白漫画 AI 上色（DDColor int8）的端侧推理引擎
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.31.1")
     // RAR / CBR: pure Java, no native code, works on all ABIs.
     implementation("com.github.junrar:junrar:7.5.5")
     implementation("org.slf4j:slf4j-api:1.7.36")

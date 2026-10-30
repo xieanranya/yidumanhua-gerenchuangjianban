@@ -71,6 +71,8 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         // 上次的发现页结果读回内存：一进「发现」直接有内容，不用先看一轮菊花
         ExploreCache.attach(applicationContext)
+        // 黑白上色引擎的文件路径初始化（模型按需下载到 filesDir/models）
+        com.enhance.comic.data.ColorizeEngine.init(applicationContext)
         setContent {
             Root()
         }

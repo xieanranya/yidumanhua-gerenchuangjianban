@@ -145,6 +145,18 @@ class Ehentai extends ComicSource {
                     .filter(cookie => !this.account.loginWithCookies.fields.includes(cookie.name))
                 Network.deleteCookies('https://e-hentai.org')
                 Network.setCookies('https://e-hentai.org', [...preservedCookies, ...cookies])
+                // Cookie 双保险：除了写进本地 Cookie 表（宿主请求时自动带），
+                // 再直接塞一个 Cookie 请求头 —— 和浏览器/curl 完全一致的传输方式，
+                // 本地表万一没写上（宿主 bug）校验也不会白跑。
+                const manual = []
+                for (let i = 0; i < values.length; i++) {
+                    if (values[i].length === 0) continue
+                    manual.push(this.account.loginWithCookies.fields[i] + '=' + values[i])
+                }
+                const extra = preservedCookies
+                    .filter(c => c.value && c.value.length > 0)
+                    .map(c => c.name + '=' + c.value)
+                const cookieHeader = manual.concat(extra).join('; ')
                 // 验证端点的选择（实测结论）：
                 //   forums.e-hentai.org  → 挂 Cloudflare 类防护，非浏览器请求常年 403，走不通；
                 //   e-hentai.org 首页    → 登录/游客的 HTML 完全一样，判定不出登录态；
@@ -156,6 +168,7 @@ class Ehentai extends ComicSource {
                     res = await Network.get(
                         "https://e-hentai.org/home.php",
                         {
+                            "cookie": cookieHeader,
                             "referer": "https://e-hentai.org/",
                             "accept":
                                 "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
@@ -174,8 +187,18 @@ class Ehentai extends ComicSource {
                 if (body.indexOf('GP Gained') >= 0 || body.indexOf('Hath Gained') >= 0) {
                     return true
                 }
-                // 302 被跟回了首页（游客）/ 页面正常但没有个人页内容 → Cookie 没被服务器认
-                return false
+                // 没认出来，别只说「无效」——把诊断信息带出来：
+                //   本地 Cookie 表里还有什么（写丢了 = 宿主 Cookie 存取 bug）
+                //   实际收到的页面标题（弹回首页 / 被劫持页 / 别的站，一眼可辨）
+                let jarNow = []
+                try {
+                    jarNow = (await Network.getCookies('https://e-hentai.org')).map(c => c.name)
+                } catch (e) { }
+                const m = /<title>([^<]{0,100})/.exec(body)
+                const page = m ? m[1] : body.slice(0, 80)
+                throw new Error('Cookie 没被服务器认。本地Cookie表:[' + jarNow.join(',') + ']；收到的页面:「' +
+                    page + '」。若本地表里没有 ipb_member_id，说明 Cookie 没存上；' +
+                    '若页面不是 E-Hentai，说明请求被劫持/改写，请截图发我')
             }
         },
 

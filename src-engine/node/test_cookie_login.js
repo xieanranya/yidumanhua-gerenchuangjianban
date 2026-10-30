@@ -20,7 +20,8 @@ const GUEST_HTML = '<html><body><div id="nb"><a href="/">Front Page</a><a href="
 function ehApi(msg) {
   const url = String(msg.url || '');
   if (url.indexOf('e-hentai.org') >= 0 && url.indexOf('forums.e-hentai.org') < 0) {
-    const ck = (msg.headers && msg.headers['Cookie']) || '';
+    const h = msg.headers || {};
+    const ck = h['Cookie'] || h['cookie'] || '';
     const member = /ipb_member_id=123/.test(ck) && /ipb_pass_hash=abc/.test(ck);
     return { status: 200, headers: {}, body: member ? MEMBER_HTML : GUEST_HTML };
   }
@@ -76,8 +77,11 @@ function runLogin(cookieSet) {
   console.log('[新实现 1.9.18] Cookie 登录:', JSON.stringify({ ok: newRun.result.ok, error: newRun.result.error }), 'isLogged:', newRun.logged);
 
   console.log('           宿主 isLogged（源脚本看到的那条）:', newRun.hostLogged);
-  const ok = !oldRun.result.ok && /Cookie 无效/.test(String(oldRun.result.error))
+  // 1.9.41 起 validate 把 Cookie 直接放进请求头（双保险）：
+  // 即使宿主 Cookie 表是空实现（旧 1.9.17 的 bug），校验请求也带得上 Cookie。
+  // 所以两条链路都应当登录成功 —— 这条测试现在守的是「手动 Cookie 头兜底有效」。
+  const ok = oldRun.result.ok && /旧/.test('') === false
     && newRun.result.ok && newRun.logged === true && newRun.hostLogged === true;
-  console.log(ok ? '\n✓ 复现了旧版「Cookie 填对也提示无效」，并确认新版能登录' : '\n✗ 结果不符合预期');
+  console.log(ok ? '\n✓ 两条链路都登录成功（手动 Cookie 头兜底生效，jar 实现不再影响校验）' : '\n✗ 结果不符合预期');
   process.exit(ok ? 0 : 1);
 })();

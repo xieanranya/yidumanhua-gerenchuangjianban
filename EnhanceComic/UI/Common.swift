@@ -77,7 +77,7 @@ final class RemoteImageLoader {
         colorize: Int = 0
     ) async -> UIImage? {
         guard !url.isEmpty else { return nil }
-        let key = Self.cacheKey(url, maxPixel, headers, num, colorize)
+        let key = Self.cacheKey(url, maxPixel, headers, num, crop, colorize)
         if let hit = cache.object(forKey: key as NSString) { return hit }
 
         lock.lock()
@@ -114,7 +114,7 @@ final class RemoteImageLoader {
 
     private static func cacheKey(
         _ url: String, _ maxPixel: CGFloat, _ headers: [String: String]? = nil, _ num: Int = 0,
-        _ colorize: Int = 0
+        _ crop: Int = 0, _ colorize: Int = 0
     ) -> String {
         let bucket = Int(max(320, maxPixel) / 320)
         // 请求头会改变拿到的图（Referer 不同可能一个是 403），必须进 key，否则会串图
@@ -122,8 +122,8 @@ final class RemoteImageLoader {
         if let headers, !headers.isEmpty {
             for k in headers.keys.sorted() { h = h &* 31 &+ k.hashValue &+ (headers[k]?.hashValue ?? 0) }
         }
-        // colorize 进 key：上色过和原图是两张图，混用会让开关看起来没反应
-        return "\(bucket)|\(num)|\(colorize)|\(h)|\(url)"
+        // crop / colorize 都进 key：裁没裁、上没上色是不同的图，混用会让开关看起来没反应
+        return "\(bucket)|\(num)|\(crop)|\(colorize)|\(h)|\(url)"
     }
 
     private static func cost(_ image: UIImage) -> Int {

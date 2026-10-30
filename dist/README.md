@@ -2,46 +2,43 @@
 
 | 平台 | 文件 | 大小 | 要求 |
 |---|---|---|---|
-| Android | `EnhanceComic-Android-v1.9.34.apk` | 14.5 MB | Android 8.0 (API 26) 及以上，直接覆盖安装 |
-| iOS | `EnhanceComic-iOS-v1.9.34.ipa` | 约 1.4 MB | iOS 16.0 及以上，**未签名**，需 Sideloadly / AltStore 签名 |
+| Android | `EnhanceComic-Android-v1.9.35.apk` | 14.5 MB | Android 8.0 (API 26) 及以上，直接覆盖安装 |
+| iOS | `EnhanceComic-iOS-v1.9.35.ipa` | 约 1.4 MB | iOS 16.0 及以上，**未签名**，需 Sideloadly / AltStore 签名 |
 
-版本：**两端统一 `1.9.34 (45)`**。装完在首页/我的页能看到版本号，两端显示一致就是同一版。
+版本：**两端统一 `1.9.35 (46)`**。装完在首页/我的页能看到版本号，两端显示一致就是同一版。
 签名没变（`d5084caf…`），Android 可以直接覆盖安装，书库和登录态都保留。
 
-## v1.9.34（双端）：绅士漫画「网页登录」一点就闪退
+## v1.9.35（双端）：滑块登录闪退 · 根治（登录挪进独立进程）
 
-### 原因（两个都补了）
+### 上一版为什么没修好
 
-1. **App 里现在有两个 WebView 的世界**：源引擎为了不冻界面，把它的 WebView 建在了后台线程
-   （1.9.20 的修复）；而登录页要在主线程再建一个可见的 WebView。Chromium 对「第一个 WebView
-   在哪条线程初始化」有要求，第二条线程再建就会直接抛异常——点「网页登录（带滑块）」的一瞬间
-   正好踩在这里，于是闪退。
-2. **滑块验证码跑在第三方 iframe 里**（腾讯 TCaptcha / 极验），WebView 默认不收第三方 Cookie，
-   就算建起来滑块也会一直失败。
+1.9.34 的思路是「包住异常、建不起来就降级」，但实测还是闪退——因为那次崩溃是 **native 级**：
+主进程里源引擎的 WebView 一直跑在后台线程上（这是为了不冻界面），Chromium 对自己
+「第一次在哪个线程初始化」有严格要求，主进程的主线程再建登录 WebView 时，引擎底层直接
+abort，**Java 的 try/catch 和崩溃日志都接不住**，防御式创建自然无效。
 
-### 改法
+### 这次的改法：给登录页单独开一个进程
 
-- WebView 创建改成**防御式**：包起来，建不起来就自动降级成「用系统浏览器打开登录页」，
-  **无论什么机型都不再因为这个闪退**；
-- 开启第三方 Cookie（`setAcceptThirdPartyCookies`），滑块的 iframe 才能正常工作；
-- 补了 `WebChromeClient`（部分滑块依赖 JS 弹窗/进度）；
-- **崩溃日志落盘**：以后任何闪退都会把堆栈写到
-  `Android/data/com.enhance.comic/files/crash.log`，把这个文件发我就能精确定位，不用再猜。
+- 登录 WebView 挪进 `WebLoginActivity`，Manifest 里声明 `android:process=":login"`——
+  **全新进程，Chromium 第一次初始化就在主线程**，跟引擎那个后台 WebView 彻底互不相干，
+  从根上绕开冲突；
+- 登录完成点「已完成」后，Cookie 写进交接文件 `web_login.json`，主界面自动读走、
+  交给引擎保存并校验，然后删掉这个文件；
+- 登录窗口补了 JS 弹窗支持（alert/confirm），有些站点「密码错误」靠弹窗提示，
+  以前点了没反应；
+- 界面上如果显示「没有收到登录结果」，就是登录窗口里没点「已完成」就退出来了，
+  可以点「再打开一次登录窗口」重来。
 
-### 如果点开显示「用系统浏览器打开登录页」
-
-说明这台设备确实建不了第二个 WebView（引擎线程占了 Chromium 初始化）。这时用系统浏览器登录
-**拿不回 Cookie**，是兜底不是正解——把 `crash.log` 发我，我给登录页单开一个进程来彻底解决。
+**iOS 不受影响**（WKWebView 没有这个线程冲突），版本号同步到 1.9.35 (46)。
 
 ### 校验
 
 | 检查项 | 结果 |
 |---|---|
-| Android versionCode / versionName | `45` / `1.9.34` |
+| Android versionCode / versionName | `46` / `1.9.35` |
 | Android 签名 SHA-256 | `d5084caf…`（未变，可覆盖安装） |
-| 包内 `bundle.js` md5（两端） | `8ff300ed…` |
-| iOS CFBundleShortVersionString / CFBundleVersion | `1.9.34` / `45` |
-| iOS CI | 一次通过 |
+| 包内 `bundle.js` md5（两端） | `8ff300ed…`（引擎未动） |
+| iOS CFBundleShortVersionString / CFBundleVersion | `1.9.35` / `46` |
 
 ## v1.9.33（双端）：NoyACG 详情「没解析到章节」
 

@@ -51,9 +51,20 @@ class NoyAcgSource extends ComicSource {
             throw `Invalid status code: ${res.status}`
         }
         let resp = JSON.parse(res.body);
+        if (resp && Array.isArray(resp) && resp[0] === 'login') {
+            throw '需要登录';
+        }
         if ("status" in resp && resp.status != 'ok') {
-            // 服务端失败时只回 {"status":"error"}，没有文字，直接给用户看得懂的
-            throw resp.status === 'error' ? '账号或密码不对（还没号的话先去站点注册）' : resp.status;
+            // 站点只回状态码，没有文字：
+            //   error → 账号密码不对（登录接口）
+            //   login → 当前是游客（Cookie 没带上 / 会话过期）
+            if (resp.status === 'error') {
+                throw '账号或密码不对（还没号的话先去站点注册）';
+            }
+            if (resp.status === 'login') {
+                throw '需要登录';
+            }
+            throw resp.status;
         }
         return resp;
     }
@@ -86,6 +97,15 @@ class NoyAcgSource extends ComicSource {
             if (status !== 'ok') {
                 // 服务端只回 {"status":"error"}，直接抛出去用户看不懂，换成中文
                 throw '账号或密码不对';
+            }
+            // 站点靠会话 Cookie 认人。登录接口回 ok 不等于后面能认出来
+            // （Cookie 没存下来 / 被风控拦掉时就是这样），这里立刻验一次。
+            try {
+                await this.post('https://noy1.top/api/favoriteslist_v2', 'page=1');
+            } catch (e) {
+                if (String(e).indexOf('需要登录') >= 0) {
+                    throw '登录没生效：站点没记住这次登录（Cookie 没保存），请再试一次';
+                }
             }
             return 'ok';
         },

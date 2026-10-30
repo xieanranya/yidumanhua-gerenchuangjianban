@@ -61,8 +61,12 @@
     return (acc.loginWithCookies.fields || []).map(function (f) { return String(f); });
   }
 
+  // 最近一次操作的源。同步桥是单线程、任务一个接一个跑，用它记录「这条错误属于哪个源」足够。
+  var LAST_KEY = '';
+
   function inst(key) {
     if (!loaded[key]) throw new Error('源未加载: ' + key);
+    LAST_KEY = String(key || '');
     return loaded[key];
   }
 
@@ -103,7 +107,14 @@
       // 源脚本里「要登录」的原文五花八门（noyacg 直接 throw 'login'），
       // 界面不该去猜英文，这里统一成一句能直接显示的中文。
       if (code === 'login' && /^\s*(login|need ?login|not ?logged( ?in)?|login ?required)\s*$/i.test(msg)) {
-        msg = '该源需要登录才能看内容';
+        msg = '登录已失效，请到账号页重新登录';
+      }
+      // 站点说「要登录」= 之前的登录态已经不管用了（会话过期 / Cookie 被清 / 换了设备）。
+      // 不把 __logged 清掉的话，账号页会一直显示「已登录」，用户以为登着，其实请求全是游客。
+      if (code === 'login' && LAST_KEY) {
+        try {
+          sendMessage({ method: 'delete_data', key: LAST_KEY, data_key: '__logged' });
+        } catch (e2) { }
       }
       emit({
         id: id, ok: false, error: msg, code: code,

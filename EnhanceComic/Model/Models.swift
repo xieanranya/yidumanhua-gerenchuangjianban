@@ -287,6 +287,8 @@ struct ReaderPrefs: Codable, Equatable, Hashable {
     var autoCropOnline = false
     /// 白边识别强度：0 保守 / 1 中 / 2 激进
     var cropLevel = 1
+    /// 在线黑白漫画 AI 上色（manga-colorization-v2，模型约 59MB 首次使用时下载）
+    var colorizeOnline = false
     var rightToLeft = true
     var splitWidePages = true
     var autoCropWhiteBorders = false
@@ -321,7 +323,7 @@ struct ReaderPrefs: Codable, Equatable, Hashable {
     init() {}
 
     enum CodingKeys: String, CodingKey {
-        case readingMode, onlineLayout, autoCropOnline, cropLevel
+        case readingMode, onlineLayout, autoCropOnline, cropLevel, colorizeOnline
         case rightToLeft, splitWidePages, autoCropWhiteBorders
         case doublePage, forceSpread
         case pageGapPercent, grayscale, autoContrast, invert, blueLight
@@ -335,6 +337,7 @@ struct ReaderPrefs: Codable, Equatable, Hashable {
         onlineLayout = (try? c.decode(ReaderLayout.self, forKey: .onlineLayout)) ?? .webtoon
         autoCropOnline = (try? c.decode(Bool.self, forKey: .autoCropOnline)) ?? false
         cropLevel = min(max((try? c.decode(Int.self, forKey: .cropLevel)) ?? 1, 0), 2)
+        colorizeOnline = (try? c.decode(Bool.self, forKey: .colorizeOnline)) ?? false
         rightToLeft = (try? c.decode(Bool.self, forKey: .rightToLeft)) ?? true
         splitWidePages = (try? c.decode(Bool.self, forKey: .splitWidePages)) ?? true
         autoCropWhiteBorders = (try? c.decode(Bool.self, forKey: .autoCropWhiteBorders)) ?? false

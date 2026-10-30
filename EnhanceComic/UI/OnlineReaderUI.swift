@@ -157,6 +157,7 @@ struct OnlineSettingsPanel: View {
 
     @State private var page = ""
     @State private var contentH: CGFloat = 0
+    @ObservedObject private var colorizeStore = ColorizeModelStore.shared
 
     private var layoutLabel: String {
         ReaderLayout.allCases.first { $0 == prefs.onlineLayout }?.label ?? "Webtoon"
@@ -165,6 +166,10 @@ struct OnlineSettingsPanel: View {
     private var cropLabel: String {
         guard prefs.autoCropOnline else { return "关" }
         return "开 · " + ["保守", "中", "激进"][min(max(prefs.cropLevel, 0), 2)]
+    }
+
+    private var colorizeLabel: String {
+        prefs.colorizeOnline ? "开" : "关"
     }
 
     private var filterLabel: String {
@@ -187,6 +192,7 @@ struct OnlineSettingsPanel: View {
         case "dir": return "阅读方向"
         case "gap": return "页间距"
         case "crop": return "自动裁白边"
+        case "colorize": return "黑白上色"
         case "bright": return "亮度"
         case "blue": return "蓝光过滤"
         case "filter": return "画面"
@@ -216,6 +222,7 @@ struct OnlineSettingsPanel: View {
                             page = "gap"
                         }
                         row("自动裁白边", cropLabel) { page = "crop" }
+                        row("黑白上色", colorizeLabel) { page = "colorize" }
                         row("亮度",
                             prefs.autoBrightness ? "跟随系统" : "\(Int(prefs.brightness))%") {
                             page = "bright"
@@ -431,6 +438,52 @@ struct OnlineSettingsPanel: View {
             }
             note("只裁「整行或整列都是白」的边，画面里的白色气泡和白底对白框不会被切。"
                  + "裁掉超过一半会判定误判，宁可不裁。")
+
+        case "colorize":
+            toggleRow("开启", prefs.colorizeOnline) { prefs.colorizeOnline = $0 }
+            if prefs.colorizeOnline {
+                switch colorizeStore.state {
+                case .ready:
+                    note("模型已就绪。黑白页面会自动上色，每页首次打开要等几秒，"
+                         + "看过的页有缓存会秒开。彩色页和本地书不受影响。")
+                case .downloading:
+                    HStack(spacing: 10) {
+                        ProgressView(value: colorizeStore.progress)
+                            .progressViewStyle(.linear)
+                            .tint(Color(red: 1, green: 0.43, blue: 0.61))
+                        Text("\(Int(colorizeStore.progress * 100))%")
+                            .font(.system(size: 11))
+                            .foregroundColor(.white.opacity(0.6))
+                            .monospacedDigit()
+                    }
+                    .padding(.vertical, 6)
+                    note("正在下载上色模型（约 59MB，只下载一次）。下载完成前先显示原图。")
+                case .idle:
+                    Button {
+                        colorizeStore.startDownload()
+                    } label: {
+                        Text("下载上色模型（约 59MB，仅一次）")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(Color(red: 1, green: 0.43, blue: 0.61))
+                    }
+                    .buttonStyle(.plain)
+                    note("模型来自 manga-colorization-v2（开源 MIT，专为黑白漫画训练）。"
+                         + "下载完成前先显示原图。")
+                case .failed(let msg):
+                    Button {
+                        colorizeStore.startDownload()
+                    } label: {
+                        Text("下载失败，点这里重试")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(Color(red: 1, green: 0.45, blue: 0.42))
+                    }
+                    .buttonStyle(.plain)
+                    note(msg)
+                }
+            } else {
+                note("打开后黑白漫画会自动上色（模型约 59MB，仅下载一次，"
+                     + "专为黑白漫画训练）。彩色源和本地书不受影响。")
+            }
 
         case "bright":
             toggleRow("跟随系统", prefs.autoBrightness) { prefs.autoBrightness = $0 }

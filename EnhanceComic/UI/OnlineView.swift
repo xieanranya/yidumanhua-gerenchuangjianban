@@ -1027,6 +1027,11 @@ struct OnlineReader: View {
         store.prefs.autoCropOnline ? store.prefs.cropLevel + 1 : 0
     }
 
+    /// 黑白上色；0 = 关
+    private var colorizeLevel: Int {
+        store.prefs.colorizeOnline ? 1 : 0
+    }
+
     var body: some View {
         ZStack(alignment: .top) {
             Color.black.ignoresSafeArea()
@@ -1221,7 +1226,8 @@ struct OnlineReader: View {
                 headers: p.headers,
                 descramble: p.num,
                 fit: fit,
-                crop: cropLevel
+                crop: cropLevel,
+                colorize: colorizeLevel
             )
             .task(id: p.url) { prefetch(i) }
         } else if let f = fails[i] {
@@ -1399,7 +1405,8 @@ struct OnlineReader: View {
                 guard let p = pages[next] else { return }
                 let width = UIScreen.main.bounds.width * 3
                 _ = await RemoteImageLoader.shared.image(
-                    p.url, headers: p.headers, num: p.num, maxPixel: width, crop: cropLevel
+                    p.url, headers: p.headers, num: p.num, maxPixel: width, crop: cropLevel,
+                    colorize: colorizeLevel
                 )
             }
         }

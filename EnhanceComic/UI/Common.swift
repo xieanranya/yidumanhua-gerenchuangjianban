@@ -58,9 +58,10 @@ final class RemoteImageLoader {
     }
 
     func cached(
-        _ url: String, maxPixel: CGFloat, headers: [String: String]? = nil, num: Int = 0, crop: Int = 0
+        _ url: String, maxPixel: CGFloat, headers: [String: String]? = nil, num: Int = 0, crop: Int = 0,
+        colorize: Int = 0
     ) -> UIImage? {
-        cache.object(forKey: Self.cacheKey(url, maxPixel, headers, num, crop) as NSString)
+        cache.object(forKey: Self.cacheKey(url, maxPixel, headers, num, crop, colorize) as NSString)
     }
 
     /// maxPixel 是物理像素上限：图再大也只解到这个尺寸（省内存也省 CPU）
@@ -72,10 +73,11 @@ final class RemoteImageLoader {
         headers: [String: String]? = nil,
         num: Int = 0,
         maxPixel: CGFloat = 1200,
-        crop: Int = 0
+        crop: Int = 0,
+        colorize: Int = 0
     ) async -> UIImage? {
         guard !url.isEmpty else { return nil }
-        let key = Self.cacheKey(url, maxPixel, headers, num)
+        let key = Self.cacheKey(url, maxPixel, headers, num, colorize)
         if let hit = cache.object(forKey: key as NSString) { return hit }
 
         lock.lock()
@@ -91,6 +93,7 @@ final class RemoteImageLoader {
                 num: num,
                 maxPixel: maxPixel,
                 crop: crop,
+                colorize: colorize,
                 session: RemoteImageLoader.session
             )
         }
@@ -111,7 +114,7 @@ final class RemoteImageLoader {
 
     private static func cacheKey(
         _ url: String, _ maxPixel: CGFloat, _ headers: [String: String]? = nil, _ num: Int = 0,
-        _ crop: Int = 0
+        _ colorize: Int = 0
     ) -> String {
         let bucket = Int(max(320, maxPixel) / 320)
         // 请求头会改变拿到的图（Referer 不同可能一个是 403），必须进 key，否则会串图
@@ -119,8 +122,8 @@ final class RemoteImageLoader {
         if let headers, !headers.isEmpty {
             for k in headers.keys.sorted() { h = h &* 31 &+ k.hashValue &+ (headers[k]?.hashValue ?? 0) }
         }
-        // crop 也进 key：裁过和没裁过是两张图，混用会让开关看起来没反应
-        return "\(bucket)|\(num)|\(crop)|\(h)|\(url)"
+        // colorize 进 key：上色过和原图是两张图，混用会让开关看起来没反应
+        return "\(bucket)|\(num)|\(colorize)|\(h)|\(url)"
     }
 
     private static func cost(_ image: UIImage) -> Int {
@@ -135,6 +138,7 @@ final class RemoteImageLoader {
         num: Int,
         maxPixel: CGFloat,
         crop: Int,
+        colorize: Int,
         session: URLSession
     ) async -> UIImage? {
         guard let u = URL(string: url) else { return nil }
@@ -169,7 +173,10 @@ final class RemoteImageLoader {
             guard let img = downsample(data, maxPixel: maxPixel) else { return nil }
             let straight = num > 1 ? (descramble(img, num: num) ?? img) : img
             // 裁白边放在最后：先还原分块，再按真实画面找边界
-            return crop > 0 ? cropWhite(straight, level: crop - 1) : straight
+            let cropped = crop > 0 ? cropWhite(straight, level: crop - 1) : straight
+            // 黑白上色在裁白边之后：模型吃的是「干净的画面」
+            guard colorize > 0 else { return cropped }
+            return await ColorizeEngine.colorize(cropped)
         } catch {
             return nil
         }
@@ -344,6 +351,8 @@ struct OnlinePageImage: View {
     var fit: Bool = false
     /// 0 = 不裁白边；1/2/3 = 裁（等级 + 1）
     var crop: Int = 0
+    /// 0 = 原图；1 = 黑白上色
+    var colorize: Int = 0
 
     @Environment(\.displayScale) private var scale
     @State private var image: UIImage?
@@ -390,20 +399,21 @@ struct OnlinePageImage: View {
             }
         }
         .frame(maxWidth: .infinity)
-        .task(id: "\(url)|\(descramble)|\(crop)|\(attempt)") { await load() }
+        .task(id: "\(url)|\(descramble)|\(crop)|\(colorize)|\(attempt)") { await load() }
     }
 
     private func load() async {
         let width = UIScreen.main.bounds.width * max(scale, 2)
         if let hit = RemoteImageLoader.shared.cached(
-            url, maxPixel: width, headers: headers, num: descramble, crop: crop
+            url, maxPixel: width, headers: headers, num: descramble, crop: crop, colorize: colorize
         ) {
             image = hit
             failed = false
             return
         }
         let got = await RemoteImageLoader.shared.image(
-            url, referer: referer, headers: headers, num: descramble, maxPixel: width, crop: crop
+            url, referer: referer, headers: headers, num: descramble, maxPixel: width, crop: crop,
+            colorize: colorize
         )
         if Task.isCancelled { return }
         image = got

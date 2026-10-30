@@ -11,13 +11,14 @@ const { makeHost } = require('./host_android_sim');
 const BUNDLE = fs.readFileSync(path.join(__dirname, '..', 'bundle.js'), 'utf8');
 const ROUTES = fs.readFileSync(path.join(__dirname, '..', 'routes.json'), 'utf8');
 
-const MEMBER_HTML = '<html><body><div id="userlinks"><p class="home"><b><a href="/">tester</a></b></p></div></body></html>';
-// 未登录时导航栏里没有用户名节点（源就是靠 div#userlinks > p.home > b > a 判断的）
-const GUEST_HTML = '<html><body><div id="userlinks"><p class="home"><a href="/login">登录</a></p></div></body></html>';
+// 登录后主站右上角有指向论坛个人页的链接（showuser=<id>），游客没有 —— 源靠这个判断
+const MEMBER_HTML = '<html><body><p class="ip">Visited: <a href="https://forums.e-hentai.org/index.php?showuser=123">tester</a></p></body></html>';
+// 游客页没有 showuser 链接
+const GUEST_HTML = '<html><body><p class="ip">Not logged in</p></body></html>';
 
 function ehApi(msg) {
   const url = String(msg.url || '');
-  if (url.indexOf('forums.e-hentai.org') >= 0) {
+  if (url.indexOf('e-hentai.org') >= 0 && url.indexOf('forums.e-hentai.org') < 0) {
     const ck = (msg.headers && msg.headers['Cookie']) || '';
     const member = /ipb_member_id=123/.test(ck) && /ipb_pass_hash=abc/.test(ck);
     return { status: 200, headers: {}, body: member ? MEMBER_HTML : GUEST_HTML };

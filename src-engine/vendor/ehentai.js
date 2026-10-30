@@ -141,12 +141,15 @@ class Ehentai extends ComicSource {
                     .filter(cookie => !this.account.loginWithCookies.fields.includes(cookie.name))
                 Network.deleteCookies('https://e-hentai.org')
                 Network.setCookies('https://e-hentai.org', [...preservedCookies, ...cookies])
+                // forums.e-hentai.org 挂着 Cloudflare 类防护，对非浏览器请求（尤其 VPN 机房 IP）
+                // 常年回 403 挑战页 —— 「填对的 Cookie」也永远验证失败。
+                // 改用主站验证：登录后右上角有指向论坛个人页的链接（showuser=<你的id>），游客没有。
                 let res
                 try {
                     res = await Network.get(
-                        "https://forums.e-hentai.org/",
+                        "https://e-hentai.org/",
                         {
-                            "referer": "https://forums.e-hentai.org/index.php?",
+                            "referer": "https://e-hentai.org/",
                             "accept":
                                 "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
                             "accept-language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7"
@@ -154,17 +157,19 @@ class Ehentai extends ComicSource {
                 } catch (e) {
                     // 网络层失败（超时/DNS/连不上）跟 Cookie 对不对没关系，
                     // 假装「Cookie 无效」会误导用户。EH 在国内必须走代理。
-                    throw new Error('连不上 forums.e-hentai.org —— E-Hentai 需要代理，开好代理（并确认分流规则覆盖 e-hentai.org）再登录');
+                    throw new Error('连不上 e-hentai.org —— E-Hentai 需要代理，开好代理（并确认分流规则覆盖 e-hentai.org）再登录');
                 }
                 if (res.status !== 200) {
-                    throw new Error('forums.e-hentai.org 回了 HTTP ' + res.status + '，Cookie 没能被验证（多半是代理没走通，或站点拦了这个出口 IP）');
+                    throw new Error('e-hentai.org 回了 HTTP ' + res.status + '，Cookie 没能被验证（多半是代理出口被站点拦，换个节点再试）');
                 }
                 let document = new HtmlDocument(res.body)
-                let name = document.querySelector("div#userlinks > p.home > b > a");
-                // Some forum skins omit #userlinks but still show the logout action.
-                const logout = document.querySelector('a[href*="act=Login"][href*="CODE=03"]')
+                // 优先精确匹配填的 ipb_member_id（纯数字），再宽松兜底：
+                // 只要页面上出现 showuser 链接，就说明服务器认了这套 Cookie（游客页没有这个链接）
+                const idNum = String(values[0]).replace(/[^0-9]/g, '')
+                let hit = (idNum ? document.querySelector('a[href*="showuser=' + idNum + '"]') : null)
+                    || document.querySelector('a[href*="showuser="]')
                 document.dispose()
-                return name != null || logout != null
+                return hit != null
             }
         },
 

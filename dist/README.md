@@ -2,11 +2,37 @@
 
 | 平台 | 文件 | 大小 | 要求 |
 |---|---|---|---|
-| Android | `EnhanceComic-Android-v1.9.38.apk` | 14.5 MB | Android 8.0 (API 26) 及以上，直接覆盖安装 |
+| Android | `EnhanceComic-Android-v1.9.39.apk` | 14.5 MB | Android 8.0 (API 26) 及以上，直接覆盖安装 |
 | iOS | `EnhanceComic-iOS-v1.9.35.ipa` | 约 1.4 MB | iOS 16.0 及以上，**未签名**，需 Sideloadly / AltStore 签名 |
 
-- Android 当前 **`1.9.38 (49)`**，签名没变（`d5084caf…`），直接覆盖安装，书库和登录态都保留。
+- Android 当前 **`1.9.39 (50)`**，签名没变（`d5084caf…`），直接覆盖安装，书库和登录态都保留。
 - iOS **暂停更新**，停留在 `1.9.35 (46)`。
+
+## v1.9.39（仅安卓）：E-Hentai 登录验证换主站，绕开 forums 的 403
+
+### 1.9.38 实测结果
+
+报错细分生效了——错误从「Cookie 无效」变成了「站点拒绝了请求（403）」，
+同时也定位了真凶：**forums.e-hentai.org 挂着 Cloudflare 类防护**，对非浏览器请求
+（尤其 VPN 机房 IP）常年回 403 挑战页。也就是说：**不管 Cookie 对不对，
+走 forums 验证这条路都可能被 403 卡死**，你开关 VPN 都一样就是这个原因。
+
+### 修法：不再走 forums，改用主站验证
+
+- 登录验证改为请求 `e-hentai.org` 主站（你平时浏览就是通的，防护宽松得多）；
+- 判定标准：登录后主站右上角会出现指向论坛个人页的链接（`showuser=<你的id>`），
+  游客页面没有这个链接——既验证了 Cookie 有效性，也顺便验证了 id 与密码哈希匹配；
+- 登录失败的提示改为显示引擎返回的具体原因（哪个站、什么状态码、要不要代理），
+  不再被通用文案吞掉。
+
+### 校验
+
+| 检查项 | 结果 |
+|---|---|
+| Android versionCode / versionName | `50` / `1.9.39` |
+| Android 签名 SHA-256 | `d5084caf…`（未变，可覆盖安装） |
+| 包内 `bundle.js` md5 | `bc4f6103…` |
+| 引擎回归 | Cookie 登录 ✓ / convert 14 ✓ / 章节 9 ✓ |
 
 ## v1.9.38（仅安卓）：E-Hentai「Cookie 无效」报错不准确
 

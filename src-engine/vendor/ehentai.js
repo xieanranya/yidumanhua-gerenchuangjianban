@@ -141,17 +141,23 @@ class Ehentai extends ComicSource {
                     .filter(cookie => !this.account.loginWithCookies.fields.includes(cookie.name))
                 Network.deleteCookies('https://e-hentai.org')
                 Network.setCookies('https://e-hentai.org', [...preservedCookies, ...cookies])
-                let res = await Network.get(
-                    "https://forums.e-hentai.org/",
-                    {
-                        "referer": "https://forums.e-hentai.org/index.php?",
-                        "accept":
-                            "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-                        "accept-encoding": "gzip, deflate, br",
-                        "accept-language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7"
-                    });
+                let res
+                try {
+                    res = await Network.get(
+                        "https://forums.e-hentai.org/",
+                        {
+                            "referer": "https://forums.e-hentai.org/index.php?",
+                            "accept":
+                                "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+                            "accept-language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7"
+                        });
+                } catch (e) {
+                    // 网络层失败（超时/DNS/连不上）跟 Cookie 对不对没关系，
+                    // 假装「Cookie 无效」会误导用户。EH 在国内必须走代理。
+                    throw new Error('连不上 forums.e-hentai.org —— E-Hentai 需要代理，开好代理（并确认分流规则覆盖 e-hentai.org）再登录');
+                }
                 if (res.status !== 200) {
-                    return false
+                    throw new Error('forums.e-hentai.org 回了 HTTP ' + res.status + '，Cookie 没能被验证（多半是代理没走通，或站点拦了这个出口 IP）');
                 }
                 let document = new HtmlDocument(res.body)
                 let name = document.querySelector("div#userlinks > p.home > b > a");

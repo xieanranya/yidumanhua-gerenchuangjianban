@@ -1071,10 +1071,11 @@ private fun AccountScreen(
             } else {
                 val code = r.optString("code")
                 val raw = r.optString("error", "账号或密码不对")
+                // 引擎侧的错误已经带具体原因（哪个站、什么状态码、要不要代理），
+                // 这里在原文后面补一行通用建议，别把细节吞掉
                 loginErr = when (code) {
-                    "net" -> "登录失败：连不上这个源。先确认网站本身能打开；" +
-                        "E-Hentai / 绅士漫画 / PicACG 这类站点国内要开代理。"
-                    "forbidden" -> "登录失败：站点拒绝了请求（403），多半是云防护拦了，开/关代理后重试。"
+                    "net" -> "登录失败：$raw\n（连不上多半是线路问题，E-Hentai / 绅士漫画 / PicACG 这类站点国内要开代理）"
+                    "forbidden" -> "登录失败：$raw\n（403 多半是云防护/防盗链，开/关代理或换个节点重试）"
                     else -> "登录失败：$raw"
                 }
             }

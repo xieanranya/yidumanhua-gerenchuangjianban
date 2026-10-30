@@ -45,6 +45,14 @@ class WebLoginActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // Android 9 (API 28) 起，多个进程不能共用同一个 WebView 数据目录 ——
+        // 主进程的引擎 WebView 占着默认目录 app_webview，这个 :login 进程再建 WebView
+        // 会抛 RuntimeException("Using WebView from more than one process...")。
+        // 给本进程设独立的数据目录后缀，必须在本进程第一次建 WebView 之前调用。
+        if (android.os.Build.VERSION.SDK_INT >= 28) {
+            try { WebView.setDataDirectorySuffix("login") } catch (_: Throwable) { }
+        }
+
         // 独立进程也要留崩溃日志，文件名跟主进程的 crash.log 分开
         val prev = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { t, e ->
@@ -176,7 +184,8 @@ class WebLoginActivity : Activity() {
         } catch (e: Throwable) {
             // 独立进程里理论上不会再撞 Chromium 线程冲突，兜底保平安
             holder.addView(TextView(this).apply {
-                text = "网页组件起不来：${e.javaClass.simpleName}\n可以改用系统浏览器登录后，\n" +
+                text = "网页组件起不来：${e.javaClass.simpleName}\n" +
+                    "${e.message?.take(120) ?: ""}\n\n可以改用系统浏览器登录后，\n" +
                     "再回账号页走「Cookie 登录」手动填 Cookie。"
                 setTextColor(0xFF999999.toInt())
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)

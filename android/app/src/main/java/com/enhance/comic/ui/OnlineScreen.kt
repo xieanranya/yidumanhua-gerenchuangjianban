@@ -1657,7 +1657,7 @@ private fun OnlineReader(
     val refs = remember(urls, refHeaders) { urls.map { PageRef(it, refHeaders ?: emptyMap(), 0) } }
     // 预取也要按「裁不裁白边」分开，否则缓存 key 对不上，预取等于白做
     val crop = if (prefs.autoCropOnline) prefs.cropLevel + 1 else 0
-    val colorize = if (prefs.colorizeOnline) 1 else 0
+    val colorize = if (prefs.colorizeOnline) (if (prefs.colorizeStyle == "realistic") "realistic" else "anime") else "0"
     var showBar by remember { mutableStateOf(true) }
     var showSettings by remember { mutableStateOf(false) }
     var current by remember { mutableStateOf(0) }
@@ -1763,7 +1763,7 @@ private fun OnlineLazyReader(
     val targetPx = with(density) { cfg.screenWidthDp.dp.roundToPx() }
     val pages = remember { mutableStateMapOf<Int, PageRef>() }
     val crop = if (prefs.autoCropOnline) prefs.cropLevel + 1 else 0
-    val colorize = if (prefs.colorizeOnline) 1 else 0
+    val colorize = if (prefs.colorizeOnline) (if (prefs.colorizeStyle == "realistic") "realistic" else "anime") else "0"
     val fails = remember { mutableStateMapOf<Int, String>() }
     val inflight = remember { mutableSetOf<Int>() }
     var showBar by remember { mutableStateOf(true) }

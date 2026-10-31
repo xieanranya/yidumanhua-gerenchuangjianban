@@ -147,8 +147,6 @@ internal fun OnlineSettingsSheet(
 ) {
     var page by remember { mutableStateOf(PAGE_HOME) }
     val sheetScope = rememberCoroutineScope()
-    val colorizeState = ColorizeEngine.downloadState.collectAsState().value
-    val colorizeProgress = ColorizeEngine.downloadProgress.collectAsState().value
 
     Box(Modifier.fillMaxSize()) {
         Box(
@@ -258,55 +256,78 @@ internal fun OnlineSettingsSheet(
                 PAGE_COLORIZE -> SheetScreen("黑白上色", { page = PAGE_HOME }, onDismiss) {
                     SheetToggleRow("开启", prefs.colorizeOnline) {
                         onPrefs(prefs.copy(colorizeOnline = it))
-                        // 打开开关就自动下载模型，别让用户漏掉第二步
-                        if (it && !ColorizeEngine.modelReady() &&
-                            ColorizeEngine.downloadState.value !is ColorizeEngine.ModelState.Downloading
-                        ) {
-                            sheetScope.launch { ColorizeEngine.download() }
+                        // 打开开关就自动下载所选风格的模型
+                        if (it) {
+                            val m = ColorizeEngine.Model.byId(prefs.colorizeStyle)
+                            if (!ColorizeEngine.modelReady(m)) {
+                                sheetScope.launch { ColorizeEngine.download(m) }
+                            }
                         }
                     }
                     if (prefs.colorizeOnline) {
-                        Spacer(Modifier.height(8.dp))
-                        when (val st = colorizeState) {
-                            is ColorizeEngine.ModelState.Ready ->
-                                SheetNote("模型已就绪。黑白页面会自动上色，每页首次打开要等几秒，"
-                                    + "看过的页有缓存会秒开。彩色源和本地书不受影响。")
+                        Spacer(Modifier.height(10.dp))
+                        SheetNote("上色风格（切换即自动下载对应模型）")
+                        Spacer(Modifier.height(4.dp))
+                        SheetOptionRow(
+                            "动漫 · 明快平涂",
+                            "manga-colorization-v2，约 59MB",
+                            prefs.colorizeStyle != "realistic",
+                        ) {
+                            onPrefs(prefs.copy(colorizeStyle = "anime"))
+                            val m = ColorizeEngine.Model.ANIME
+                            if (!ColorizeEngine.modelReady(m)) {
+                                sheetScope.launch { ColorizeEngine.download(m) }
+                            }
+                        }
+                        SheetOptionRow(
+                            "写实 · 真实质感",
+                            "DDColor，约 59MB",
+                            prefs.colorizeStyle == "realistic",
+                        ) {
+                            onPrefs(prefs.copy(colorizeStyle = "realistic"))
+                            val m = ColorizeEngine.Model.REALISTIC
+                            if (!ColorizeEngine.modelReady(m)) {
+                                sheetScope.launch { ColorizeEngine.download(m) }
+                            }
+                        }
+                        Spacer(Modifier.height(10.dp))
+                        val cur = ColorizeEngine.Model.byId(prefs.colorizeStyle)
+                        when (val st = ColorizeEngine.stateOf(cur)) {
                             is ColorizeEngine.ModelState.Downloading -> {
                                 LinearProgressIndicator(
-                                    progress = { colorizeProgress },
+                                    progress = { ColorizeEngine.progressOf(cur) },
                                     modifier = Modifier.fillMaxWidth(),
                                     color = OnlineAccent,
                                     trackColor = Color(0x33FFFFFF),
                                 )
                                 Spacer(Modifier.height(6.dp))
                                 Text(
-                                    "正在下载上色模型（约 59MB，只下载一次）… "
-                                        + (colorizeProgress * 100).toInt() + "%",
+                                    "正在下载「" + cur.label + "」模型（约 59MB，仅一次）… "
+                                        + (ColorizeEngine.progressOf(cur) * 100).toInt() + "%",
                                     color = OnlineHint,
                                     fontSize = 11.sp,
                                 )
                                 Spacer(Modifier.height(12.dp))
                                 SheetNote("下载完成前先显示原图。")
                             }
-                            is ColorizeEngine.ModelState.Idle -> {
-                                MiniButton("下载上色模型（约 59MB，仅一次）", {
-                                    sheetScope.launch { ColorizeEngine.download() }
+                            is ColorizeEngine.ModelState.Ready ->
+                                SheetNote("「" + cur.label + "」模型已就绪。每页首次打开要等几秒，"
+                                    + "看过的页有缓存秒开。彩色源和本地书不受影响。")
+                            is ColorizeEngine.ModelState.Idle ->
+                                MiniButton("下载「" + cur.label + "」模型（约 59MB，仅一次）", {
+                                    sheetScope.launch { ColorizeEngine.download(cur) }
                                 }, accent = true)
-                                Spacer(Modifier.height(12.dp))
-                                SheetNote("模型来自 DDColor（开源 Apache-2.0，达摩院）。"
-                                    + "下载完成前先显示原图。")
-                            }
                             is ColorizeEngine.ModelState.Failed -> {
                                 MiniButton("下载失败，点这里重试", {
-                                    sheetScope.launch { ColorizeEngine.download() }
+                                    sheetScope.launch { ColorizeEngine.download(cur) }
                                 })
                                 Spacer(Modifier.height(8.dp))
                                 SheetNote(st.message)
                             }
                         }
                     } else {
-                        SheetNote("打开后黑白漫画会自动上色（模型约 59MB，仅下载一次）。"
-                            + "彩色源和本地书不受影响。")
+                        SheetNote("打开后黑白漫画会自动上色。动漫 / 写实两种风格模型各约 59MB，"
+                            + "选用哪种才下载哪种。彩色源和本地书不受影响。")
                     }
                 }
 
@@ -405,14 +426,13 @@ private fun SettingsHome(
             EntryRow(
                 Glyph.SPARK,
                 "黑白上色",
-                when (val st = colorizeState) {
-                    is ColorizeEngine.ModelState.Ready ->
-                        if (prefs.colorizeOnline) "开" else "关"
+                when (ColorizeEngine.stateOf(ColorizeEngine.Model.byId(prefs.colorizeStyle))) {
                     is ColorizeEngine.ModelState.Downloading ->
-                        "开 · 下载模型 " + (colorizeProgress * 100).toInt() + "%"
-                    is ColorizeEngine.ModelState.Idle ->
-                        if (prefs.colorizeOnline) "开 · 待下载模型" else "未下载"
-                    is ColorizeEngine.ModelState.Failed -> "开 · 下载失败"
+                        "开 · 下载" + (if (prefs.colorizeStyle == "realistic") "写实" else "动漫") + "模型"
+                    else ->
+                        if (prefs.colorizeOnline)
+                            "开 · " + (if (prefs.colorizeStyle == "realistic") "写实" else "动漫")
+                        else "关"
                 },
             ) { onOpen(PAGE_COLORIZE) }
             EntryRow(
@@ -781,3 +801,25 @@ private fun Modifier.pointerSeek(total: Int, onSeek: (Int) -> Unit): Modifier =
                 onSeek(((change.position.x / size.width) * total).toInt().coerceIn(0, total - 1))
             }
         }
+
+@Composable
+private fun SheetOptionRow(label: String, desc: String, selected: Boolean, onClick: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 9.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                label,
+                color = if (selected) OnlineAccent else Color.White.copy(alpha = 0.86f),
+                fontSize = 13.sp,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            )
+            Text(desc, color = OnlineHint, fontSize = 10.5.sp)
+        }
+        if (selected) Text("✓", color = OnlineAccent, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+    }
+}

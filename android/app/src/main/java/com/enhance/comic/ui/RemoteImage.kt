@@ -74,7 +74,7 @@ private val imageScope = kotlinx.coroutines.CoroutineScope(
 )
 private val inflight = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.Deferred<Bitmap?>>()
 
-private fun cacheKey(url: String, descramble: Int, targetWidth: Int, crop: Int = 0, colorize: Int = 0): String {
+private fun cacheKey(url: String, descramble: Int, targetWidth: Int, crop: Int = 0, colorize: String = "0"): String {
     val bucket = if (targetWidth <= 0) 0 else ((targetWidth + 159) / 160) * 160
     // crop / colorize 进 key：裁没裁、上没上色是两张不同的图，混用会让开关看起来没反应
     return "$bucket|$descramble|$crop|$colorize|$url"
@@ -201,8 +201,8 @@ suspend fun loadRemoteBitmap(
     targetWidth: Int = 0,
     /** 0 = 不裁；1/2/3 = 裁白边（等级 + 1） */
     crop: Int = 0,
-    /** 0 = 原图；1 = 黑白 AI 上色 */
-    colorize: Int = 0,
+    /** "0" = 原图；"anime"/"realistic" = 黑白 AI 上色风格 */
+    colorize: String = "0",
 ): Bitmap? {
     if (url.isBlank()) return null
     val key = cacheKey(url, descramble, targetWidth, crop, colorize)
@@ -235,7 +235,7 @@ private suspend fun downloadAndDecode(
     targetWidth: Int,
     key: String,
     crop: Int = 0,
-    colorize: Int = 0,
+    colorize: String = "0",
 ): Bitmap? = runCatching {
     val conn = URL(url).openConnection() as HttpURLConnection
     conn.connectTimeout = 12_000
@@ -280,9 +280,11 @@ private suspend fun downloadAndDecode(
     // 裁白边放在最后：先把分块还原成整图，再按真实画面找边界
     val fixed = if (crop > 0) cropWhiteEdges(straight, crop - 1) else straight
     // 黑白上色在裁白边之后：模型吃的是「干净的画面」；失败回原图
-    val out = if (colorize > 0) {
+    val out = if (colorize != "0") {
         // 上色失败就回原图
-        com.enhance.comic.data.ColorizeEngine.colorize(fixed) ?: fixed
+        com.enhance.comic.data.ColorizeEngine.colorize(
+            fixed, com.enhance.comic.data.ColorizeEngine.Model.byId(colorize),
+        ) ?: fixed
     } else {
         fixed
     }
@@ -342,7 +344,7 @@ fun RemotePageImage(
     val cfg = LocalConfiguration.current
     val targetPx = with(density) { cfg.screenWidthDp.dp.roundToPx() }
     val crop = if (prefs?.autoCropOnline == true) prefs.cropLevel + 1 else 0
-    val colorize = if (prefs?.colorizeOnline == true) 1 else 0
+    val colorize = if (prefs?.colorizeOnline == true) (prefs?.colorizeStyle ?: "anime") else "0"
     val key = cacheKey(url, descramble, targetPx, crop, colorize)
 
     var bmp by remember(url, descramble, crop, colorize) { mutableStateOf(RemoteImageCache.get(key)) }
@@ -449,7 +451,7 @@ suspend fun prefetchPage(
     descramble: Int,
     targetWidth: Int,
     crop: Int = 0,
-    colorize: Int = 0,
+    colorize: String = "0",
 ) {
     if (url.isBlank()) return
     if (RemoteImageCache.get(cacheKey(url, descramble, targetWidth, crop, colorize)) != null) return

@@ -82,6 +82,11 @@ object ColorizeEngine {
     }
 
     suspend fun download() {
+        if (modelReady()) {
+            _downloadState.value = ModelState.Ready
+            _downloadProgress.value = 1f
+            return
+        }
         if (_downloadState.value is ModelState.Downloading) return
         _downloadState.value = ModelState.Downloading
         _downloadProgress.value = 0f
@@ -135,6 +140,7 @@ object ColorizeEngine {
             if (tmp.length() != MODEL_BYTES.toLong()) {
                 throw Exception("模型大小校验失败（拿到 ${tmp.length()} 字节）")
             }
+            logError("模型下载完成：$url（${tmp.length()} 字节）")
             modelFile().delete()
             if (!tmp.renameTo(modelFile())) throw Exception("模型保存失败")
             _downloadProgress.value = 1f
@@ -346,7 +352,8 @@ object ColorizeEngine {
             val lin = if (v <= 0.0031308) 12.92 * v else 1.055 * Math.pow(v, 1 / 2.4) - 0.055
             return (lin * 255).toInt().coerceIn(0, 255)
         }
-        return (gamma(r) shl 16) or (gamma(g) shl 8) or gamma(b2)
+        // 必须带不透明 alpha：createBitmap(int[]) 默认 hasAlpha，alpha=0 会整页全透明（黑屏）
+        return (0xFF shl 24) or (gamma(r) shl 16) or (gamma(g) shl 8) or gamma(b2)
     }
 
     private fun clamp255(f: Float): Int = (f * 255f).toInt().coerceIn(0, 255)

@@ -14,8 +14,8 @@ android {
         targetSdk = 36
         // versionCode 只会增加；versionName 也只会增加，绝不允许回退，
         // 否则国产 ROM 的安装器会判定为降级并拒绝覆盖安装。
-        versionCode = 56
-        versionName = "1.9.45"
+        versionCode = 57
+        versionName = "1.9.46"
         // 真机都是 arm；x86 系只有模拟器用，带上会把 onnxruntime 的体积翻倍
         ndk {
             abiFilters += listOf("arm64-v8a")

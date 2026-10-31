@@ -1680,9 +1680,12 @@ private fun OnlineReader(
 
     // 预取后两页：翻到哪儿就跟到哪儿，别等真的划过去才下
     LaunchedEffect(current) {
-        for (k in 1..2) {
-            val j = current + k
-            if (j < urls.size) prefetchPage(urls[j], refHeaders, 0, targetPx, crop, colorize)
+        // 预取的任何异常都不许把阅读页带崩（最多少预取一页）
+        runCatching {
+            for (k in 1..2) {
+                val j = current + k
+                if (j < urls.size) prefetchPage(urls[j], refHeaders, 0, targetPx, crop, colorize)
+            }
         }
     }
 
@@ -1699,7 +1702,7 @@ private fun OnlineReader(
             onRetry = {},
             onNeed = { i ->
                 urls.getOrNull(i)?.let { u ->
-                    scope.launch { prefetchPage(u, refHeaders, 0, targetPx, crop, colorize) }
+                    scope.launch { runCatching { prefetchPage(u, refHeaders, 0, targetPx, crop, colorize) } }
                 }
             },
             onPage = { current = it },
@@ -1808,11 +1811,13 @@ private fun OnlineLazyReader(
                     pages[idx] = page
                     // 拿到地址就顺手把图和后两页解出来，划下去不再每页等
                     scope.launch {
-                        prefetchPage(page.url, page.headers, page.num, targetPx, crop, colorize)
-                        for (k in 1..2) {
-                            val j = idx + k
-                            if (j < nav.count) {
-                                pages[j]?.let { prefetchPage(it.url, it.headers, it.num, targetPx, crop, colorize) }
+                        runCatching {
+                            prefetchPage(page.url, page.headers, page.num, targetPx, crop, colorize)
+                            for (k in 1..2) {
+                                val j = idx + k
+                                if (j < nav.count) {
+                                    pages[j]?.let { prefetchPage(it.url, it.headers, it.num, targetPx, crop, colorize) }
+                                }
                             }
                         }
                     }

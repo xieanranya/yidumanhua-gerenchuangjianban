@@ -57,16 +57,30 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         // 闪退日志落到外部存储（Android/data/com.enhance.comic/files/crash.log），
         // 自己用的 App 没法远程看 logcat，出问题让用户把这一个文件发来就能定位。
+        // 每条都带版本号 —— 不然没法区分用户装的是哪一版（同一段报错可能早修掉了）。
+        // 版本号从 PackageManager 读（反映实际装的包，不依赖编译期常量）
+        val ver = runCatching {
+            val pi = packageManager.getPackageInfo(packageName, 0)
+            val code = if (android.os.Build.VERSION.SDK_INT >= 28) pi.longVersionCode else pi.versionCode.toLong()
+            "v" + pi.versionName + " (" + code + ")"
+        }.getOrDefault("v?")
         val previous = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { t, e ->
             runCatching {
                 java.io.File(getExternalFilesDir(null), "crash.log").appendText(
                     "\n===== " + java.text.SimpleDateFormat("MM-dd HH:mm:ss", java.util.Locale.US)
-                        .format(java.util.Date()) + " thread=" + t.name + " =====\n" +
+                        .format(java.util.Date()) + " $ver thread=" + t.name + " =====\n" +
                         android.util.Log.getStackTraceString(e) + "\n"
                 )
             }
             previous?.uncaughtException(t, e)
+        }
+        // 启动记录也写一份到上色日志：用户发来一个文件就能同时看到「装的哪版 + 何时启动 + 上色/下载的失败原因」
+        runCatching {
+            java.io.File(getExternalFilesDir(null), "colorize_error.log").appendText(
+                "\n===== 启动 $ver " + java.text.SimpleDateFormat("MM-dd HH:mm:ss", java.util.Locale.US)
+                    .format(java.util.Date()) + " =====\n"
+            )
         }
         enableEdgeToEdge()
         // 上次的发现页结果读回内存：一进「发现」直接有内容，不用先看一轮菊花

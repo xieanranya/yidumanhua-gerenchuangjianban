@@ -95,7 +95,9 @@ object ColorizeEngine {
     val downloadProgress: StateFlow<Map<String, Float>> = _downloadProgress
 
     private fun defaultStates(): Map<String, ModelState> =
-        Model.entries.associate { m -> m.id to (if (modelReady(m)) ModelState.Ready else ModelState.Idle) }
+        runCatching {
+            Model.entries.associate { m -> m.id to (if (modelReady(m)) ModelState.Ready else ModelState.Idle) }
+        }.getOrDefault(emptyMap())
 
     fun refreshState() {
         if (_downloadState.value.values.any { it is ModelState.Downloading }) return

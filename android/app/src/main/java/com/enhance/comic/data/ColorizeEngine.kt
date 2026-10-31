@@ -185,12 +185,29 @@ object ColorizeEngine {
         if (w0 <= 0 || h0 <= 0) return null
         val session = acquireSession()
 
-        // 输入名/输出名动态取（不硬编码）；推理边长固定 512（官方导出默认尺寸）
+        // 输入/输出名动态取；推理边长从模型信息读（ddcolor-int8 是 256×256）
         val inName = session.inputNames.firstOrNull() ?: return null
         val outName = session.outputNames.firstOrNull() ?: return null
-        val side = 512
+        val side = try {
+            val info = session.getInputInfo()[inName] ?: return null
+            val ti = info.info as ai.onnxruntime.TensorInfo
+            ti.shape.getOrNull(2)?.toInt()?.coerceAtLeast(32) ?: 256
+        } catch (e: Throwable) {
+            logError("读模型输入信息失败，按 256 兜底: " + e.message)
+            256
+        }
 
-        // ---- 灰度化到 side×side（正方形，官方管线即如此）--------------------
+        // ---- 原尺寸灰度（保留，最后合成用） ---------------------------------
+        val plane0 = w0 * h0
+        val px0 = IntArray(plane0)
+        input.getPixels(px0, 0, w0, 0, 0, w0, h0)
+        val gray0 = FloatArray(plane0)
+        for (i in 0 until plane0) {
+            val p = px0[i]
+            gray0[i] = (0.299f * Color.red(p) + 0.587f * Color.green(p) + 0.114f * Color.blue(p)) / 255f
+        }
+
+        // ---- 缩到 side×side 并灰度复制 3 通道 -------------------------------
         val small = Bitmap.createScaledBitmap(input, side, side, true)
         val grayBmp = Bitmap.createBitmap(side, side, Bitmap.Config.ARGB_8888)
         val cm = ColorMatrix().apply { setSaturation(0f) }
@@ -200,7 +217,6 @@ object ColorizeEngine {
         )
         if (small !== input) small.recycle()
 
-        // ---- 组输入 [1,3,H,W]：灰度复制 3 通道，0..1 ------------------------
         val plane = side * side
         val pixels = IntArray(plane)
         grayBmp.getPixels(pixels, 0, side, 0, 0, side, side)
@@ -214,30 +230,123 @@ object ColorizeEngine {
             inp[plane + i] = v
             inp[2 * plane + i] = v
         }
+
+        // ---- 推理 -----------------------------------------------------------
         val shape = longArrayOf(1, 3, side.toLong(), side.toLong())
         val tensor = OnnxTensor.createTensor(env, java.nio.FloatBuffer.wrap(inp), shape)
         tensor.use {
             val result = session.run(mapOf(inName to it))
             result.use {
-                val out = (result.get(outName) as? OnnxTensor) ?: return null
+                // 1.31 的 Result.get(key) 返回 Optional<OnnxValue> —— 直接 as? 会永远失败
+                // Result.get(key) 返回 Optional<OnnxValue>
+                val out = result.get(outName).orElse(null) as? OnnxTensor ?: return null
                 val buf = out.floatBuffer ?: return null
-                if (buf.remaining() != plane * 3) return null
 
-                // ---- 输出 RGB → Bitmap → 放大回原尺寸 ------------------------
-                val rgba = IntArray(plane)
-                for (i in 0 until plane) {
-                    rgba[i] = Color.rgb(
-                        clamp255(buf.get(i)),
-                        clamp255(buf.get(plane + i)),
-                        clamp255(buf.get(2 * plane + i)),
-                    )
+                // DDColor 输出是 Lab 的 ab 色度 [1,2,side,side]（不是 RGB！）
+                if (buf.remaining() == 2 * side * side) {
+                    val ab = buf
+                    // ab 双线性上采样到原尺寸
+                    val abUp = upsample(ab, side, side, w0, h0)
+                    // L（原灰度 ×100）+ ab → Lab → RGB
+                    val outPx = IntArray(plane0)
+                    for (i in 0 until plane0) {
+                        outPx[i] = labToRgb((gray0[i] * 100.0), abUp[i].toDouble(), abUp[plane0 + i].toDouble())
+                    }
+                    return Bitmap.createBitmap(outPx, w0, h0, Bitmap.Config.ARGB_8888)
                 }
-                val bmp = Bitmap.createBitmap(rgba, side, side, Bitmap.Config.ARGB_8888)
-                val up = Bitmap.createScaledBitmap(bmp, w0, h0, true)
-                if (up !== bmp) bmp.recycle()
-                return up
+                // 兜底：万一某版模型直接输出 RGB 3 通道
+                if (buf.remaining() == 3 * side * side) {
+                    val ab = upsample3(buf, side, side, w0, h0)
+                    val outPx = IntArray(plane0)
+                    for (i in 0 until plane0) {
+                        outPx[i] = labToRgb((gray0[i] * 100.0), ab[i].toDouble(), ab[plane0 + i].toDouble())
+                    }
+                    return Bitmap.createBitmap(outPx, w0, h0, Bitmap.Config.ARGB_8888)
+                }
+                logError("模型输出通道数异常: " + buf.remaining())
+                return null
             }
         }
+    }
+
+    /** 2 通道（ab）双线性上采样到目标尺寸 */
+    private fun upsample(ab: java.nio.FloatBuffer, sw: Int, sh: Int, dw: Int, dh: Int): FloatArray {
+        val out = FloatArray(2 * dw * dh)
+        for (c in 0..1) {
+            val base = c * sw * sh
+            val obase = c * dw * dh
+            for (y in 0 until dh) {
+                val fy = y * sh.toFloat() / dh
+                val y0 = fy.toInt().coerceAtMost(sh - 1)
+                val y1 = minOf(y0 + 1, sh - 1)
+                val wy = fy - y0
+                for (x in 0 until dw) {
+                    val fx = x * sw.toFloat() / dw
+                    val x0 = fx.toInt().coerceAtMost(sw - 1)
+                    val x1 = minOf(x0 + 1, sw - 1)
+                    val wx = fx - x0
+                    val v00 = ab.get(base + y0 * sw + x0)
+                    val v10 = ab.get(base + y0 * sw + x1)
+                    val v01 = ab.get(base + y1 * sw + x0)
+                    val v11 = ab.get(base + y1 * sw + x1)
+                    out[obase + y * dw + x] = (v00 * (1 - wx) * (1 - wy) +
+                        v10 * wx * (1 - wy) + v01 * (1 - wx) * wy + v11 * wx * wy)
+                }
+            }
+        }
+        return out
+    }
+
+    /** 3 通道（RGB）双线性上采样到目标尺寸 */
+    private fun upsample3(src: java.nio.FloatBuffer, sw: Int, sh: Int, dw: Int, dh: Int): FloatArray {
+        val out = FloatArray(3 * dw * dh)
+        for (c in 0..2) {
+            val base = c * sw * sh
+            val obase = c * dw * dh
+            for (y in 0 until dh) {
+                val fy = y * sh.toFloat() / dh
+                val y0 = fy.toInt().coerceAtMost(sh - 1)
+                val y1 = minOf(y0 + 1, sh - 1)
+                val wy = fy - y0
+                for (x in 0 until dw) {
+                    val fx = x * sw.toFloat() / dw
+                    val x0 = fx.toInt().coerceAtMost(sw - 1)
+                    val x1 = minOf(x0 + 1, sw - 1)
+                    val wx = fx - x0
+                    val v00 = src.get(base + y0 * sw + x0)
+                    val v10 = src.get(base + y0 * sw + x1)
+                    val v01 = src.get(base + y1 * sw + x0)
+                    val v11 = src.get(base + y1 * sw + x1)
+                    out[obase + y * dw + x] = (v00 * (1 - wx) * (1 - wy) +
+                        v10 * wx * (1 - wy) + v01 * (1 - wx) * wy + v11 * wx * wy)
+                }
+            }
+        }
+        return out
+    }
+
+    /** Lab(sRGB, D65) → ARGB int。L 0..100，a/b ±128。 */
+    private fun labToRgb(L: Double, a: Double, b: Double): Int {
+        val fy = (L + 16.0) / 116.0
+        val fx = a / 500.0 + fy
+        val fz = fy - b / 200.0
+        val eps = 0.008856
+        val k = 903.3
+        val xr = if (Math.pow(fx, 3.0) > eps) Math.pow(fx, 3.0) else (116 * fx - 16) / k
+        val yr = if (L > k * eps) Math.pow((L + 16) / 116.0, 3.0) else L / k
+        val zr = if (Math.pow(fz, 3.0) > eps) Math.pow(fz, 3.0) else (116 * fz - 16) / k
+        val X = xr * 0.95047
+        val Y = yr
+        val Z = zr * 1.08883
+        val r = 3.2404542 * X - 1.5371385 * Y - 0.4985314 * Z
+        val g = -0.9692660 * X + 1.8760108 * Y + 0.0415560 * Z
+        val b2 = 0.0556434 * X - 0.2040259 * Y + 1.0572252 * Z
+        fun gamma(c: Double): Int {
+            val v = c.coerceIn(0.0, 1.0)
+            val lin = if (v <= 0.0031308) 12.92 * v else 1.055 * Math.pow(v, 1 / 2.4) - 0.055
+            return (lin * 255).toInt().coerceIn(0, 255)
+        }
+        return (gamma(r) shl 16) or (gamma(g) shl 8) or gamma(b2)
     }
 
     private fun clamp255(f: Float): Int = (f * 255f).toInt().coerceIn(0, 255)

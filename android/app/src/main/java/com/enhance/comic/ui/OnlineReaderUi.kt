@@ -258,6 +258,12 @@ internal fun OnlineSettingsSheet(
                 PAGE_COLORIZE -> SheetScreen("黑白上色", { page = PAGE_HOME }, onDismiss) {
                     SheetToggleRow("开启", prefs.colorizeOnline) {
                         onPrefs(prefs.copy(colorizeOnline = it))
+                        // 打开开关就自动下载模型，别让用户漏掉第二步
+                        if (it && !ColorizeEngine.modelReady() &&
+                            ColorizeEngine.downloadState.value !is ColorizeEngine.ModelState.Downloading
+                        ) {
+                            sheetScope.launch { ColorizeEngine.download() }
+                        }
                     }
                     if (prefs.colorizeOnline) {
                         Spacer(Modifier.height(8.dp))
@@ -362,6 +368,8 @@ private fun SettingsHome(
     onOpen: (String) -> Unit,
     onDone: () -> Unit,
 ) {
+    val colorizeState = ColorizeEngine.downloadState.collectAsState().value
+    val colorizeProgress = ColorizeEngine.downloadProgress.collectAsState().value
     Column(Modifier.fillMaxWidth()) {
         SheetHead(title = "阅读设置", onBack = null, onDone = onDone)
         Column(
@@ -397,7 +405,15 @@ private fun SettingsHome(
             EntryRow(
                 Glyph.SPARK,
                 "黑白上色",
-                if (prefs.colorizeOnline) "开" else "关",
+                when (val st = colorizeState) {
+                    is ColorizeEngine.ModelState.Ready ->
+                        if (prefs.colorizeOnline) "开" else "关"
+                    is ColorizeEngine.ModelState.Downloading ->
+                        "开 · 下载模型 " + (colorizeProgress * 100).toInt() + "%"
+                    is ColorizeEngine.ModelState.Idle ->
+                        if (prefs.colorizeOnline) "开 · 待下载模型" else "未下载"
+                    is ColorizeEngine.ModelState.Failed -> "开 · 下载失败"
+                },
             ) { onOpen(PAGE_COLORIZE) }
             EntryRow(
                 Glyph.SUN,

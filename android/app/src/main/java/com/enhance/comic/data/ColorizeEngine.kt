@@ -151,12 +151,29 @@ object ColorizeEngine {
      */
     suspend fun colorize(input: Bitmap): Bitmap? = withContext(Dispatchers.Default) {
         runMutex.withLock {
-            runCatching { runColorize(input) }.getOrNull()
+            try {
+                runColorize(input)
+            } catch (e: Throwable) {
+                logError("colorize failed: " + android.util.Log.getStackTraceString(e))
+                null
+            }
         }
+    }
+
+    /** 推理/下载的失败落一份日志（Android/data/com.enhance.comic/files/colorize_error.log） */
+    private fun logError(msg: String) {
+        try {
+            val dir = appContext.getExternalFilesDir(null) ?: return
+            File(dir, "colorize_error.log").appendText(
+                "\n===== " + java.text.SimpleDateFormat("MM-dd HH:mm:ss", java.util.Locale.US)
+                    .format(java.util.Date()) + " =====\n" + msg + "\n"
+            )
+        } catch (_: Throwable) { }
     }
 
     private fun acquireSession(): OrtSession {
         session?.let { return it }
+        if (!modelReady()) logError("acquireSession: 模型未下载（filesDir/models/${'$'}MODEL_FILE 不存在或大小不对）")
         val s = env.createSession(modelFile().path)
         session = s
         return s

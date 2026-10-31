@@ -126,61 +126,83 @@ object ColorizeEngine {
                     _downloadProgress.value = _downloadProgress.value + (m.id to 1f)
                     return
                 }
-            } catch (e: Exception) {
-                last = e
+            } catch (e: Throwable) {
+                // Throwable 而不是 Exception：模型目录写不了之类的 Error 也要落到失败状态，
+                // 不能让协程外层直接把进程带崩
+                last = Exception(e.message ?: (e.javaClass.simpleName + "（无详细信息）"))
+                logError("download(${m.id}) ← $u 失败：" + android.util.Log.getStackTraceString(e))
             }
         }
         _downloadState.value = _downloadState.value +
             (m.id to ModelState.Failed(last?.message ?: "模型下载失败：两个源都没成功"))
     }
 
+    /**
+     * 带断点续传的下载：.part 已有的部分用 Range 接着下，网络抖一下不用从头再来。
+     * 单个源最多跑 4 轮，还没下完就抛给外层换下一个源。
+     */
     private fun fetchModel(m: Model, url: String) {
         val target = modelFile(m)
         val tmp = File(target.path + ".part")
-        tmp.delete()
-        val conn = URL(url).openConnection() as HttpURLConnection
-        conn.connectTimeout = 20_000
-        conn.readTimeout = 60_000
-        conn.instanceFollowRedirects = true
-        try {
-            val code = conn.responseCode
-            if (code != 200) throw Exception("下载源返回 $code")
-            val total = conn.contentLengthLong
-            conn.inputStream.use { input ->
-                java.io.FileOutputStream(tmp).use { out ->
-                    val buf = ByteArray(1 shl 16)
-                    var read = 0L
-                    var lastReport = 0L
-                    while (true) {
-                        val n = input.read(buf)
-                        if (n < 0) break
-                        out.write(buf, 0, n)
-                        read += n
-                        if (read - lastReport >= (1 shl 20)) {
-                            lastReport = read
-                            if (total > 0) {
-                                _downloadProgress.value = _downloadProgress.value +
-                                    (m.id to (read.toFloat() / total).coerceAtMost(0.99f))
+        if (tmp.exists() && tmp.length() > m.bytes) tmp.delete()
+
+        var round = 0
+        while (round < 4) {
+            round++
+            val have = if (tmp.exists()) tmp.length() else 0L
+            val conn = URL(url).openConnection() as HttpURLConnection
+            conn.connectTimeout = 20_000
+            conn.readTimeout = 120_000
+            conn.instanceFollowRedirects = true
+            try {
+                if (have in 1 until m.bytes) {
+                    conn.setRequestProperty("Range", "bytes=$have-")
+                }
+                val code = conn.responseCode
+                if (code != 200 && code != 206) throw Exception("下载源返回 $code")
+                val resume = code == 206 && have > 0
+                val base = if (resume) have else 0L
+                val total = base + conn.contentLengthLong
+                conn.inputStream.use { input ->
+                    java.io.FileOutputStream(tmp, resume).use { out ->
+                        val buf = ByteArray(1 shl 16)
+                        var read = base
+                        var lastReport = base
+                        while (true) {
+                            val n = input.read(buf)
+                            if (n < 0) break
+                            out.write(buf, 0, n)
+                            read += n
+                            if (read - lastReport >= (1 shl 20)) {
+                                lastReport = read
+                                if (total > 0) {
+                                    _downloadProgress.value = _downloadProgress.value +
+                                        (m.id to (read.toFloat() / total).coerceAtMost(0.99f))
+                                }
                             }
                         }
                     }
                 }
+            } finally {
+                conn.disconnect()
             }
-            if (tmp.length() != m.bytes) {
-                throw Exception("模型大小校验失败（拿到 ${tmp.length()} 字节，应为 ${m.bytes}）")
+            if (tmp.length() == m.bytes) {
+                logError("模型下载完成：${m.id} ← $url（${tmp.length()} 字节，$round 轮）")
+                target.delete()
+                if (!tmp.renameTo(target)) throw Exception("模型保存失败")
+                return
             }
-            logError("模型下载完成：${m.id} ← $url（${tmp.length()} 字节）")
-            target.delete()
-            if (!tmp.renameTo(target)) throw Exception("模型保存失败")
-        } finally {
-            conn.disconnect()
+            // 不完整 → 循环回去从 .part 接着下
         }
+        throw Exception("下载不完整（${tmp.length()}/${m.bytes} 字节），重试 4 轮仍失败")
     }
 
     // ---- 推理 -----------------------------------------------------------
 
     /** 上色一页。模型没就绪 / 推理失败都返回 null（调用方回退原图）。串行执行防内存峰值。 */
     suspend fun colorize(input: Bitmap, model: Model): Bitmap? = withContext(Dispatchers.Default) {
+        // 模型没下载就别碰 ORT：省掉每页一次的无效 createSession（还会狂写日志）
+        if (!modelReady(model)) return@withContext null
         runMutex.withLock {
             try {
                 when (model) {
@@ -196,11 +218,21 @@ object ColorizeEngine {
 
     private fun acquireSession(m: Model): OrtSession {
         sessions[m.id]?.let { return it }
-        if (!modelReady(m)) logError("acquireSession: ${m.id} 模型未下载（filesDir/models/${m.file} 不存在或大小不对）")
-        val s = env.createSession(modelFile(m).path)
-        sessions[m.id] = s
-        return s
+        // 加载失败过就别再试：createSession 对坏文件每页重复跑又慢又耗内存
+        if (m.id in brokenModels) throw Exception("模型加载之前失败，跳过重复尝试")
+        if (!modelReady(m)) throw Exception("模型未下载或大小不对（filesDir/models/${m.file}）")
+        try {
+            val s = env.createSession(modelFile(m).path)
+            sessions[m.id] = s
+            return s
+        } catch (e: Throwable) {
+            brokenModels.add(m.id)
+            throw e
+        }
     }
+
+    private val brokenModels: MutableSet<String> =
+        java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap())
 
     /**
      * ANIME（manga-colorization-v2）：输入 [1,5,H,W]，输出 [1,3,H,W] RGB。
@@ -296,15 +328,17 @@ object ColorizeEngine {
             256
         }
 
-        // 原尺寸灰度（保留，最后合成用）
+        // 原尺寸灰度（保留，最后合成用）。ByteArray 存 0..255，比 FloatArray 省 4 倍内存
         val plane0 = w0 * h0
         val px0 = IntArray(plane0)
         input.getPixels(px0, 0, w0, 0, 0, w0, h0)
-        val gray0 = FloatArray(plane0)
+        val gray0 = ByteArray(plane0)
         for (i in 0 until plane0) {
             val p = px0[i]
-            gray0[i] = (0.299f * Color.red(p) + 0.587f * Color.green(p) + 0.114f * Color.blue(p)) / 255f
+            gray0[i] = ((0.299f * Color.red(p) + 0.587f * Color.green(p) + 0.114f * Color.blue(p)) + 0.5f)
+                .toInt().coerceIn(0, 255).toByte()
         }
+        px0.fill(0) // 用完立刻释放引用（数组还要复用的话 GC 也好回收）
 
         val small = Bitmap.createScaledBitmap(input, side, side, true)
         val grayBmp = Bitmap.createBitmap(side, side, Bitmap.Config.ARGB_8888)
@@ -338,24 +372,56 @@ object ColorizeEngine {
                 val buf = out.floatBuffer ?: return null
 
                 if (buf.remaining() == 2 * side * side) {
-                    // ab → 双线性上采样到原尺寸 → 与灰度 L 合成 → Lab→RGB
-                    val abUp = upsample(buf, side, side, w0, h0)
+                    // ab 双线性采样（按需取，不物化 16MB 的中间数组）→ 与灰度 L 合成 → Lab→RGB
                     val outPx = IntArray(plane0)
-                    for (i in 0 until plane0) {
-                        outPx[i] = labToRgb((gray0[i] * 100.0), abUp[i].toDouble(), abUp[plane0 + i].toDouble())
+                    for (y in 0 until h0) {
+                        val fy = y * side.toFloat() / h0
+                        val y0i = fy.toInt().coerceAtMost(side - 1)
+                        val y1i = minOf(y0i + 1, side - 1)
+                        val wy = fy - y0i
+                        val row = y * w0
+                        for (x in 0 until w0) {
+                            val fx = x * side.toFloat() / w0
+                            val x0i = fx.toInt().coerceAtMost(side - 1)
+                            val x1i = minOf(x0i + 1, side - 1)
+                            val wx = fx - x0i
+                            val a = bilerp(buf, 0, side, x0i, x1i, y0i, y1i, wx, wy)
+                            val b = bilerp(buf, side * side, side, x0i, x1i, y0i, y1i, wx, wy)
+                            val i = row + x
+                            outPx[i] = labToRgb(
+                                (gray0[i].toInt() and 0xFF) * 100.0 / 255.0,
+                                a.toDouble(), b.toDouble(),
+                            )
+                        }
                     }
                     return Bitmap.createBitmap(outPx, w0, h0, Bitmap.Config.ARGB_8888)
                 }
                 if (buf.remaining() == 3 * side * side) {
                     // 某些导出直接给 RGB
-                    val rgbUp = upsample3(buf, side, side, w0, h0)
                     val outPx = IntArray(plane0)
-                    for (i in 0 until plane0) {
-                        val p = rgbUp[i]
-                        outPx[i] = (0xFF shl 24) or
-                            (clamp255(p).coerceIn(0, 255) shl 16) or
-                            (clamp255(rgbUp[plane0 + i]).coerceIn(0, 255) shl 8) or
-                            clamp255(rgbUp[2 * plane0 + i]).coerceIn(0, 255)
+                    for (y in 0 until h0) {
+                        val fy = y * side.toFloat() / h0
+                        val y0i = fy.toInt().coerceAtMost(side - 1)
+                        val y1i = minOf(y0i + 1, side - 1)
+                        val wy = fy - y0i
+                        val row = y * w0
+                        for (x in 0 until w0) {
+                            val fx = x * side.toFloat() / w0
+                            val x0i = fx.toInt().coerceAtMost(side - 1)
+                            val x1i = minOf(x0i + 1, side - 1)
+                            val wx = fx - x0i
+                            val i = row + x
+                            val r = clamp255(
+                                bilerp(buf, 0, side, x0i, x1i, y0i, y1i, wx, wy)
+                            ).coerceIn(0, 255)
+                            val g = clamp255(
+                                bilerp(buf, side * side, side, x0i, x1i, y0i, y1i, wx, wy)
+                            ).coerceIn(0, 255)
+                            val b = clamp255(
+                                bilerp(buf, 2 * side * side, side, x0i, x1i, y0i, y1i, wx, wy)
+                            ).coerceIn(0, 255)
+                            outPx[i] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+                        }
                     }
                     return Bitmap.createBitmap(outPx, w0, h0, Bitmap.Config.ARGB_8888)
                 }
@@ -393,58 +459,17 @@ object ColorizeEngine {
         return (0xFF shl 24) or (gamma(r) shl 16) or (gamma(g) shl 8) or gamma(b2)
     }
 
-    private fun upsample(buf: java.nio.FloatBuffer, sw: Int, sh: Int, dw: Int, dh: Int): FloatArray {
-        val out = FloatArray(2 * dw * dh)
-        for (c in 0..1) {
-            val base = c * sw * sh
-            val obase = c * dw * dh
-            for (y in 0 until dh) {
-                val fy = y * sh.toFloat() / dh
-                val y0 = fy.toInt().coerceAtMost(sh - 1)
-                val y1 = minOf(y0 + 1, sh - 1)
-                val wy = fy - y0
-                for (x in 0 until dw) {
-                    val fx = x * sw.toFloat() / dw
-                    val x0 = fx.toInt().coerceAtMost(sw - 1)
-                    val x1 = minOf(x0 + 1, sw - 1)
-                    val wx = fx - x0
-                    val v00 = buf.get(base + y0 * sw + x0)
-                    val v10 = buf.get(base + y0 * sw + x1)
-                    val v01 = buf.get(base + y1 * sw + x0)
-                    val v11 = buf.get(base + y1 * sw + x1)
-                    out[obase + y * dw + x] = (v00 * (1 - wx) * (1 - wy) +
-                        v10 * wx * (1 - wy) + v01 * (1 - wx) * wy + v11 * wx * wy)
-                }
-            }
-        }
-        return out
-    }
-
-    private fun upsample3(src: java.nio.FloatBuffer, sw: Int, sh: Int, dw: Int, dh: Int): FloatArray {
-        val out = FloatArray(3 * dw * dh)
-        for (c in 0..2) {
-            val base = c * sw * sh
-            val obase = c * dw * dh
-            for (y in 0 until dh) {
-                val fy = y * sh.toFloat() / dh
-                val y0 = fy.toInt().coerceAtMost(sh - 1)
-                val y1 = minOf(y0 + 1, sh - 1)
-                val wy = fy - y0
-                for (x in 0 until dw) {
-                    val fx = x * sw.toFloat() / dw
-                    val x0 = fx.toInt().coerceAtMost(sw - 1)
-                    val x1 = minOf(x0 + 1, sw - 1)
-                    val wx = fx - x0
-                    val v00 = src.get(base + y0 * sw + x0)
-                    val v10 = src.get(base + y0 * sw + x1)
-                    val v01 = src.get(base + y1 * sw + x0)
-                    val v11 = src.get(base + y1 * sw + x1)
-                    out[obase + y * dw + x] = (v00 * (1 - wx) * (1 - wy) +
-                        v10 * wx * (1 - wy) + v01 * (1 - wx) * wy + v11 * wx * wy)
-                }
-            }
-        }
-        return out
+    /** FloatBuffer 里某通道的 (x,y) 双线性采样（通道偏移 chBase，源宽 sw）。 */
+    private fun bilerp(
+        buf: java.nio.FloatBuffer, chBase: Int, sw: Int,
+        x0: Int, x1: Int, y0: Int, y1: Int, wx: Float, wy: Float,
+    ): Float {
+        val v00 = buf.get(chBase + y0 * sw + x0)
+        val v10 = buf.get(chBase + y0 * sw + x1)
+        val v01 = buf.get(chBase + y1 * sw + x0)
+        val v11 = buf.get(chBase + y1 * sw + x1)
+        return v00 * (1 - wx) * (1 - wy) + v10 * wx * (1 - wy) +
+            v01 * (1 - wx) * wy + v11 * wx * wy
     }
 
     /** 灰世界白平衡去黄：三通道均值拉向其中间值（strength 0~1） */

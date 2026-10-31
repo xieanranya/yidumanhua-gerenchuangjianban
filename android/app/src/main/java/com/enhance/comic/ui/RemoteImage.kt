@@ -11,6 +11,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -78,6 +79,25 @@ private fun cacheKey(url: String, descramble: Int, targetWidth: Int, crop: Int =
     val bucket = if (targetWidth <= 0) 0 else ((targetWidth + 159) / 160) * 160
     // crop / colorize 进 key：裁没裁、上没上色是两张不同的图，混用会让开关看起来没反应
     return "$bucket|$descramble|$crop|$colorize|$url"
+}
+
+/**
+ * 每页图片的加载进度（0..1），key = 图片 url。给阅读器的占位进度条用。
+ * 阶段划分：0.05-0.70 下载（按字节）、0.78 解码、0.86 裁边、0.88+ AI 上色。
+ * 完成或失败都移除条目（UI 侧轮询到没有值就显示转圈）。
+ */
+object PageProgress {
+    private val map = java.util.concurrent.ConcurrentHashMap<String, Float>()
+
+    fun of(url: String): Float = map[url] ?: 0f
+
+    fun set(url: String, v: Float) {
+        map[url] = v.coerceIn(0.01f, 0.98f)
+    }
+
+    fun done(url: String) {
+        map.remove(url)
+    }
 }
 
 /**
@@ -236,6 +256,24 @@ private suspend fun downloadAndDecode(
     key: String,
     crop: Int = 0,
     colorize: String = "0",
+): Bitmap? {
+    PageProgress.set(url, 0.03f)
+    return try {
+        runCatching { downloadAndDecodeInner(url, headers, descramble, targetWidth, key, crop, colorize) }
+            .getOrNull()
+    } finally {
+        PageProgress.done(url)
+    }
+}
+
+private suspend fun downloadAndDecodeInner(
+    url: String,
+    headers: Map<String, String>?,
+    descramble: Int,
+    targetWidth: Int,
+    key: String,
+    crop: Int = 0,
+    colorize: String = "0",
 ): Bitmap? = runCatching {
     val conn = URL(url).openConnection() as HttpURLConnection
     conn.connectTimeout = 12_000
@@ -264,7 +302,31 @@ private suspend fun downloadAndDecode(
             conn.setRequestProperty("Referer", "${u.protocol}://${u.host}/")
         }
     }
-    val bytes = conn.inputStream.use { it.readBytes() }
+    // 分块读并上报下载进度（0.05 → 0.70）；服务器不给总长就归到固定值
+    val total = conn.contentLengthLong
+    val bytes: ByteArray
+    if (total in 1..Int.MAX_VALUE) {
+        val baos = java.io.ByteArrayOutputStream(total.toInt())
+        conn.inputStream.use { input ->
+            val buf = ByteArray(1 shl 15)
+            var read = 0L
+            var lastReport = 0L
+            while (true) {
+                val n = input.read(buf)
+                if (n < 0) break
+                baos.write(buf, 0, n)
+                read += n
+                if (read - lastReport >= (128 * 1024)) {
+                    lastReport = read
+                    PageProgress.set(url, 0.05f + 0.65f * (read.toFloat() / total))
+                }
+            }
+        }
+        bytes = baos.toByteArray()
+    } else {
+        bytes = conn.inputStream.use { it.readBytes() }
+        PageProgress.set(url, 0.6f)
+    }
     conn.disconnect()
     if (bytes.isEmpty()) return@runCatching null
 
@@ -276,11 +338,14 @@ private suspend fun downloadAndDecode(
         inPreferredConfig = Bitmap.Config.ARGB_8888
     }
     val raw = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts) ?: return@runCatching null
+    PageProgress.set(url, 0.78f)
     val straight = if (descramble > 1) descramble(raw, descramble) else raw
     // 裁白边放在最后：先把分块还原成整图，再按真实画面找边界
     val fixed = if (crop > 0) cropWhiteEdges(straight, crop - 1) else straight
+    PageProgress.set(url, 0.84f)
     // 黑白上色在裁白边之后：模型吃的是「干净的画面」；失败回原图
     val out = if (colorize != "0") {
+        PageProgress.set(url, 0.88f)
         // 上色失败就回原图
         com.enhance.comic.data.ColorizeEngine.colorize(
             fixed, com.enhance.comic.data.ColorizeEngine.Model.byId(colorize),
@@ -398,7 +463,32 @@ fun RemotePageImage(
                 else Modifier.fillMaxWidth().aspectRatio(0.7f),
                 contentAlignment = Alignment.Center,
             ) {
-                CircularProgressIndicator(color = Color(0xCCFF6E9C), strokeWidth = 2.dp, modifier = Modifier.size(22.dp))
+                // 加载进度：下载按字节、上色/解码按阶段（0.84+ 就是 AI 上色中）。轮询驱动重组
+                var prog by remember(url) { mutableStateOf(PageProgress.of(url)) }
+                LaunchedEffect(url) {
+                    while (true) {
+                        prog = PageProgress.of(url)
+                        kotlinx.coroutines.delay(150)
+                    }
+                }
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    androidx.compose.material3.LinearProgressIndicator(
+                        progress = { prog },
+                        color = Color(0xCCFF6E9C),
+                        trackColor = Color(0x33FFFFFF),
+                        modifier = Modifier.fillMaxWidth(0.6f),
+                    )
+                    Text(
+                        when {
+                            prog >= 0.85f -> "AI 上色中…"
+                            prog > 0.01f -> "加载中 ${(prog * 100).toInt()}%"
+                            else -> "加载中…"
+                        },
+                        color = Color(0xB3FFFFFF),
+                        fontSize = 10.sp,
+                        modifier = Modifier.padding(top = 10.dp),
+                    )
+                }
             }
         }
         // 蓝光过滤：整页盖一层暖色，强度跟着设置走（0 就是不加）

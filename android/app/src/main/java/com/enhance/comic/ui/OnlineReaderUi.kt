@@ -270,7 +270,7 @@ internal fun OnlineSettingsSheet(
                         Spacer(Modifier.height(4.dp))
                         SheetOptionRow(
                             "动漫 · 明快平涂",
-                            "manga-colorization-v2，约 59MB",
+                            "manga-colorization-v2 fp32，约 117MB",
                             prefs.colorizeStyle != "realistic",
                         ) {
                             onPrefs(prefs.copy(colorizeStyle = "anime"))
@@ -302,7 +302,9 @@ internal fun OnlineSettingsSheet(
                                 )
                                 Spacer(Modifier.height(6.dp))
                                 Text(
-                                    "正在下载「" + cur.label + "」模型（约 59MB，仅一次）… "
+                                    "正在下载「" + cur.label + "」模型（"
+                                        + (if (cur == ColorizeEngine.Model.ANIME) "约 117MB" else "约 59MB")
+                                        + "，仅一次）… "
                                         + (ColorizeEngine.progressOf(cur) * 100).toInt() + "%",
                                     color = OnlineHint,
                                     fontSize = 11.sp,
@@ -314,9 +316,15 @@ internal fun OnlineSettingsSheet(
                                 SheetNote("「" + cur.label + "」模型已就绪。每页首次打开要等几秒，"
                                     + "看过的页有缓存秒开。彩色源和本地书不受影响。")
                             is ColorizeEngine.ModelState.Idle ->
-                                MiniButton("下载「" + cur.label + "」模型（约 59MB，仅一次）", {
-                                    sheetScope.launch { ColorizeEngine.download(cur) }
-                                }, accent = true)
+                                MiniButton(
+                                    "下载「" + cur.label + "」模型（"
+                                        + (if (cur == ColorizeEngine.Model.ANIME) "约 117MB" else "约 59MB")
+                                        + "，仅一次）",
+                                    {
+                                        sheetScope.launch { ColorizeEngine.download(cur) }
+                                    },
+                                    accent = true,
+                                )
                             is ColorizeEngine.ModelState.Failed -> {
                                 MiniButton("下载失败，点这里重试", {
                                     sheetScope.launch { ColorizeEngine.download(cur) }
@@ -326,7 +334,7 @@ internal fun OnlineSettingsSheet(
                             }
                         }
                     } else {
-                        SheetNote("打开后黑白漫画会自动上色。动漫 / 写实两种风格模型各约 59MB，"
+                        SheetNote("打开后黑白漫画会自动上色。动漫模型约 117MB / 写实约 59MB，"
                             + "选用哪种才下载哪种。彩色源和本地书不受影响。")
                     }
                 }

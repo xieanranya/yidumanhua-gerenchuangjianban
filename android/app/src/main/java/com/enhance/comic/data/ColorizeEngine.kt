@@ -24,10 +24,12 @@ import java.net.URL
 /**
  * 黑白漫画 AI 上色：双模型可切换（设置 → 上色风格）。
  *
- * - ANIME（动漫风）：manga-colorization-v2 generator，ONNX fp16 58.8MB，MIT。
+ * - ANIME（动漫风）：manga-colorization-v2 generator，ONNX **fp32** 117MB（Tinigon 导出，MIT 系）。
  *   输入 [1,5,H,W]：ch0 = 灰度 0..1，ch1-3 = 颜色提示（自动模式全 0），ch4 = 提示掩码（0）；
- *   H/W 为 32 的倍数（动态维度）。输出 [1,3,H,W] = RGB 0..1。
+ *   H/W 为 32 的倍数（动态维度）。输出 [1,3,H,W] = RGB **[-1,1]**（tanh，需 *0.5+0.5 反归一化）。
  *   后处理：灰世界白平衡去黄（该模型输出系统性偏暖）。
+ *   注意：不要换回 fp16 版 —— fp16 在部分手机的 ORT-ARM 上推理 native 崩溃（桌面 x64 验证
+ *   不出来），症状就是「开了上色翻页直接闪退」。
  * - REALISTIC（写实风）：DDColor（达摩院 ICCV 2023），ONNX int8 59.1MB，Apache-2.0。
  *   输入 [1,3,256,256]：灰度复制 3 通道 0..1（ImageNet normalize 在模型图内）。
  *   输出 [1,2,256,256] = Lab 的 ab 色度 —— 需与原尺寸灰度 L 合成后 Lab→RGB。
@@ -46,10 +48,12 @@ object ColorizeEngine {
         val urls: List<String>,
     ) {
         ANIME(
-            "anime", "manga-colorize-fp16.onnx", 61_650_260L, "动漫",
+            // fp32 导出（Tinigon）：早先的 fp16 版在部分手机的 ORT-ARM 上推理会 native 崩溃
+            //（桌面 x64 验证通过但手机 ARM 不行），换 fp32 稳定版；体积 117MB。
+            "anime", "manga-colorizer-fp32.onnx", 122_944_482L, "动漫",
             listOf(
-                "https://hf-mirror.com/Faridzar/manga-colorization-v2-onnx/resolve/main/manga-colorize-fp16.onnx",
-                "https://huggingface.co/Faridzar/manga-colorization-v2-onnx/resolve/main/manga-colorize-fp16.onnx",
+                "https://hf-mirror.com/Tinigon/manga-colorizer-onnx/resolve/main/colorizer.onnx",
+                "https://huggingface.co/Tinigon/manga-colorizer-onnx/resolve/main/colorizer.onnx",
             ),
         ),
         REALISTIC(
@@ -192,6 +196,10 @@ object ColorizeEngine {
                 logError("模型下载完成：${m.id} ← $url（${tmp.length()} 字节，$round 轮）")
                 target.delete()
                 if (!tmp.renameTo(target)) throw Exception("模型保存失败")
+                // 旧版模型文件清理（换过模型后老用户目录里会留孤儿文件）
+                if (m == Model.ANIME) {
+                    File(File(appContext.filesDir, "models"), "manga-colorize-fp16.onnx").delete()
+                }
                 return
             }
             // 不完整 → 循环回去从 .part 接着下
@@ -292,12 +300,13 @@ object ColorizeEngine {
                     logError("anime 模型输出通道数异常: " + buf.remaining())
                     return null
                 }
+                // 模型输出是 tanh 的 [-1,1] → 反归一化到 [0,1]（不映射的话暗部整片被切黑）
                 // RGB → 灰世界去黄 → 放大回原尺寸
                 val rgba = IntArray(plane)
                 for (i in 0 until plane) {
-                    val r = clamp255(buf.get(i))
-                    val g = clamp255(buf.get(plane + i))
-                    val b = clamp255(buf.get(2 * plane + i))
+                    val r = clamp255(buf.get(i) * 0.5f + 0.5f)
+                    val g = clamp255(buf.get(plane + i) * 0.5f + 0.5f)
+                    val b = clamp255(buf.get(2 * plane + i) * 0.5f + 0.5f)
                     rgba[i] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
                 }
                 val balanced = grayWorldBalance(rgba, 0.65f)

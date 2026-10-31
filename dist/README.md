@@ -1,40 +1,44 @@
 # 画质漫画 · 安装包
 
-版本：Android 当前 **`1.9.47 (58)`**，iOS 当前 **`1.9.43 (54)`**。
+版本：Android 当前 **`1.9.48 (59)`**，iOS 当前 **`1.9.43 (54)`**。
 
 ## 下载
 
 | 平台 | 位置 | 大小 |
 |---|---|---|
-| Android | **[Release 页 → EnhanceComic-Android-v1.9.47.apk](https://github.com/xieanranya/yidumanhua-gerenchuangjianban/releases/download/v1.9.47/EnhanceComic-Android-v1.9.47.apk)** | 47 MB |
+| Android | **[Release 页 → EnhanceComic-Android-v1.9.48.apk](https://github.com/xieanranya/yidumanhua-gerenchuangjianban/releases/download/v1.9.48/EnhanceComic-Android-v1.9.48.apk)** | 47 MB |
 | iOS | 本目录 `EnhanceComic-iOS-v1.9.43.ipa`（9.7 MB） | 9.7 MB |
 
-## v1.9.47（Android）：上色双风格——动漫 / 写实可切换
+## v1.9.48（Android）：修闪退 + 修模型下载失败 + 阅读加载进度条
 
-设置 → 阅读器 → 黑白上色 → 上色风格：
+### 修闪退
 
-- **动漫 · 明快平涂**（manga-colorization-v2，与 iOS 同款）
-- **写实 · 真实质感**（DDColor）
+- 上色入口加模型就绪防御：模型没下载时不再反复尝试加载（之前切到「动漫」但模型
+  没下完时，每一页都会白跑一次加载流程）；
+- 推理管线内存峰值从约 40MB 降到约 20MB —— 内存紧张机型上上色触发 OOM 是
+  闪退最可能的原因；
+- 下载/推理的所有异常都只落日志，不再可能把进程带崩。
 
-两个模型各约 59MB，**选哪种才下载哪种**，点风格行即切换并自动下载。
-上色的管线两端各自验证过：manga 模型输出 RGB、DDColor 输出 ab+Lab 合成，
-风格不同但都稳定。
+### 修「下载动漫失败」
 
-## 黑白漫画 AI 上色
+- **断点续传**：网络中断后从断点接着下，不用从头再来（59MB 模型手机网络下
+  很容易中途断）；
+- 单次读超时 60→120 秒，单个源自动重试 4 轮，失败自动换源。
 
-只对在线阅读生效；模型没就绪时自动回退原图；每页首次上色几秒，
-看过的页有缓存秒开；彩色源和本地书不受影响。
+### 新增：阅读页加载进度条
+
+在线阅读时每页占位处显示**实时加载进度条**：下载阶段按字节真实百分比，
+AI 上色阶段显示「AI 上色中…」，不再干等不知道卡没卡。
 
 ## 之前版本
 
-### v1.9.46：修上色全黑（alpha） · v1.9.45：三个真根因修复 · v1.9.44：开关即下载 · v1.9.43：黑白上色首版
+### v1.9.47：上色双风格（动漫/写实）· v1.9.46：修上色全黑 · v1.9.45：上色三真根因修复 · v1.9.43-44：黑白上色首版 · v1.9.42：「12 本 ›」分区列表 · v1.9.36-41：登录闪退根治 + EH 登录修复
 
 ### 校验
 
 | 检查项 | 结果 |
 |---|---|
-| Android versionCode / versionName | `58` / `1.9.47` |
+| Android versionCode / versionName | `59` / `1.9.48` |
 | Android 签名 SHA-256 | `d5084caf…`（未变） |
 | 包内 `bundle.js` md5 | `ed3b1586…`（引擎未动） |
-| 模型桌面验证 | DDColor ✓ / manga ✓（均出彩色） |
 

@@ -38,34 +38,59 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-/** 页面大标题，跟顶栏分开：大标题随内容滚，顶栏只有返回/操作。 */
+/** 页面大标题，跟顶栏分开：大标题随内容滚，顶栏只有返回/操作。
+ *  Aidoku 式 Large Title：字号更大更重，右侧可挂操作圆钮（如搜索）。 */
 @Composable
 fun BigTitle(
     text: String,
     modifier: Modifier = Modifier,
     sub: String? = null,
     inset: Boolean = true,
+    actions: (@Composable androidx.compose.foundation.layout.RowScope.() -> Unit)? = null,
 ) {
     val c = LocalColors.current
-    Column(
+    androidx.compose.foundation.layout.Row(
         modifier.padding(
             start = if (inset) 18.dp else 0.dp,
             end = if (inset) 18.dp else 0.dp,
             top = 6.dp,
             bottom = 12.dp,
         ),
+        verticalAlignment = Alignment.Bottom,
     ) {
-        Text(
-            text = text,
-            color = c.fg,
-            fontSize = 26.sp,
-            fontWeight = FontWeight.Bold,
-            letterSpacing = (-0.4).sp,
-        )
-        if (sub != null) {
-            Spacer(Modifier.height(3.dp))
-            Text(sub, color = c.fg3, fontSize = 11.5.sp)
+        Column(Modifier.weight(1f)) {
+            Text(
+                text = text,
+                color = c.fg,
+                fontSize = 31.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = (-0.6).sp,
+            )
+            if (sub != null) {
+                Spacer(Modifier.height(3.dp))
+                Text(sub, color = c.fg3, fontSize = 11.5.sp)
+            }
         }
+        if (actions != null) {
+            Spacer(Modifier.width(10.dp))
+            actions()
+        }
+    }
+}
+
+/** Aidoku 式圆形工具按钮（大标题右侧的搜索/更多入口）。 */
+@Composable
+internal fun CircleToolButton(glyph: Glyph, onClick: () -> Unit) {
+    val c = LocalColors.current
+    Box(
+        Modifier
+            .size(38.dp)
+            .clip(androidx.compose.foundation.shape.CircleShape)
+            .background(c.chip)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        GlyphView(glyph, c.fg2, 17.dp)
     }
 }
 
@@ -483,6 +508,101 @@ fun ContinueCard(
 /** 三列网格的间距，各家复用一份，改起来只改这里。 */
 val GridGap = 9.dp
 val GridGapV = 11.dp
+
+/**
+ * Aidoku 式「继续阅读」横排大卡：大封面 + 底部阅读进度条 + 标题/页码。
+ * 首页横向滚动展示最近在读的几本（以前只有一张单行卡）。
+ */
+@Composable
+fun ContinueCardLarge(
+    width: Dp,
+    seed: Int,
+    title: String,
+    meta: String,
+    progress: Float,
+    onClick: () -> Unit,
+    coverBitmap: androidx.compose.ui.graphics.ImageBitmap? = null,
+    coverUrl: String? = null,
+) {
+    val c = LocalColors.current
+    Column(
+        modifier = Modifier
+            .width(width)
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(onClick = onClick),
+    ) {
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .aspectRatio(0.72f)
+                .clip(RoundedCornerShape(10.dp))
+                .background(coverBrush(seed, c.dark)),
+        ) {
+            when {
+                coverBitmap != null -> Image(
+                    bitmap = coverBitmap,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize(),
+                )
+                !coverUrl.isNullOrBlank() -> RemoteImage(
+                    url = coverUrl,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop,
+                )
+                else -> Text(
+                    title.take(2),
+                    color = placeholderInk(c.dark),
+                    fontSize = 22.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.align(Alignment.Center),
+                )
+            }
+            // 底部细进度条（白底黑字上很容易读）：已读比例
+            Box(
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .background(Color(0x66000000))
+                    .padding(horizontal = 7.dp, vertical = 6.dp),
+            ) {
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(3.dp)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(Color(0x40FFFFFF)),
+                ) {
+                    Box(
+                        Modifier
+                            .fillMaxWidth(progress.coerceIn(0f, 1f))
+                            .height(3.dp)
+                            .clip(RoundedCornerShape(2.dp))
+                            .background(c.accent),
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            title,
+            color = c.fg,
+            fontSize = 11.5.sp,
+            lineHeight = 14.5.sp,
+            fontWeight = FontWeight.Medium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Spacer(Modifier.height(1.dp))
+        Text(
+            meta,
+            color = c.fg3,
+            fontSize = 10.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
 val GridPad = 18.dp
 
 /** 本地封面（导入时缓存的 jpg）在后台线程解出来；null 表示走渐变占位。 */

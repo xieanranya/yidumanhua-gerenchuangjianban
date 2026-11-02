@@ -145,10 +145,13 @@ fun HomeScreen(
         }
     }
 
-    val reading = remember(books) {
+    // 最近在读的几本（Aidoku 式「继续阅读」横排；以前只有最近一本的单行卡）
+    val recent = remember(books) {
         books.filter { it.lastPage > 0 }
-            .maxByOrNull { if (it.lastReadAt > 0) it.lastReadAt else it.addedAt }
+            .sortedByDescending { if (it.lastReadAt > 0) it.lastReadAt else it.addedAt }
+            .take(8)
     }
+    val reading = recent.firstOrNull()
 
     LazyVerticalGrid(
         columns = GridCells.Fixed(3),
@@ -157,34 +160,43 @@ fun HomeScreen(
         horizontalArrangement = Arrangement.spacedBy(GridGap),
         verticalArrangement = Arrangement.spacedBy(GridGapV),
     ) {
+        // Aidoku 式大标题 + 右上圆形搜索钮（独立搜索框行去掉，视觉更干净）
         item(span = { GridItemSpan(maxLineSpan) }) {
-            BigTitle("首页", inset = false)
-        }
-        item(span = { GridItemSpan(maxLineSpan) }) {
-            Box(Modifier.padding(bottom = 4.dp)) {
-                SearchStub("搜漫画名、作者、题材", onClick = { onDiscover() }, inset = false)
+            BigTitle("画质漫画", inset = false) {
+                CircleToolButton(Glyph.SEARCH, onClick = { onDiscover() })
             }
         }
 
-        if (reading != null) {
+        if (recent.isNotEmpty()) {
             item(span = { GridItemSpan(maxLineSpan) }) {
                 SectionHeader("继续阅读", more = "书架", onMore = onDiscover, inset = false)
             }
             item(span = { GridItemSpan(maxLineSpan) }) {
-                val progress = if (reading.pageCount > 0) {
-                    "第 ${reading.lastPage + 1} / ${reading.pageCount} 页"
-                } else {
-                    "${reading.pageCount} 页"
+                androidx.compose.foundation.lazy.LazyRow(
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    contentPadding = PaddingValues(horizontal = 18.dp),
+                ) {
+                    items(recent.size) { idx ->
+                        val b = recent[idx]
+                        val progress = if (b.pageCount > 0) {
+                            (b.lastPage + 1f) / b.pageCount
+                        } else 0f
+                        val meta = if (b.pageCount > 0) {
+                            "第 ${b.lastPage + 1} / ${b.pageCount} 页"
+                        } else {
+                            "${b.pageCount} 页"
+                        }
+                        ContinueCardLarge(
+                            width = 118.dp,
+                            seed = b.title.hashCode(),
+                            title = b.title,
+                            meta = "$meta · 本地",
+                            progress = progress,
+                            onClick = { onOpenBook(b) },
+                            coverBitmap = rememberFileCover(b.coverPath),
+                        )
+                    }
                 }
-                ContinueCard(
-                    seed = reading.title.hashCode(),
-                    title = reading.title,
-                    meta = "$progress · 本地",
-                    action = "继续",
-                    onClick = { onOpenBook(reading) },
-                    coverBitmap = rememberFileCover(reading.coverPath),
-                    inset = false,
-                )
             }
         }
 

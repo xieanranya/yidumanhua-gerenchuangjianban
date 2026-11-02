@@ -1,37 +1,33 @@
 # 画质漫画 · 安装包
 
-版本：**双端统一 `1.9.53 (64)`**。
+版本：Android 当前 **`1.9.54 (65)`**，iOS 当前 **`1.9.53 (64)`**。
 
 ## 下载
 
 | 平台 | 位置 | 大小 |
 |---|---|---|
-| Android | **[Release 页 → EnhanceComic-Android-v1.9.53.apk](https://github.com/xieanranya/yidumanhua-gerenchuangjianban/releases/download/v1.9.53/EnhanceComic-Android-v1.9.53.apk)** | 47 MB |
-| iOS | 本目录 `EnhanceComic-iOS-v1.9.53.ipa`（9.7 MB，未签名，需 Sideloadly / AltStore 签名） | 9.7 MB |
+| Android | **[Release 页 → EnhanceComic-Android-v1.9.54.apk](https://github.com/xieanranya/yidumanhua-gerenchuangjianban/releases/download/v1.9.54/EnhanceComic-Android-v1.9.54.apk)** | 47 MB |
+| iOS | 本目录 `EnhanceComic-iOS-v1.9.53.ipa`（9.7 MB） | 9.7 MB |
 
-## v1.9.53（双端）：黑白漫画 AI 上色（安卓多轮打磨后的最终形态）
+## v1.9.54（Android）：UI 参考 Aidoku 改版（第一轮）
 
-iOS 从 1.9.43 一步追齐到 1.9.53，上色功能与安卓完全对齐：
+- 每页大标题升级为 **iOS Large-Title 风格**（更大更重的粗体，Aidoku 式）；
+- 首页：**应用名大标题 + 右上圆形搜索按钮**（替代独立搜索框行，更干净）；
+- **继续阅读改为横排多本封面卡**（最多 8 本横向滚动，封面底部带阅读进度条）——
+  之前只有最近一本的单行卡；
+- 发现/书架/我的 自动继承新标题样式；底栏本就是 iOS 风（线性图标+小字）。
 
-| 项 | 说明 |
-|---|---|
-| 模型 | **fp32 完整版（117MB，Tinigon 导出）**——之前 iOS 用的 fp16 在部分手机上会推理崩溃，且 iOS 的输出一直有暗部截断（模型输出是 [-1,1]，没做反归一化） |
-| 合成 | **线稿混合**：黑色线稿用原图（锐利），其余用模型原生输出（颜色协调）；色度推理精度 768 |
-| 进度条 | 阅读页加载进度条（下载百分比 / 「AI 上色中…」） |
-| 缓存 | 带算法版本，旧结果自动失效 |
-
-**iOS 用户注意**：装上后原来的 fp16 模型作废，需要在 设置 → 黑白上色 里**重新下载 fp32 模型（117MB）**，下载后旧文件自动清理。
+后续轮次：发现页源列表化、我的页 iOS 分组列表风、iOS 端对齐。
 
 ## 之前版本
 
-### v1.9.50-52（安卓）：上色多轮修复（fp32 模型 / 线稿混合 / 缓存失效）· v1.9.49：防崩墙 · v1.9.48：断点续传+进度条 · v1.9.47：双风格 · v1.9.46：修全黑 · v1.9.45：三真根因 · v1.9.43-44：上色首版 · v1.9.42：「12 本 ›」 · v1.9.36-41：登录闪退根治 + EH 登录修复
+### v1.9.53：写实回退+iOS 上色对齐 · v1.9.52：动漫线稿混合+缓存失效 · v1.9.50-51：fp32 模型/全清晰 · v1.9.43-49：上色打磨+进度条+防崩墙 · v1.9.42：「12 本 ›」 · v1.9.36-41：登录闪退根治 + EH 登录修复
 
 ### 校验
 
 | 检查项 | 结果 |
 |---|---|
-| iOS CFBundleShortVersionString / CFBundleVersion | `1.9.53` / `64` |
-| Android versionCode / versionName | `64` / `1.9.53`（已发布） |
-| 包内 `bundle.js` md5（两端） | `ed3b1586…`（引擎未动） |
-
+| Android versionCode / versionName | `65` / `1.9.54` |
+| Android 签名 SHA-256 | `d5084caf…`（未变） |
+| 包内 `bundle.js` md5 | `ed3b1586…`（引擎未动） |
 

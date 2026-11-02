@@ -75,10 +75,14 @@ private val imageScope = kotlinx.coroutines.CoroutineScope(
 )
 private val inflight = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.Deferred<Bitmap?>>()
 
+/** 上色/后处理算法版本：改了合成逻辑就 +1，旧的上色缓存自动失效（否则用户测的还是老结果） */
+private const val COLORIZE_PIPE_VER = "3"
+
 private fun cacheKey(url: String, descramble: Int, targetWidth: Int, crop: Int = 0, colorize: String = "0"): String {
     val bucket = if (targetWidth <= 0) 0 else ((targetWidth + 159) / 160) * 160
     // crop / colorize 进 key：裁没裁、上没上色是两张不同的图，混用会让开关看起来没反应
-    return "$bucket|$descramble|$crop|$colorize|$url"
+    val cz = if (colorize == "0") "0" else "$colorize.$COLORIZE_PIPE_VER"
+    return "$bucket|$descramble|$crop|$cz|$url"
 }
 
 /**

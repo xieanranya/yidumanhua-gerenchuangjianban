@@ -314,39 +314,40 @@ object ColorizeEngine {
                     logError("anime 模型输出通道数异常: " + buf.remaining())
                     return null
                 }
-                // 模型输出 RGB 是 tanh 的 [-1,1] → 反归一化 [0,1] → 只取色度 Cb/Cr
-                // （模型亮度丢弃 —— 原图亮度保真，白底不会被染，画面不糊）
-                val cbSmall = FloatArray(plane)
-                val crSmall = FloatArray(plane)
-                for (i in 0 until plane) {
-                    val r = (buf.get(i) * 0.5f + 0.5f).coerceIn(0f, 1f)
-                    val g = (buf.get(plane + i) * 0.5f + 0.5f).coerceIn(0f, 1f)
-                    val b = (buf.get(2 * plane + i) * 0.5f + 0.5f).coerceIn(0f, 1f)
-                    cbSmall[i] = -0.168736f * r - 0.331264f * g + 0.5f * b + 0.5f
-                    crSmall[i] = 0.5f * r - 0.418688f * g - 0.081312f * b + 0.5f
-                }
-                // 色度双线性上采样（按需，不物化大数组）→ 与原图亮度合成 YCbCr → RGB
+                // line-mix 合成（桌面三方案对比选定）：
+                //   ① 暗部（原图线稿，Y<0.45）→ 亮度用原图（锐利黑线），色度向中性收 55%（避免彩线稿）
+                //   ② 其余全部用模型原生输出（亮度+色度都来自模型 → 颜色天然协调）
+                // 1.9.51 的「只取色度+原图亮度」会把模型色度配到网点纸/灰调背景上，
+                // 灰底 × 饱和色度 = 浑浊的脏色 —— 这就是「颜色怪」的根源。
                 val outPx = IntArray(plane0)
                 for (y in 0 until h0) {
                     val fy = y * th.toFloat() / h0
-                    val y0i = fy.toInt().coerceAtMost(th - 1)
-                    val y1i = minOf(y0i + 1, th - 1)
-                    val wy = fy - y0i
+                    val yi0 = fy.toInt().coerceAtMost(th - 1)
+                    val yi1 = minOf(yi0 + 1, th - 1)
+                    val wy = fy - yi0
                     val row = y * w0
                     for (x in 0 until w0) {
                         val fx = x * tw.toFloat() / w0
-                        val x0i = fx.toInt().coerceAtMost(tw - 1)
-                        val x1i = minOf(x0i + 1, tw - 1)
-                        val wx = fx - x0i
+                        val xi0 = fx.toInt().coerceAtMost(tw - 1)
+                        val xi1 = minOf(xi0 + 1, tw - 1)
+                        val wx = fx - xi0
                         val i = row + x
-                        val y0 = (grayY[i].toInt() and 0xFF) / 255f
-                        val cb = bilerpArr(cbSmall, tw, x0i, x1i, y0i, y1i, wx, wy)
-                        val cr = bilerpArr(crSmall, tw, x0i, x1i, y0i, y1i, wx, wy)
-                        val r = (y0 + 1.402f * (cr - 0.5f)).coerceIn(0f, 1f)
-                        val g = (y0 - 0.344136f * (cb - 0.5f) - 0.714136f * (cr - 0.5f)).coerceIn(0f, 1f)
-                        val b = (y0 + 1.772f * (cb - 0.5f)).coerceIn(0f, 1f)
-                        outPx[i] = (0xFF shl 24) or (((r * 255f + 0.5f).toInt()) shl 16) or
-                            (((g * 255f + 0.5f).toInt()) shl 8) or (b * 255f + 0.5f).toInt()
+                        // 模型 RGB（反归一化 [0,1]）按需双线性采样
+                        val mr = (bilerp(buf, 0, tw, xi0, xi1, yi0, yi1, wx, wy) * 0.5f + 0.5f).coerceIn(0f, 1f)
+                        val mg = (bilerp(buf, plane, tw, xi0, xi1, yi0, yi1, wx, wy) * 0.5f + 0.5f).coerceIn(0f, 1f)
+                        val mb = (bilerp(buf, 2 * plane, tw, xi0, xi1, yi0, yi1, wx, wy) * 0.5f + 0.5f).coerceIn(0f, 1f)
+                        val ys = (grayY[i].toInt() and 0xFF) / 255f
+                        val ym = 0.299f * mr + 0.587f * mg + 0.114f * mb
+                        val mask = ((0.45f - ys) / 0.22f).coerceIn(0f, 1f)
+                        val yf = ys * mask + ym * (1 - mask)
+                        val chroma = 1f - 0.55f * mask
+                        val cb = 0.5f + (-0.168736f * mr - 0.331264f * mg + 0.5f * mb) * chroma
+                        val cr = 0.5f + (0.5f * mr - 0.418688f * mg - 0.081312f * mb) * chroma
+                        val r = (yf + 1.402f * (cr - 0.5f)).coerceIn(0f, 1f)
+                        val g = (yf - 0.344136f * (cb - 0.5f) - 0.714136f * (cr - 0.5f)).coerceIn(0f, 1f)
+                        val b = (yf + 1.772f * (cb - 0.5f)).coerceIn(0f, 1f)
+                        outPx[i] = (0xFF shl 24) or ((r * 255f + 0.5f).toInt() shl 16) or
+                            ((g * 255f + 0.5f).toInt() shl 8) or (b * 255f + 0.5f).toInt()
                     }
                 }
                 return Bitmap.createBitmap(outPx, w0, h0, Bitmap.Config.ARGB_8888)
@@ -432,10 +433,10 @@ object ColorizeEngine {
                             val x0i = fx.toInt().coerceAtMost(side - 1)
                             val x1i = minOf(x0i + 1, side - 1)
                             val wx = fx - x0i
-                            // 色度增益 1.35：DDColor 在 256 输入下对大页面的色度预测偏保守，
+                            // 色度增益 1.5：DDColor 在 256 输入下对大页面的色度预测偏保守，
                             // 不少区域 ab 接近 0（看着没上色），拉起来颜色覆盖明显变全
-                            val a = bilerp(buf, 0, side, x0i, x1i, y0i, y1i, wx, wy) * 1.35f
-                            val b = bilerp(buf, side * side, side, x0i, x1i, y0i, y1i, wx, wy) * 1.35f
+                            val a = bilerp(buf, 0, side, x0i, x1i, y0i, y1i, wx, wy) * 1.5f
+                            val b = bilerp(buf, side * side, side, x0i, x1i, y0i, y1i, wx, wy) * 1.5f
                             val i = row + x
                             outPx[i] = labToRgb(
                                 (gray0[i].toInt() and 0xFF) * 100.0 / 255.0,

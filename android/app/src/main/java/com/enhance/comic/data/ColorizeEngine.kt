@@ -433,10 +433,10 @@ object ColorizeEngine {
                             val x0i = fx.toInt().coerceAtMost(side - 1)
                             val x1i = minOf(x0i + 1, side - 1)
                             val wx = fx - x0i
-                            // 色度增益 1.5：DDColor 在 256 输入下对大页面的色度预测偏保守，
-                            // 不少区域 ab 接近 0（看着没上色），拉起来颜色覆盖明显变全
-                            val a = bilerp(buf, 0, side, x0i, x1i, y0i, y1i, wx, wy) * 1.5f
-                            val b = bilerp(buf, side * side, side, x0i, x1i, y0i, y1i, wx, wy) * 1.5f
+                            // 无增益：DDColor 原生色度就是正确状态（1.9.45/46 的效果用户认可过）。
+                            // 实测 ×1.5 会过饱和色偏（「乱上色」），×1.35 也偏浓——增益路线废弃
+                            val a = bilerp(buf, 0, side, x0i, x1i, y0i, y1i, wx, wy)
+                            val b = bilerp(buf, side * side, side, x0i, x1i, y0i, y1i, wx, wy)
                             val i = row + x
                             outPx[i] = labToRgb(
                                 (gray0[i].toInt() and 0xFF) * 100.0 / 255.0,

@@ -457,12 +457,12 @@ struct OnlineSettingsPanel: View {
                             .monospacedDigit()
                     }
                     .padding(.vertical, 6)
-                    note("正在下载上色模型（约 59MB，只下载一次）。下载完成前先显示原图。")
+                    note("正在下载上色模型（约 117MB，只下载一次）。下载完成前先显示原图。")
                 case .idle:
                     Button {
                         colorizeStore.startDownload()
                     } label: {
-                        Text("下载上色模型（约 59MB，仅一次）")
+                        Text("下载上色模型（约 117MB，仅一次）")
                             .font(.system(size: 13, weight: .medium))
                             .foregroundColor(Color(red: 1, green: 0.43, blue: 0.61))
                     }
@@ -481,7 +481,7 @@ struct OnlineSettingsPanel: View {
                     note(msg)
                 }
             } else {
-                note("打开后黑白漫画会自动上色（模型约 59MB，仅下载一次，"
+                note("打开后黑白漫画会自动上色（模型约 117MB，仅下载一次，"
                      + "专为黑白漫画训练）。彩色源和本地书不受影响。")
             }
 

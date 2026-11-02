@@ -31,6 +31,28 @@ enum CoverCache {
 /// 用户看到的正是「黑屏两个菊花，而且特别卡」。
 /// 这里自己发请求：带 UA、15 秒连接 / 25 秒总超时、解码后按显示尺寸下采样、
 /// NSCache 缓存、同一个 URL 的并发请求合并成一次，失败能立刻说话。
+/// 每页图片的加载进度（0..1），key = 图片 url。给阅读器占位进度条用。
+/// 阶段：0.05 下载 → 0.72 解码 → 0.84 裁边 → 0.88+ AI 上色。完成即移除。
+enum PageProgress {
+    private static let lock = NSLock()
+    private static var map: [String: Double] = [:]
+
+    static func of(_ url: String) -> Double {
+        lock.lock(); defer { lock.unlock() }
+        return map[url] ?? 0
+    }
+
+    static func set(_ url: String, _ v: Double) {
+        lock.lock(); defer { lock.unlock() }
+        map[url] = min(max(v, 0.01), 0.98)
+    }
+
+    static func done(_ url: String) {
+        lock.lock(); defer { lock.unlock() }
+        map.removeValue(forKey: url)
+    }
+}
+
 final class RemoteImageLoader {
     static let shared = RemoteImageLoader()
 
@@ -112,6 +134,9 @@ final class RemoteImageLoader {
         return image
     }
 
+    /// 上色/后处理算法版本：改了合成逻辑就 +1，旧的上色缓存自动失效
+    private static let COLORIZE_PIPE_VER = 3
+
     private static func cacheKey(
         _ url: String, _ maxPixel: CGFloat, _ headers: [String: String]? = nil, _ num: Int = 0,
         _ crop: Int = 0, _ colorize: Int = 0
@@ -123,7 +148,9 @@ final class RemoteImageLoader {
             for k in headers.keys.sorted() { h = h &* 31 &+ k.hashValue &+ (headers[k]?.hashValue ?? 0) }
         }
         // crop / colorize 都进 key：裁没裁、上没上色是不同的图，混用会让开关看起来没反应
-        return "\(bucket)|\(num)|\(crop)|\(colorize)|\(h)|\(url)"
+        // 上色结果 key 带管线版本：改了合成逻辑就 bump，旧缓存自动失效
+        let cz = colorize == 0 ? "0" : "\(colorize).\(COLORIZE_PIPE_VER)"
+        return "\(bucket)|\(num)|\(crop)|\(cz)|\(h)|\(url)"
     }
 
     private static func cost(_ image: UIImage) -> Int {
@@ -165,19 +192,26 @@ final class RemoteImageLoader {
             req.setValue("\(u.scheme ?? "https")://\(u.host ?? "")/", forHTTPHeaderField: "Referer")
         }
         do {
+            PageProgress.set(url, 0.05)
             let (data, resp) = try await session.data(for: req)
             if let http = resp as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
                 return nil
             }
             guard !data.isEmpty else { return nil }
+            PageProgress.set(url, 0.72)
             guard let img = downsample(data, maxPixel: maxPixel) else { return nil }
             let straight = num > 1 ? (descramble(img, num: num) ?? img) : img
             // 裁白边放在最后：先还原分块，再按真实画面找边界
+            PageProgress.set(url, 0.84)
             let cropped = crop > 0 ? cropWhite(straight, level: crop - 1) : straight
             // 黑白上色在裁白边之后：模型吃的是「干净的画面」
             guard colorize > 0 else { return cropped }
-            return await ColorizeEngine.colorize(cropped)
+            PageProgress.set(url, 0.88)
+            let out = await ColorizeEngine.colorize(cropped)
+            PageProgress.done(url)
+            return out
         } catch {
+            PageProgress.done(url)
             return nil
         }
     }
@@ -395,11 +429,38 @@ struct OnlinePageImage: View {
             } else {
                 Color.black
                     .aspectRatio(0.72, contentMode: .fit)
-                    .overlay(ProgressView().tint(.white.opacity(0.4)))
+                    .overlay(PageLoadProgress(url: url))
             }
         }
         .frame(maxWidth: .infinity)
         .task(id: "\(url)|\(descramble)|\(crop)|\(colorize)|\(attempt)") { await load() }
+    }
+
+    /// 页面加载进度条：下载/解码各阶段 + AI 上色提示（对齐安卓 1.9.48）
+    struct PageLoadProgress: View {
+        let url: String
+        @State private var prog: Double = 0
+
+        var body: some View {
+            VStack(spacing: 9) {
+                ProgressView(value: prog)
+                    .progressViewStyle(.linear)
+                    .tint(Color(red: 1, green: 0.43, blue: 0.61).opacity(0.8))
+                    .frame(width: 170)
+                Text(
+                    prog >= 0.85 ? "AI 上色中…" :
+                    (prog > 0.02 ? "加载中 \(Int(prog * 100))%" : "加载中…")
+                )
+                .font(.system(size: 10))
+                .foregroundColor(.white.opacity(0.62))
+            }
+            .task {
+                while !Task.isCancelled {
+                    prog = PageProgress.of(url)
+                    try? await Task.sleep(nanoseconds: 150_000_000)
+                }
+            }
+        }
     }
 
     private func load() async {

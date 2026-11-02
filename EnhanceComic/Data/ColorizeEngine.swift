@@ -2,24 +2,31 @@ import Foundation
 import UIKit
 import OnnxRuntimeBindings
 
-/// 黑白漫画自动上色：manga-colorization-v2 generator（ONNX fp16，HuggingFace，MIT）。
+/// 黑白漫画自动上色：manga-colorization-v2 generator（ONNX **fp32** 117MB，Tinigon 导出）。
 ///
 /// 输入 [1,5,H,W]：ch0 = 灰度(0..1)，ch1-3 = 颜色提示（自动模式全 0），ch4 = 提示掩码（0）。
-/// 输出 [1,3,H,W]：RGB 0..1。H/W 须为 32 的倍数 —— 短边缩到 ≤512 并对齐 32，
-/// 推理完再放大回原尺寸。
-/// 后处理：灰世界白平衡去黄（该模型输出系统性偏暖，luoyeguishanhe fork 的实战结论）。
+/// H/W 为 32 的倍数（动态维度）—— 长边 ≤768 对齐 32。
+/// 输出 [1,3,H,W]：RGB **[-1,1]**（tanh，需 *0.5+0.5 反归一化）。
+///
+/// 合成（line-mix，与安卓 1.9.52 对齐）：
+///   暗部（原图线稿 Y<0.45）→ 亮度用原图（锐利黑线），色度向中性收 55%；
+///   其余全部用模型原生输出（亮度+色度都来自模型 → 颜色天然协调）。
+///   不要换回 fp16 模型（部分手机 ORT-ARM 推理 native 崩溃），也不要直接放大
+///   模型输出（糊）或用「模型色度+原图亮度」（网点灰底被染成脏色）。
 /// 任何失败都返回原图，绝不挡阅读。
 enum ColorizeEngine {
 
     // MARK: - 模型分发
 
-    static let modelFile = "manga-colorize-fp16.onnx"
-    static let modelBytes = 61_650_260
+    static let modelFile = "manga-colorizer-fp32.onnx"
+    static let modelBytes = 122_944_482
     /// 双源：国内镜像优先，原站兜底
     static let downloadURLs = [
-        "https://hf-mirror.com/Faridzar/manga-colorization-v2-onnx/resolve/main/manga-colorize-fp16.onnx",
-        "https://huggingface.co/Faridzar/manga-colorization-v2-onnx/resolve/main/manga-colorize-fp16.onnx",
+        "https://hf-mirror.com/Tinigon/manga-colorizer-onnx/resolve/main/colorizer.onnx",
+        "https://huggingface.co/Tinigon/manga-colorizer-onnx/resolve/main/colorizer.onnx",
     ]
+    /// 旧版模型文件（fp16），新版下载成功后清理
+    static let legacyModelFile = "manga-colorize-fp16.onnx"
 
     private static let fm = FileManager.default
 
@@ -63,7 +70,7 @@ enum ColorizeEngine {
         let tmp = modelURL.path + ".part"
         try? fm.removeItem(atPath: tmp)
         var req = URLRequest(url: url)
-        req.timeoutInterval = 60
+        req.timeoutInterval = 120
         let (stream, resp) = try await URLSession.shared.bytes(for: req)
         guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
             throw NSError(domain: "colorize", code: -2,
@@ -73,14 +80,22 @@ enum ColorizeEngine {
         var data = Data()
         data.reserveCapacity(modelBytes)
         var lastReport = 0
+        // 按块读（64KB）：逐字节 for-await 122MB 太慢
+        var buffer = [UInt8](repeating: 0, count: 1 << 16)
+        var filled = 0
         for try await byte in stream {
-            data.append(byte)
-            // 每下载约 1MB 报一次进度（逐字节回调太频繁）
-            if data.count - lastReport >= (1 << 20) {
-                lastReport = data.count
-                progress(min(Double(data.count) / total, 0.99))
+            buffer[filled] = byte
+            filled += 1
+            if filled == buffer.count {
+                data.append(contentsOf: buffer)
+                filled = 0
+                if data.count - lastReport >= (1 << 20) {
+                    lastReport = data.count
+                    progress(min(Double(data.count) / total, 0.99))
+                }
             }
         }
+        if filled > 0 { data.append(contentsOf: buffer[0..<filled]) }
         guard data.count == modelBytes else {
             throw NSError(domain: "colorize", code: -3,
                 userInfo: [NSLocalizedDescriptionKey: "模型大小校验失败（拿到 \(data.count) 字节）"])
@@ -88,6 +103,8 @@ enum ColorizeEngine {
         try data.write(to: URL(fileURLWithPath: tmp))
         try? fm.removeItem(at: modelURL)
         try fm.moveItem(atPath: tmp, toPath: modelURL.path)
+        // 旧 fp16 模型清理（换过模型后老用户目录里会留孤儿文件）
+        try? fm.removeItem(at: modelDir.appendingPathComponent(legacyModelFile))
         progress(1.0)
     }
 
@@ -128,18 +145,34 @@ enum ColorizeEngine {
     private static func colorizeCore(_ cg: CGImage, session: ORTSession) -> UIImage? {
         let w0 = cg.width, h0 = cg.height
 
-        // 推理尺寸：长边 ≤ 512，对齐 32
+        // 推理尺寸：长边 ≤ 768，对齐 32（只影响色度精细度；清晰度由原图决定）
         var tw = w0, th = h0
         let long = max(w0, h0)
-        if long > 512 {
-            let k = 512.0 / CGFloat(long)
+        if long > 768 {
+            let k = 768.0 / CGFloat(long)
             tw = Int((CGFloat(w0) * k).rounded())
             th = Int((CGFloat(h0) * k).rounded())
         }
         tw = max(32, (tw / 32) * 32)
         th = max(32, (th / 32) * 32)
 
-        // ---- 画灰度（8bit） ------------------------------------------------
+        // ---- 原图全分辨率灰度 Y（line-mix 合成用，线稿清晰度全靠它） ----
+        var grayFull = [UInt8](repeating: 0, count: w0 * h0)
+        var drewFull = false
+        grayFull.withUnsafeMutableBytes { ptr in
+            guard let base = ptr.baseAddress else { return }
+            guard let gctx = CGContext(
+                data: base, width: w0, height: h0, bitsPerComponent: 8,
+                bytesPerRow: w0, space: CGColorSpaceCreateDeviceGray(),
+                bitmapInfo: CGImageAlphaInfo.none.rawValue
+            ) else { return }
+            gctx.interpolationQuality = .high
+            gctx.draw(cg, in: CGRect(x: 0, y: 0, width: w0, height: h0))
+            drewFull = true
+        }
+        guard drewFull else { return nil }
+
+        // ---- 画推理用灰度（8bit） ------------------------------------------
         var gray = [UInt8](repeating: 0, count: tw * th)
         var drew = false
         gray.withUnsafeMutableBytes { ptr in
@@ -181,25 +214,60 @@ enum ColorizeEngine {
             let outData = try out.tensorData() as Data
             guard outData.count == plane * 3 * MemoryLayout<Float>.size else { return nil }
 
-            // ---- 输出 [1,3,H,W] → RGBA → 去黄 → UIImage -----------------------
+            // ---- line-mix 合成：暗部线稿用原图亮度（色度收中性），其余用模型原生输出 ----
             let rgba = outData.withUnsafeBytes { buf -> [UInt8] in
                 let f = buf.bindMemory(to: Float.self)
-                var px = [UInt8](repeating: 255, count: plane * 4)
-                for i in 0 ..< plane {
-                    px[i * 4 + 0] = clampByte(f[i])
-                    px[i * 4 + 1] = clampByte(f[plane + i])
-                    px[i * 4 + 2] = clampByte(f[2 * plane + i])
+                var px = [UInt8](repeating: 255, count: w0 * h0 * 4)
+                for y in 0 ..< h0 {
+                    let fy = Float(y) * Float(th) / Float(h0)
+                    let yi0 = min(Int(fy), th - 1), yi1 = min(yi0 + 1, th - 1)
+                    let wy = fy - Float(yi0)
+                    let row = y * w0
+                    for x in 0 ..< w0 {
+                        let fx = Float(x) * Float(tw) / Float(w0)
+                        let xi0 = min(Int(fx), tw - 1), xi1 = min(xi0 + 1, tw - 1)
+                        let wx = fx - Float(xi0)
+                        let i = row + x
+                        // 模型 RGB（tanh [-1,1] → 反归一化 [0,1]）双线性采样
+                        let mr = clamp01(bilerp(f, 0, plane, tw, xi0, xi1, yi0, yi1, wx, wy) * 0.5 + 0.5)
+                        let mg = clamp01(bilerp(f, plane, plane, tw, xi0, xi1, yi0, yi1, wx, wy) * 0.5 + 0.5)
+                        let mb = clamp01(bilerp(f, 2 * plane, plane, tw, xi0, xi1, yi0, yi1, wx, wy) * 0.5 + 0.5)
+                        let ys = Float(grayFull[i]) / 255.0
+                        let ym = 0.299 * mr + 0.587 * mg + 0.114 * mb
+                        let mask = max(0.0, min(1.0, (0.45 - ys) / 0.22))
+                        let yf = ys * mask + ym * (1 - mask)
+                        let chroma = 1.0 - 0.55 * mask
+                        let cb = 0.5 + (-0.168736 * mr - 0.331264 * mg + 0.5 * mb) * chroma
+                        let cr = 0.5 + (0.5 * mr - 0.418688 * mg - 0.081312 * mb) * chroma
+                        px[i * 4 + 0] = clampByte(Float(yf + 1.402 * (cr - 0.5)))
+                        px[i * 4 + 1] = clampByte(Float(yf - 0.344136 * (cb - 0.5) - 0.714136 * (cr - 0.5)))
+                        px[i * 4 + 2] = clampByte(Float(yf + 1.772 * (cb - 0.5)))
+                    }
                 }
-                return grayWorldBalance(px, plane: plane, strength: 0.65)
+                return px
             }
-            guard let small = image(fromRGBA: rgba, width: tw, height: th) else { return nil }
-            return resize(small, width: w0, height: h0)
+            guard let img = image(fromRGBA: rgba, width: w0, height: h0) else { return nil }
+            return img
         } catch {
             return nil
         }
     }
 
     // MARK: - 图像工具
+
+    private static func clamp01(_ v: Float) -> Float { max(0, min(1, v)) }
+
+    private static func bilerp(
+        _ f: UnsafeBufferPointer<Float>, _ chBase: Int, _ plane: Int, _ tw: Int,
+        _ x0: Int, _ x1: Int, _ y0: Int, _ y1: Int, _ wx: Float, _ wy: Float
+    ) -> Float {
+        let v00 = f[chBase + y0 * tw + x0]
+        let v10 = f[chBase + y0 * tw + x1]
+        let v01 = f[chBase + y1 * tw + x0]
+        let v11 = f[chBase + y1 * tw + x1]
+        return v00 * (1 - wx) * (1 - wy) + v10 * wx * (1 - wy) +
+            v01 * (1 - wx) * wy + v11 * wx * wy
+    }
 
     private static func clampByte(_ f: Float) -> UInt8 {
         UInt8(max(0, min(255, f * 255.0)))
@@ -216,40 +284,6 @@ enum ColorizeEngine {
         return UIImage(cgImage: img)
     }
 
-    private static func resize(_ image: UIImage, width: Int, height: Int) -> UIImage? {
-        let fmt = UIGraphicsImageRendererFormat()
-        fmt.scale = 1
-        let r = UIGraphicsImageRenderer(size: CGSize(width: width, height: height), format: fmt)
-        return r.image { _ in
-            image.draw(in: CGRect(x: 0, y: 0, width: width, height: height))
-        }
-    }
-
-    /// 灰世界白平衡去黄：三通道均值拉向其中间值。
-    /// 模型对中性灰区域系统性输出暖棕（R>G>B），全图按增益 lerp(1, target/m, strength) 校正。
-    private static func grayWorldBalance(_ px: [UInt8], plane: Int, strength: Double) -> [UInt8] {
-        var sr = 0.0, sg = 0.0, sb = 0.0
-        var n = 0.0
-        var i = 0
-        while i < plane {
-            sr += Double(px[i * 4]); sg += Double(px[i * 4 + 1]); sb += Double(px[i * 4 + 2])
-            n += 1
-            i += 7  // 抽样 1/7 像素，均值足够稳
-        }
-        guard n > 0 else { return px }
-        let mr = sr / n, mg = sg / n, mb = sb / n
-        let target = (mr + mg + mb) / 3
-        let gr = 1.0 + strength * (target / max(mr, 1e-3) - 1.0)
-        let gg = 1.0 + strength * (target / max(mg, 1e-3) - 1.0)
-        let gb = 1.0 + strength * (target / max(mb, 1e-3) - 1.0)
-        var out = px
-        for i in 0 ..< plane {
-            out[i * 4 + 0] = UInt8(max(0, min(255, Double(px[i * 4 + 0]) * gr)))
-            out[i * 4 + 1] = UInt8(max(0, min(255, Double(px[i * 4 + 1]) * gg)))
-            out[i * 4 + 2] = UInt8(max(0, min(255, Double(px[i * 4 + 2]) * gb)))
-        }
-        return out
-    }
 }
 
 /// 模型下载状态机（设置页用）。

@@ -27,7 +27,8 @@ import java.net.URL
  * - ANIME（动漫风）：manga-colorization-v2 generator，ONNX **fp32** 117MB（Tinigon 导出，MIT 系）。
  *   输入 [1,5,H,W]：ch0 = 灰度 0..1，ch1-3 = 颜色提示（自动模式全 0），ch4 = 提示掩码（0）；
  *   H/W 为 32 的倍数（动态维度）。输出 [1,3,H,W] = RGB **[-1,1]**（tanh，需 *0.5+0.5 反归一化）。
- *   后处理：灰世界白平衡去黄（该模型输出系统性偏暖）。
+ *   合成：亮度-色度分离 —— 模型输出只取 Cb/Cr 色度，亮度用原图全分辨率灰度 Y，
+ *   线稿 100% 清晰（1.9.50 之前直接用模型 RGB 输出再放大，糊）。
  *   注意：不要换回 fp16 版 —— fp16 在部分手机的 ORT-ARM 上推理 native 崩溃（桌面 x64 验证
  *   不出来），症状就是「开了上色翻页直接闪退」。
  * - REALISTIC（写实风）：DDColor（达摩院 ICCV 2023），ONNX int8 59.1MB，Apache-2.0。
@@ -257,17 +258,30 @@ object ColorizeEngine {
         val inName = session.inputNames.firstOrNull() ?: return null
         val outName = session.outputNames.firstOrNull() ?: return null
 
-        // 推理尺寸：长边 ≤ 512，双向对齐 32
+        // 推理尺寸：长边 ≤ 768，双向对齐 32。清晰度与推理尺寸无关（线稿来自原图），
+        // 这里只影响色度的精细程度
         var tw = w0
         var th = h0
         val long = maxOf(w0, h0)
-        if (long > 512) {
-            val k = 512f / long
+        if (long > 768) {
+            val k = 768f / long
             tw = (w0 * k).toInt()
             th = (h0 * k).toInt()
         }
         tw = maxOf(32, (tw / 32) * 32)
         th = maxOf(32, (th / 32) * 32)
+
+        // 原图全分辨率灰度 Y（最后合成用）—— 线稿清晰度全靠它
+        val plane0 = w0 * h0
+        val px0 = IntArray(plane0)
+        input.getPixels(px0, 0, w0, 0, 0, w0, h0)
+        val grayY = ByteArray(plane0)
+        for (i in 0 until plane0) {
+            val p = px0[i]
+            grayY[i] = ((0.299f * Color.red(p) + 0.587f * Color.green(p) + 0.114f * Color.blue(p)) + 0.5f)
+                .toInt().coerceIn(0, 255).toByte()
+        }
+        px0.fill(0)
 
         val small = Bitmap.createScaledBitmap(input, tw, th, true)
         val grayBmp = Bitmap.createBitmap(tw, th, Bitmap.Config.ARGB_8888)
@@ -300,20 +314,42 @@ object ColorizeEngine {
                     logError("anime 模型输出通道数异常: " + buf.remaining())
                     return null
                 }
-                // 模型输出是 tanh 的 [-1,1] → 反归一化到 [0,1]（不映射的话暗部整片被切黑）
-                // RGB → 灰世界去黄 → 放大回原尺寸
-                val rgba = IntArray(plane)
+                // 模型输出 RGB 是 tanh 的 [-1,1] → 反归一化 [0,1] → 只取色度 Cb/Cr
+                // （模型亮度丢弃 —— 原图亮度保真，白底不会被染，画面不糊）
+                val cbSmall = FloatArray(plane)
+                val crSmall = FloatArray(plane)
                 for (i in 0 until plane) {
-                    val r = clamp255(buf.get(i) * 0.5f + 0.5f)
-                    val g = clamp255(buf.get(plane + i) * 0.5f + 0.5f)
-                    val b = clamp255(buf.get(2 * plane + i) * 0.5f + 0.5f)
-                    rgba[i] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+                    val r = (buf.get(i) * 0.5f + 0.5f).coerceIn(0f, 1f)
+                    val g = (buf.get(plane + i) * 0.5f + 0.5f).coerceIn(0f, 1f)
+                    val b = (buf.get(2 * plane + i) * 0.5f + 0.5f).coerceIn(0f, 1f)
+                    cbSmall[i] = -0.168736f * r - 0.331264f * g + 0.5f * b + 0.5f
+                    crSmall[i] = 0.5f * r - 0.418688f * g - 0.081312f * b + 0.5f
                 }
-                val balanced = grayWorldBalance(rgba, 0.65f)
-                val bmp = Bitmap.createBitmap(balanced, tw, th, Bitmap.Config.ARGB_8888)
-                val up = Bitmap.createScaledBitmap(bmp, w0, h0, true)
-                if (up !== bmp) bmp.recycle()
-                return up
+                // 色度双线性上采样（按需，不物化大数组）→ 与原图亮度合成 YCbCr → RGB
+                val outPx = IntArray(plane0)
+                for (y in 0 until h0) {
+                    val fy = y * th.toFloat() / h0
+                    val y0i = fy.toInt().coerceAtMost(th - 1)
+                    val y1i = minOf(y0i + 1, th - 1)
+                    val wy = fy - y0i
+                    val row = y * w0
+                    for (x in 0 until w0) {
+                        val fx = x * tw.toFloat() / w0
+                        val x0i = fx.toInt().coerceAtMost(tw - 1)
+                        val x1i = minOf(x0i + 1, tw - 1)
+                        val wx = fx - x0i
+                        val i = row + x
+                        val y0 = (grayY[i].toInt() and 0xFF) / 255f
+                        val cb = bilerpArr(cbSmall, tw, x0i, x1i, y0i, y1i, wx, wy)
+                        val cr = bilerpArr(crSmall, tw, x0i, x1i, y0i, y1i, wx, wy)
+                        val r = (y0 + 1.402f * (cr - 0.5f)).coerceIn(0f, 1f)
+                        val g = (y0 - 0.344136f * (cb - 0.5f) - 0.714136f * (cr - 0.5f)).coerceIn(0f, 1f)
+                        val b = (y0 + 1.772f * (cb - 0.5f)).coerceIn(0f, 1f)
+                        outPx[i] = (0xFF shl 24) or (((r * 255f + 0.5f).toInt()) shl 16) or
+                            (((g * 255f + 0.5f).toInt()) shl 8) or (b * 255f + 0.5f).toInt()
+                    }
+                }
+                return Bitmap.createBitmap(outPx, w0, h0, Bitmap.Config.ARGB_8888)
             }
         }
     }
@@ -396,8 +432,10 @@ object ColorizeEngine {
                             val x0i = fx.toInt().coerceAtMost(side - 1)
                             val x1i = minOf(x0i + 1, side - 1)
                             val wx = fx - x0i
-                            val a = bilerp(buf, 0, side, x0i, x1i, y0i, y1i, wx, wy)
-                            val b = bilerp(buf, side * side, side, x0i, x1i, y0i, y1i, wx, wy)
+                            // 色度增益 1.35：DDColor 在 256 输入下对大页面的色度预测偏保守，
+                            // 不少区域 ab 接近 0（看着没上色），拉起来颜色覆盖明显变全
+                            val a = bilerp(buf, 0, side, x0i, x1i, y0i, y1i, wx, wy) * 1.35f
+                            val b = bilerp(buf, side * side, side, x0i, x1i, y0i, y1i, wx, wy) * 1.35f
                             val i = row + x
                             outPx[i] = labToRgb(
                                 (gray0[i].toInt() and 0xFF) * 100.0 / 255.0,
@@ -468,6 +506,19 @@ object ColorizeEngine {
             return (lin * 255).toInt().coerceIn(0, 255)
         }
         return (0xFF shl 24) or (gamma(r) shl 16) or (gamma(g) shl 8) or gamma(b2)
+    }
+
+    /** FloatArray 里 (x,y) 的双线性采样（源宽 sw）。 */
+    private fun bilerpArr(
+        src: FloatArray, sw: Int,
+        x0: Int, x1: Int, y0: Int, y1: Int, wx: Float, wy: Float,
+    ): Float {
+        val v00 = src[y0 * sw + x0]
+        val v10 = src[y0 * sw + x1]
+        val v01 = src[y1 * sw + x0]
+        val v11 = src[y1 * sw + x1]
+        return v00 * (1 - wx) * (1 - wy) + v10 * wx * (1 - wy) +
+            v01 * (1 - wx) * wy + v11 * wx * wy
     }
 
     /** FloatBuffer 里某通道的 (x,y) 双线性采样（通道偏移 chBase，源宽 sw）。 */

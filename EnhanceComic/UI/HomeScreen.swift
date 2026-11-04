@@ -1,6 +1,8 @@
 import SwiftUI
 
-/// 首页：只留搜索入口 / 继续阅读 / 热门推荐（越简洁越好）。
+/// 首页（方案 B · 条带流）：大标题 + 搜索圆钮，热门内容拆成三条带
+/// （今日热门 / 本周上升最快 / 为你挑的），像 Netflix 的编排。
+/// 「继续阅读」已删（与书架重复）。
 struct HomeScreen: View {
 
     let onSearch: () -> Void
@@ -15,7 +17,6 @@ struct HomeScreen: View {
     @State private var hot: [Work] = []
     @State private var hotFrom = 0
     @State private var hotBusy = true
-    @State private var openBook: Book?
 
     private let columns = [
         GridItem(.flexible(minimum: 0, maximum: .infinity), spacing: 9),
@@ -23,34 +24,21 @@ struct HomeScreen: View {
         GridItem(.flexible(minimum: 0, maximum: .infinity), spacing: 9),
     ]
 
-    /// 上次读到一半的本地书
-    private var lastLocal: Book? {
-        store.books
-            .filter { $0.lastPage > 0 }
-            .max { ($0.lastReadAt ?? $0.addedAt) < ($1.lastReadAt ?? $1.addedAt) }
-    }
-
-    private var lastOnline: OnlineRecord? { ui.history.first }
-
-    private var continueIsOnline: Bool {
-        guard let rec = lastOnline else { return false }
-        guard let book = lastLocal else { return true }
-        return rec.at > (book.lastReadAt ?? book.addedAt).timeIntervalSince1970
-    }
+    // 三条带各 6 本（数据不足时各段按实际数量显示，空段整段隐藏）
+    private var bandHot: Array<Work>.SubSequence { hot.prefix(6) }
+    private var bandRising: Array<Work>.SubSequence { hot.dropFirst(6).prefix(6) }
+    private var bandPicked: Array<Work>.SubSequence { hot.dropFirst(12).prefix(6) }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                BigTitle(text: "首页", inset: false)
-                    .padding(.horizontal, 18)
-
-                SearchStub(text: "搜漫画名、作者、题材", onTap: onSearch, inset: false)
-                    .padding(.horizontal, 18)
-
-                continueSection
+                BigTitle(text: "画质漫画", inset: false) {
+                    AnyView(CircleToolButton(glyph: "⌕", onTap: onSearch))
+                }
+                .padding(.horizontal, 18)
 
                 SectionHeader(
-                    title: "热门推荐",
+                    title: "今日热门",
                     more: hotBusy ? "读取中" : (hotFrom > 0 ? "\(hotFrom) 个源" : nil),
                     onMore: hotBusy ? nil : onSearch,
                     inset: false
@@ -66,77 +54,67 @@ struct HomeScreen: View {
                         glyph: .discover
                     )
                 } else {
-                    LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
-                        ForEach(hot) { work in
-                            NavigationLink {
-                                DetailView(work: work)
-                            } label: {
-                                ComicCell(
-                                    title: work.title,
-                                    cover: work.cover,
-                                    sub: work.sourceCount > 1 ? work.sourceNames : nil,
-                                    badge: work.badge,
-                                    seed: work.norm.hashValue
-                                )
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                    .padding(.horizontal, 18)
-                }
+                    band(bandHot, width: 118)
 
+                    if !bandRising.isEmpty {
+                        SectionHeader(title: "本周上升最快", more: "更多 ›", onMore: onSearch, inset: false)
+                            .padding(.horizontal, 18)
+                        band(bandRising, width: 96)
+                    }
+
+                    if !bandPicked.isEmpty {
+                        SectionHeader(title: "为你挑的", more: "换一批", onMore: onSearch, inset: false)
+                            .padding(.horizontal, 18)
+                        LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
+                            ForEach(Array(bandPicked)) { work in
+                                NavigationLink {
+                                    DetailView(work: work)
+                                } label: {
+                                    ComicCell(
+                                        title: work.title,
+                                        cover: work.cover,
+                                        sub: work.sourceCount > 1 ? work.sourceNames : nil,
+                                        badge: work.badge,
+                                        seed: work.norm.hashValue
+                                    )
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .padding(.horizontal, 18)
+                    }
+                }
             }
             .padding(.top, 4)
             .padding(.bottom, 26)
         }
         .background(c.bg)
         .task { await loadHot() }
-        .fullScreenCover(item: $openBook) { book in
-            ReaderView(book: book).environmentObject(store)
-        }
     }
 
+    /// 横向滚动的封面条带
     @ViewBuilder
-    private var continueSection: some View {
-        if lastLocal != nil || lastOnline != nil {
-            SectionHeader(
-                title: "继续阅读",
-                more: "全部",
-                onMore: continueIsOnline ? onSources : onShelf,
-                inset: false
-            )
-            .padding(.horizontal, 18)
-
-            if continueIsOnline, let rec = lastOnline {
-                NavigationLink {
-                    DetailView(work: rec.asWork)
-                } label: {
-                    ContinueCard(
-                        title: rec.sourceTitle.isEmpty ? rec.title : rec.sourceTitle,
-                        meta: "\(rec.sourceName) · 读到 \(rec.epTitle)",
-                        label: "在线阅读",
-                        coverURL: rec.cover,
-                        localCover: nil,
-                        seed: rec.comicId.hashValue,
-                        inset: false
-                    )
+    private func band(_ works: Array<Work>.SubSequence, width: CGFloat) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 10) {
+                ForEach(Array(works)) { work in
+                    NavigationLink {
+                        DetailView(work: work)
+                    } label: {
+                        ComicCell(
+                            title: work.title,
+                            cover: work.cover,
+                            sub: work.sourceCount > 1 ? work.sourceNames : nil,
+                            badge: work.badge,
+                            seed: work.norm.hashValue
+                        )
+                        .frame(width: width)
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
-                .padding(.horizontal, 18)
-            } else if let book = lastLocal {
-                let progress = book.pageCount > 0 ? Int(Double(book.lastPage + 1) / Double(book.pageCount) * 100) : 0
-                ContinueCard(
-                    title: book.title,
-                    meta: "第 \(book.lastPage + 1) / \(book.pageCount) 页 · \(progress)%",
-                    label: "本地阅读",
-                    coverURL: nil,
-                    localCover: CoverCache.image(at: store.coverURL(for: book)),
-                    seed: book.title.hashValue,
-                    inset: false
-                )
-                .onTapGesture { openBook = book }
-                .padding(.horizontal, 18)
             }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 2)
         }
     }
 
@@ -151,7 +129,7 @@ struct HomeScreen: View {
         // 3 分钟内刚拉过同一批源：直接用上次的，切回首页不再等一遍
         if let cached = ExploreCache.get(sig) {
             await MainActor.run {
-                hot = Array(cached.works.prefix(12))
+                hot = Array(cached.works.prefix(18))
                 hotFrom = cached.ok
                 hotBusy = false
             }
@@ -177,7 +155,7 @@ struct HomeScreen: View {
                 if let list = result {
                     hit += 1
                     all.append(contentsOf: list)
-                    let snap = Array(groupWorks(all, sort: false).prefix(12))
+                    let snap = Array(groupWorks(all, sort: false).prefix(18))
                     let h = hit
                     await MainActor.run {
                         hot = snap
@@ -190,7 +168,7 @@ struct HomeScreen: View {
                     let h = hit
                     let miss = targets.count - hit
                     await MainActor.run {
-                        hot = Array(finalWorks.prefix(12))
+                        hot = Array(finalWorks.prefix(18))
                         hotFrom = h
                         hotBusy = false
                         ExploreCache.put(sig, finalWorks, h, miss)

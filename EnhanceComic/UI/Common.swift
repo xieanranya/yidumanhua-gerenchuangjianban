@@ -518,24 +518,50 @@ struct BigTitle: View {
     let text: String
     var sub: String? = nil
     var inset: Bool = true
+    /// 标题右侧的操作圆钮（Aidoku 式 Large Title）
+    var actions: (() -> AnyView)? = nil
     @Environment(\.appColors) private var c
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(text)
-                .font(.system(size: 26, weight: .bold))
-                .foregroundColor(c.fg)
-                .tracking(-0.4)
-            if let sub, !sub.isEmpty {
-                Text(sub)
-                    .font(.system(size: 11.5))
-                    .foregroundColor(c.fg3)
+        HStack(alignment: .bottom, spacing: 10) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(text)
+                    .font(.system(size: 30, weight: .bold))
+                    .foregroundColor(c.fg)
+                    .tracking(-0.6)
+                if let sub, !sub.isEmpty {
+                    Text(sub)
+                        .font(.system(size: 11.5))
+                        .foregroundColor(c.fg3)
+                }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            if let actions { actions() }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, inset ? 18 : 0)
         .padding(.top, 6)
         .padding(.bottom, 12)
+    }
+}
+
+/// Aidoku 式圆形工具按钮（大标题右侧的搜索/更多入口）
+struct CircleToolButton: View {
+    let glyph: String
+    let onTap: () -> Void
+    @Environment(\.appColors) private var c
+
+    var body: some View {
+        Button(action: onTap) {
+            ZStack {
+                Circle()
+                    .fill(c.fg3.opacity(0.14))
+                    .frame(width: 33, height: 33)
+                Text(glyph)
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundColor(c.fg2)
+            }
+        }
+        .buttonStyle(.plain)
     }
 }
 

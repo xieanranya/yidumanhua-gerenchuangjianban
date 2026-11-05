@@ -54,7 +54,24 @@ struct HomeScreen: View {
                         glyph: .discover
                     )
                 } else {
-                    band(bandHot, width: 118)
+                    // Hero：今日最热第一本，全宽大卡建立视觉锚点
+                    if let top = hot.first {
+                        NavigationLink {
+                            DetailView(work: top)
+                        } label: {
+                            HeroCard(
+                                title: top.title,
+                                cover: top.cover,
+                                sourceText: (top.sourceCount > 1 ? top.sourceNames + " · " : "") + "更新至最新话",
+                                badge: top.badge,
+                                seed: top.norm.hashValue
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.horizontal, 18)
+                    }
+
+                    band(bandHot.dropFirst(1), width: 118)
 
                     if !bandRising.isEmpty {
                         SectionHeader(title: "本周上升最快", more: "更多 ›", onMore: onSearch, inset: false)

@@ -602,8 +602,9 @@ struct SectionHeader: View {
     var body: some View {
         HStack(spacing: 8) {
             Text(title)
-                .font(.system(size: 14, weight: .semibold))
+                .font(.system(size: 16.5, weight: .bold))
                 .foregroundColor(c.fg)
+                .tracking(-0.2)
                 .lineLimit(1)
                 .layoutPriority(1)
             Spacer(minLength: 0)
@@ -621,8 +622,8 @@ struct SectionHeader: View {
             }
         }
         .padding(.horizontal, inset ? 18 : 0)
-        .padding(.top, 16)
-        .padding(.bottom, 9)
+        .padding(.top, 24)
+        .padding(.bottom, 11)
     }
 }
 
@@ -787,8 +788,51 @@ struct RemoteCover: View {
 
     private var initial: some View {
         Text(String(title.prefix(1)))
-            .font(.system(size: 22, weight: .bold))
-            .foregroundColor(placeholderInk(c.dark))
+            .font(.system(size: 30, weight: .bold))
+            .foregroundColor(placeholderInk(c.dark).opacity(0.9))
+    }
+}
+
+/// 首页 Hero 全宽大卡：今日最热。封面内嵌底部渐变 + 白字标题（Apple TV 式）。
+struct HeroCard: View {
+    let title: String
+    let cover: String
+    let sourceText: String
+    let badge: String?
+    let seed: Int
+
+    @Environment(\.appColors) private var c
+
+    var body: some View {
+        ZStack(alignment: .bottomLeading) {
+            RemoteCover(url: cover, title: title, seed: seed, badge: nil)
+            LinearGradient(
+                colors: [.clear, .black.opacity(0.30), .black.opacity(0.78)],
+                startPoint: .center, endPoint: .bottom
+            )
+            VStack(alignment: .leading, spacing: 6) {
+                Text("TODAY · 今日最热")
+                    .font(.system(size: 9, weight: .bold))
+                    .tracking(1.2)
+                    .foregroundColor(.white.opacity(0.92))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Capsule().fill(.white.opacity(0.22)))
+                Text(title)
+                    .font(.system(size: 21, weight: .bold))
+                    .foregroundColor(.white)
+                    .tracking(-0.3)
+                    .lineLimit(1)
+                Text(sourceText)
+                    .font(.system(size: 10.5))
+                    .foregroundColor(.white.opacity(0.82))
+                    .lineLimit(1)
+            }
+            .padding(14)
+        }
+        .frame(height: 208)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .shadow(color: .black.opacity(c.dark ? 0.42 : 0.16), radius: 12, x: 0, y: 5)
     }
 }
 
@@ -807,10 +851,11 @@ struct ComicCell: View {
             Color.clear
                 .aspectRatio(0.72, contentMode: .fit)
                 .overlay { RemoteCover(url: cover, title: title, seed: seed, badge: badge) }
-                .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .shadow(color: .black.opacity(c.dark ? 0.30 : 0.10), radius: 8, x: 0, y: 3)
                 .overlay(
-                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .stroke(c.border, lineWidth: 0.5)
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(c.border.opacity(0.7), lineWidth: 0.5)
                 )
             Text(title)
                 .font(.system(size: 11.5))

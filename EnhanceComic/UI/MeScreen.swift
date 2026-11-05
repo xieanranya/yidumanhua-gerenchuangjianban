@@ -15,8 +15,32 @@ struct MeScreen: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                BigTitle(text: "我的", sub: appVersionText(), inset: false)
+                BigTitle(text: "我的", inset: false)
                     .padding(.horizontal, 18)
+
+                // 原型定稿：顶部头像卡
+                HStack(spacing: 13) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .fill(LinearGradient(colors: [Color(red: 1.0, green: 0.43, blue: 0.61), Color(red: 0.88, green: 0.20, blue: 0.43)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                        Text("画")
+                            .font(.system(size: 20, weight: .bold))
+                            .foregroundColor(.white)
+                    }
+                    .frame(width: 52, height: 52)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("画质漫画")
+                            .font(.system(size: 16, weight: .bold))
+                            .foregroundColor(c.fg)
+                        Text("本地 \(store.books.count) 本 · \(sourceSummary(hub.rows))")
+                            .font(.system(size: 11))
+                            .foregroundColor(c.fg3)
+                    }
+                    Spacer(minLength: 0)
+                    Text("›").font(.system(size: 16)).foregroundColor(c.fg3)
+                }
+                .padding(.horizontal, 18)
+                .padding(.bottom, 18)
 
                 groupCard {
                     NavigationLink {
@@ -76,7 +100,7 @@ struct MeScreen: View {
                 }
 
                 Text("纯自用版本，不上传任何数据。源脚本登录凭证只存在本机。")
-                    .font(.system(size: 10))
+                    .font(.system(size: 11.5))
                     .foregroundColor(c.fg3)
                     .padding(.horizontal, 20)
                     .padding(.top, 14)
@@ -121,7 +145,7 @@ struct MeScreen: View {
     }
 
     private var divider: some View {
-        HLine().padding(.leading, 44)
+        HLine().padding(.leading, 62)
     }
 
     @ViewBuilder
@@ -152,27 +176,27 @@ struct MeScreen: View {
     }
 
     private func row(glyph: Glyph, title: String, sub: String, tone: Tone = .neutral) -> some View {
-        HStack(spacing: 11) {
-            GlyphView(glyph: glyph, tint: .white, size: 13.5, strokeWidth: 1.7)
-                .frame(width: 27, height: 27)
+        HStack(spacing: 13) {
+            GlyphView(glyph: glyph, tint: .white, size: 16, strokeWidth: 1.7)
+                .frame(width: 34, height: 34)
                 .background(
-                    RoundedRectangle(cornerRadius: 7.5, style: .continuous)
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
                         .fill(iconTint(glyph))
                 )
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 2.5) {
                 Text(title)
-                    .font(.system(size: 13.5, weight: .medium))
+                    .font(.system(size: 15.5, weight: .semibold))
                     .foregroundColor(c.fg)
                 Text(sub)
-                    .font(.system(size: 10.5))
+                    .font(.system(size: 12))
                     .foregroundColor(tone == .neutral ? c.fg3 : tone.fg(c))
                     .lineLimit(1)
             }
             Spacer(minLength: 0)
-            GlyphView(glyph: .right, tint: c.fg3, size: 13, strokeWidth: 1.6)
+            GlyphView(glyph: .right, tint: c.fg3, size: 14, strokeWidth: 1.6)
         }
-        .padding(.horizontal, 13)
-        .padding(.vertical, 12)
+        .padding(.horizontal, 15)
+        .padding(.vertical, 14)
         .contentShape(Rectangle())
     }
 }

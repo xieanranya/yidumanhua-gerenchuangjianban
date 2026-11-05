@@ -17,18 +17,14 @@ struct ShelfScreen: View {
     @State private var message: String?
     @State private var filter = 0          // 0 全部 / 1 在读 / 2 未读
 
-    private var reading: Book? {
+    private var readingList: [Book] {
         store.books
             .filter { $0.lastPage > 0 }
-            .max { ($0.lastReadAt ?? $0.addedAt) < ($1.lastReadAt ?? $1.addedAt) }
+            .sorted { ($0.lastReadAt ?? $0.addedAt) > ($1.lastReadAt ?? $1.addedAt) }
     }
 
-    private var shown: [Book] {
-        switch filter {
-        case 1: return store.books.filter { $0.lastPage > 0 }
-        case 2: return store.books.filter { $0.lastPage == 0 }
-        default: return store.books
-        }
+    private var unreadList: [Book] {
+        store.books.filter { $0.lastPage == 0 }
     }
 
     private var columns: [GridItem] {
@@ -51,45 +47,33 @@ struct ShelfScreen: View {
                         .padding(.top, 10)
                 }
 
-                filterChips
-                    .padding(.top, 10)
-
-                if let reading {
-                    SectionHeader(title: "继续阅读", inset: false)
-                        .padding(.horizontal, 18)
-                    ContinueCard(
-                        title: reading.title,
-                        meta: "第 \(reading.lastPage + 1) / \(reading.pageCount) 页",
-                        label: CoverPalette.label(for: reading),
-                        coverURL: nil,
-                        localCover: CoverCache.image(at: store.coverURL(for: reading)),
-                        seed: reading.title.hashValue,
-                        inset: false
-                    )
-                    .padding(.horizontal, 18)
-                    .onTapGesture { openBook = reading }
-                }
-
                 if store.books.isEmpty {
                     if !importing {
                         emptyState
                     }
-                } else if shown.isEmpty {
-                    EmptyHint(title: "这个筛选下没有书", message: "切回「全部」看看。", glyph: .shelf)
                 } else {
-                    SectionHeader(
-                        title: filter == 0 ? "本地漫画" : "筛选结果",
-                        more: "\(shown.count) 本",
-                        inset: false
-                    )
-                    .padding(.horizontal, 18)
-                    LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
-                        ForEach(shown) { book in
-                            bookCard(book)
+                    // 在读 / 未读 两组（原型定稿），导入入口在标题行的按钮里
+                    if !readingList.isEmpty {
+                        SectionHeader(title: "在读 · \(readingList.count) 本", inset: false)
+                            .padding(.horizontal, 18)
+                        LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
+                            ForEach(readingList) { book in
+                                bookCard(book)
+                            }
                         }
+                        .padding(.horizontal, 18)
                     }
-                    .padding(.horizontal, 18)
-                    .padding(.bottom, 26)
+                    if !unreadList.isEmpty {
+                        SectionHeader(title: "未读 · \(unreadList.count) 本", inset: false)
+                            .padding(.horizontal, 18)
+                        LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
+                            ForEach(unreadList) { book in
+                                bookCard(book)
+                            }
+                        }
+                        .padding(.horizontal, 18)
+                        .padding(.bottom, 26)
+                    }
                 }
             }
             .padding(.top, 4)

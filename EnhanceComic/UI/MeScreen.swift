@@ -137,10 +137,28 @@ struct MeScreen: View {
             .padding(.bottom, 12)
     }
 
+    /// 分组图标的彩色底（Aidoku Settings 式）：按枚举给固定色相
+    private func iconTint(_ g: Glyph) -> Color {
+        switch g {
+        case .list: return Color(red: 0.33, green: 0.42, blue: 0.88)
+        case .bookmark: return Color(red: 0.15, green: 0.56, blue: 0.95)
+        case .shelf: return Color(red: 0.95, green: 0.55, blue: 0.25)
+        case .theme: return Color(red: 0.58, green: 0.40, blue: 0.88)
+        case .layout: return Color(red: 0.28, green: 0.62, blue: 0.92)
+        case .spark: return Color(red: 1.00, green: 0.43, blue: 0.61)
+        case .gear: return Color(red: 0.44, green: 0.48, blue: 0.56)
+        default: return Color(red: 0.55, green: 0.45, blue: 0.85)
+        }
+    }
+
     private func row(glyph: Glyph, title: String, sub: String, tone: Tone = .neutral) -> some View {
         HStack(spacing: 11) {
-            GlyphView(glyph: glyph, tint: c.fg2, size: 17, strokeWidth: 1.6)
-                .frame(width: 22)
+            GlyphView(glyph: glyph, tint: .white, size: 13.5, strokeWidth: 1.7)
+                .frame(width: 27, height: 27)
+                .background(
+                    RoundedRectangle(cornerRadius: 7.5, style: .continuous)
+                        .fill(iconTint(glyph))
+                )
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(.system(size: 13.5, weight: .medium))

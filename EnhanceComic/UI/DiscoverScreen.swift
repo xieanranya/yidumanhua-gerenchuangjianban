@@ -23,6 +23,9 @@ struct DiscoverScreen: View {
     @State private var reloadTick = 0
     // 点「12 本 ›」打开的分区全部列表
     @State private var openSection: ExploreSection?
+    // 方案 B：搜索框默认收起（右上圆钮展开）；聚合完整列表页开关
+    @State private var showSearch = false
+    @State private var showAggAll = false
 
     private let columns = [
         GridItem(.flexible(minimum: 0, maximum: .infinity), spacing: 9),
@@ -43,37 +46,172 @@ struct DiscoverScreen: View {
     }
 
     private var discoverContent: some View {
-        VStack(spacing: 0) {
-            BigTitle(text: "发现", sub: subline, inset: false)
-                .padding(.horizontal, 18)
+        Group {
+            if showAggAll {
+                VStack(spacing: 0) {
+                    navbarBack("全部源聚合") { showAggAll = false }
+                    ScrollView {
+                        if busy { LoadingBox(height: 220).padding(.top, 30) }
+                        else if works.isEmpty { EmptyHint(title: "没有取到内容", message: error ?? "回头再试一次。", glyph: .discover) }
+                        else { aggregateGrid }
+                    }
+                    .background(c.bg)
+                }
+            } else if !picked.isEmpty {
+                VStack(spacing: 0) {
+                    navbarBack(pickedName) { picked = "" }
+                    ScrollView {
+                        if busy { LoadingBox(height: 220).padding(.top, 30) }
+                        else if let error {
+                            VStack(spacing: 10) {
+                                EmptyHint(title: "没有找到内容", message: error, glyph: .search)
+                                MiniButton(text: "重新加载", accent: true) { reloadTick += 1 }
+                                    .padding(.bottom, 30)
+                            }
+                        } else { singleSourceGrid }
+                    }
+                    .background(c.bg)
+                }
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        BigTitle(text: "发现", inset: false) {
+                            AnyView(CircleToolButton(glyph: "⌕", onTap: { showSearch.toggle() }))
+                        }
+                        .padding(.horizontal, 18)
 
-            searchBar
-                .padding(.horizontal, 18)
+                        if showSearch {
+                            searchBar
+                                .padding(.horizontal, 18)
+                                .padding(.bottom, 6)
+                        }
 
-            sourceChips
+                        SectionHeader(title: "按源浏览", inset: false)
+                            .padding(.horizontal, 18)
+                        sourceList
 
-            HLine()
+                        SectionHeader(
+                            title: "全部源聚合",
+                            more: works.isEmpty ? nil : "查看全部 ›",
+                            onMore: works.isEmpty ? nil : { showAggAll = true },
+                            inset: false
+                        )
+                        .padding(.horizontal, 18)
 
-            content
+                        if busy {
+                            LoadingBox(height: 120)
+                        } else if works.isEmpty {
+                            if error == nil {
+                                Text("源还没有给出内容。")
+                                    .font(.system(size: 11.5))
+                                    .foregroundColor(c.fg3)
+                                    .padding(.horizontal, 18)
+                                    .padding(.bottom, 20)
+                            } else {
+                                Text(error!)
+                                    .font(.system(size: 10.5))
+                                    .foregroundColor(c.fg3)
+                                    .lineLimit(2)
+                                    .padding(.horizontal, 18)
+                                    .padding(.bottom, 20)
+                            }
+                        } else {
+                            LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
+                                ForEach(works.prefix(6)) { work in
+                                    NavigationLink {
+                                        DetailView(work: work)
+                                    } label: {
+                                        ComicCell(
+                                            title: work.title,
+                                            cover: work.cover,
+                                            sub: work.sourceCount > 1 ? work.sourceNames : work.primary.sourceName,
+                                            badge: work.badge,
+                                            seed: work.norm.hashValue
+                                        )
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                            .padding(.horizontal, 18)
+                            .padding(.bottom, 26)
+                        }
+                    }
+                    .padding(.top, 4)
+                }
+                .background(c.bg)
+                .task { await load() }
+            }
         }
         .background(c.bg)
-        .task { await load() }
-        .onChange(of: picked) { _ in reloadTick += 1 }
-        .onChange(of: reloadTick) { _ in
-            Task { await load() }
-        }
     }
 
-    private var subline: String {
-        if busy { return "正在从各源取内容…" }
-        if picked.isEmpty {
-            let multi = works.filter { $0.sourceCount > 1 }.count
-            var s = "\(works.count) 部作品 · \(okSources) 个源"
-            if multi > 0 { s += " · \(multi) 部是跨源同一本" }
-            if failedSources > 0 { s += " · \(failedSources) 个源没响应" }
-            return s
+    /// 源浏览页的返回导航条（「‹ 发现」）
+    private func navbarBack(_ title: String, onBack: @escaping () -> Void) -> some View {
+        HStack(spacing: 7) {
+            Button(action: onBack) {
+                HStack(spacing: 4) {
+                    Text("‹").font(.system(size: 18, weight: .semibold))
+                    Text(title).font(.system(size: 14, weight: .semibold))
+                }
+                .foregroundColor(c.accent)
+            }
+            .buttonStyle(.plain)
+            Spacer(minLength: 0)
         }
-        return "只看这个源"
+        .padding(.horizontal, 18)
+        .padding(.top, 10)
+        .padding(.bottom, 6)
+    }
+
+    private var pickedName: String {
+        hub.enabledRows.first { $0.key == picked }?.name ?? picked
+    }
+
+    /// 方案 B：源列表（圆角渐变图标 + 名称 + ›）
+    private var sourceList: some View {
+        VStack(spacing: 0) {
+            ForEach(Array(hub.enabledRows.enumerated()), id: \.element.key) { idx, row in
+                Button {
+                    picked = row.key
+                    reloadTick += 1
+                } label: {
+                    HStack(spacing: 11) {
+                        Text(String(row.name.prefix(2)))
+                            .font(.system(size: 12.5, weight: .bold))
+                            .foregroundColor(.white)
+                            .frame(width: 38, height: 38)
+                            .background(
+                                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                    .fill(sourceGradient(idx))
+                            )
+                        Text(row.name)
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(c.fg)
+                        Spacer(minLength: 0)
+                        Text("›")
+                            .font(.system(size: 15))
+                            .foregroundColor(c.fg3)
+                    }
+                    .padding(.vertical, 10)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 18)
+    }
+
+    private func sourceGradient(_ i: Int) -> LinearGradient {
+        let pairs: [(Color, Color)] = [
+            (Color(red: 0.23, green: 0.18, blue: 0.39), Color(red: 0.78, green: 0.43, blue: 0.84)),
+            (Color(red: 0.36, green: 0.12, blue: 0.21), Color(red: 0.75, green: 0.20, blue: 0.43)),
+            (Color(red: 0.06, green: 0.20, blue: 0.38), Color(red: 0.23, green: 0.48, blue: 0.84)),
+            (Color(red: 0.42, green: 0.20, blue: 0.07), Color(red: 0.88, green: 0.50, blue: 0.18)),
+            (Color(red: 0.17, green: 0.24, blue: 0.15), Color(red: 0.12, green: 0.62, blue: 0.43)),
+            (Color(red: 0.13, green: 0.10, blue: 0.29), Color(red: 0.42, green: 0.29, blue: 0.72)),
+        ]
+        let p = pairs[i % pairs.count]
+        return LinearGradient(colors: [p.0, p.1], startPoint: .topLeading, endPoint: .bottomTrailing)
     }
 
     private var searchBar: some View {

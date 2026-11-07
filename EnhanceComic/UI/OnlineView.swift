@@ -263,44 +263,67 @@ struct DetailView: View {
     private var currentEpId: String { record?.epId ?? "" }
 
     var body: some View {
-        VStack(spacing: 0) {
-            SubHeader(
-                title: title,
-                subtitle: work.sourceCount > 1 ? "\(work.sourceCount) 个源有这本" : entry.sourceName,
-                onBack: { dismiss() },
-                trailing: AnyView(
-                    NavigationLink {
-                        AccountView(key: entry.sourceKey, fallbackName: entry.sourceName)
-                    } label: {
-                        Text("账号")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundColor(c.accent)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                // 沉浸头图：封面大图铺到状态栏后面，白字标题压图
+                ImmersiveHeader(title: title, subtitle: subline, height: 330) {
+                    ZStack {
+                        ImmersivePoster(colors: PosterPalette.bySeed(work.norm.hashValue))
+                        if !cover.isEmpty {
+                            RemoteImage(url: cover, contentMode: .fill, maxPixel: 1000)
+                        }
                     }
-                    .buttonStyle(.plain)
-                )
-            )
-            HLine()
+                }
 
-            if busy {
-                LoadingBox(height: 260)
-                Spacer(minLength: 0)
-            } else if let error {
-                EmptyHint(title: "加载失败", message: error, glyph: .spark)
-                MiniButton(text: "重试", accent: true) { Task { await load(entryIndex) } }
-                Spacer(minLength: 0)
-            } else {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 0) {
-                        head
+                Group {
+                    if busy {
+                        LoadingBox(height: 240)
+                            .padding(.top, -28)
+                    } else if let error {
+                        VStack(spacing: 10) {
+                            EmptyHint(title: "加载失败", message: error, glyph: .spark)
+                            MiniButton(text: "重试", accent: true) { Task { await load(entryIndex) } }
+                                .padding(.bottom, 30)
+                        }
+                        .padding(.top, -20)
+                    } else {
+                        if !description.isEmpty {
+                            Text(description)
+                                .font(.system(size: 12))
+                                .foregroundColor(c.fg2)
+                                .lineSpacing(4)
+                                .lineLimit(10)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .padding(.horizontal, 18)
+                                .padding(.top, -28)
+                        }
                         sourceSwitch
                         continueButton
                         chapterGrid
                     }
-                    .padding(.bottom, 26)
                 }
             }
+            .padding(.bottom, 26)
         }
         .background(c.bg.ignoresSafeArea())
+        .coordinateSpace(name: "immersiveScroll")
+        .ignoresSafeArea(edges: .top)
+        .overlay(alignment: .topLeading) {
+            GlassCircleButton(glyph: .back) { dismiss() }
+                .padding(.leading, 16)
+                .padding(.top, safeTop() + 8)
+        }
+        .overlay(alignment: .topTrailing) {
+            NavigationLink {
+                AccountView(key: entry.sourceKey, fallbackName: entry.sourceName)
+            } label: {
+                GlassCircleLabel(glyph: .user)
+            }
+            .buttonStyle(.plain)
+            .padding(.trailing, 16)
+            .padding(.top, safeTop() + 8)
+        }
+        .immersiveStatusBar(ui)
         .toolbar(.hidden, for: .navigationBar)
         .task { await load(0) }
         // 用 fullScreenCover 而不是 sheet：sheet 是个卡片，顶部会露出上一页，
@@ -311,42 +334,10 @@ struct DetailView: View {
         }
     }
 
-    private var head: some View {
-        HStack(alignment: .top, spacing: 12) {
-            ZStack {
-                coverGradient(seed: work.norm.hashValue, dark: c.dark)
-                if cover.isEmpty {
-                    Text(String(title.prefix(1)))
-                        .font(.system(size: 24, weight: .bold))
-                        .foregroundColor(placeholderInk(c.dark))
-                } else {
-                    RemoteImage(url: cover, contentMode: .fill, maxPixel: 420)
-                }
-            }
-            .frame(width: 84, height: 114)
-            .clipped()
-            .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text(title)
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundColor(c.fg)
-                    .lineLimit(2)
-                Text("来源：\(entry.sourceName)")
-                    .font(.system(size: 10.5))
-                    .foregroundColor(c.accent)
-                if !description.isEmpty {
-                    Text(description)
-                        .font(.system(size: 10.5))
-                        .foregroundColor(c.fg3)
-                        .lineLimit(5)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 18)
-        .padding(.top, 12)
+    private var subline: String {
+        work.sourceCount > 1
+            ? "\(work.sourceCount) 个源有这本 · 来源 \(entry.sourceName)"
+            : "来源 \(entry.sourceName)"
     }
 
     /// 同作品多源：这里直接切源，章节和阅读进度各算各的。
@@ -957,8 +948,12 @@ struct ReadingPayload: Identifiable {
 struct ReaderSheet: View {
     let payload: ReadingPayload
 
+    @EnvironmentObject private var ui: UiStore
+
     var body: some View {
         OnlineReader(payload: payload)
+            // 阅读器永远黑底，状态栏白字（夜间白天一致）；关闭时 onDisappear 自动交还
+            .immersiveStatusBar(ui)
     }
 }
 

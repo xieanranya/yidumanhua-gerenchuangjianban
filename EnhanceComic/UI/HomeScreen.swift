@@ -1,8 +1,8 @@
 import SwiftUI
 
-/// 首页（方案 B · 条带流）：大标题 + 搜索圆钮，热门内容拆成三条带
-/// （今日热门 / 本周上升最快 / 为你挑的），像 Netflix 的编排。
-/// 「继续阅读」已删（与书架重复）。
+/// 首页（v3 沉浸式）：头图就是今日最热的封面大图，一直铺到状态栏后面，
+/// 白色大标题压图；Hero 卡悬浮在头图边缘；下面三条带
+/// （今日热门 / 本周上升最快 / 为你挑的）。「继续阅读」已删（与书架重复）。
 struct HomeScreen: View {
 
     let onSearch: () -> Void
@@ -29,32 +29,37 @@ struct HomeScreen: View {
     private var bandRising: Array<Work>.SubSequence { hot.dropFirst(6).prefix(6) }
     private var bandPicked: Array<Work>.SubSequence { hot.dropFirst(12).prefix(6) }
 
+    private var subline: String {
+        let n = hub.enabledRows.count
+        if hotBusy { return n > 0 ? "内容来自 \(n) 个漫画源" : "正在准备源…" }
+        return n > 0 ? "\(n) 个源在用 · 已连上 \(hotFrom) 个" : "还没有可用的源"
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                BigTitle(text: "画质漫画", inset: false) {
-                    AnyView(CircleToolButton(glyph: "⌕", onTap: onSearch))
+                // 沉浸头图：今日最热第一本的封面直接铺到状态栏后面
+                ImmersiveHeader(title: "画质漫画", subtitle: subline) {
+                    ZStack {
+                        ImmersivePoster(colors: PosterPalette.forest)
+                        if let top = hot.first, !top.cover.isEmpty {
+                            RemoteImage(url: top.cover, contentMode: .fill, maxPixel: 900)
+                        }
+                    }
                 }
-                .padding(.horizontal, 18)
-
-                SectionHeader(
-                    title: "今日热门",
-                    more: hotBusy ? "读取中" : (hotFrom > 0 ? "\(hotFrom) 个源" : nil),
-                    onMore: hotBusy ? nil : onSearch,
-                    inset: false
-                )
-                .padding(.horizontal, 18)
 
                 if hotBusy {
-                    LoadingBox(height: 160)
+                    LoadingBox(height: 170)
+                        .padding(.top, -26)
                 } else if hot.isEmpty {
                     EmptyHint(
                         title: "还没有推荐",
                         message: "这些源这次都没给出内容，回头再刷一次试试。",
                         glyph: .discover
                     )
+                    .padding(.top, -18)
                 } else {
-                    // Hero：今日最热第一本，全宽大卡建立视觉锚点
+                    // Hero：今日最热第一本，全宽大卡悬浮在头图边缘
                     if let top = hot.first {
                         NavigationLink {
                             DetailView(work: top)
@@ -69,6 +74,7 @@ struct HomeScreen: View {
                         }
                         .buttonStyle(.plain)
                         .padding(.horizontal, 18)
+                        .padding(.top, -30)
                     }
 
                     band(bandHot.dropFirst(1), width: 118)
@@ -102,10 +108,17 @@ struct HomeScreen: View {
                     }
                 }
             }
-            .padding(.top, 4)
             .padding(.bottom, 26)
         }
-        .background(c.bg)
+        .background(c.bg.ignoresSafeArea())
+        .coordinateSpace(name: "immersiveScroll")
+        .ignoresSafeArea(edges: .top)
+        .overlay(alignment: .topTrailing) {
+            GlassCircleButton(glyph: .search) { onSearch() }
+                .padding(.trailing, 16)
+                .padding(.top, safeTop() + 8)
+        }
+        .immersiveStatusBar(ui)
         .task { await loadHot() }
     }
 

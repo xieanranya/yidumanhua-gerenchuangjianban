@@ -15,10 +15,15 @@ struct MeScreen: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                BigTitle(text: "我的", inset: false)
-                    .padding(.horizontal, 18)
+                // 沉浸头图：粉渐变铺到状态栏后面
+                ImmersiveHeader(
+                    title: "我的",
+                    subtitle: "\(hub.rows.count) 个源 · 已登录 \(hub.rows.filter { $0.logged }.count) 个"
+                ) {
+                    ImmersivePoster(colors: PosterPalette.rose)
+                }
 
-                // 原型定稿：顶部头像卡
+                // 头像卡悬浮在头图边缘
                 HStack(spacing: 13) {
                     ZStack {
                         RoundedRectangle(cornerRadius: 14, style: .continuous)
@@ -40,6 +45,7 @@ struct MeScreen: View {
                     Text("›").font(.system(size: 16)).foregroundColor(c.fg3)
                 }
                 .padding(.horizontal, 18)
+                .padding(.top, -30)
                 .padding(.bottom, 18)
 
                 groupCard {
@@ -106,9 +112,11 @@ struct MeScreen: View {
                     .padding(.top, 14)
                     .padding(.bottom, 30)
             }
-            .padding(.top, 4)
         }
-        .background(c.bg)
+        .background(c.bg.ignoresSafeArea())
+        .coordinateSpace(name: "immersiveScroll")
+        .ignoresSafeArea(edges: .top)
+        .immersiveStatusBar(ui)
         .task { await hub.load() }
         .confirmationDialog("外观", isPresented: $showTheme, titleVisibility: .visible) {
             ForEach(ThemeMode.allCases) { mode in
@@ -124,9 +132,12 @@ struct MeScreen: View {
                 ReaderPrefsSheet()
                     .environmentObject(store)
                     .environment(\.appColors, c)
+                    // sheet 从沉浸页弹出：这里期间状态栏交还给普通样式，关掉自动还原
+                    .immersiveStatusBar(ui, light: false)
             case .about:
                 AboutSheet()
                     .environment(\.appColors, c)
+                    .immersiveStatusBar(ui, light: false)
             }
         }
     }

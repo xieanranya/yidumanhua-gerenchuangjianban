@@ -48,13 +48,13 @@ struct AppBottomBar: View {
                         VStack(spacing: 3) {
                             GlyphView(
                                 glyph: t.glyph,
-                                tint: on ? c.fg : c.fg3,
+                                tint: on ? c.accent : c.fg3,
                                 size: 21,
                                 strokeWidth: on ? 1.9 : 1.5
                             )
                             Text(t.label)
-                                .font(.system(size: 9.5))
-                                .foregroundColor(on ? c.fg : c.fg3)
+                                .font(.system(size: 9.5, weight: on ? .semibold : .regular))
+                                .foregroundColor(on ? c.accent : c.fg3)
                         }
                         .frame(maxWidth: .infinity)
                         .frame(height: 48)
@@ -65,7 +65,13 @@ struct AppBottomBar: View {
             }
             .padding(.top, 4)
         }
-        .background(c.bg)
+        // v3：毛玻璃底栏，背景延伸到 home indicator 区，不然下面会断一截实色
+        .background(
+            Rectangle()
+                .fill(.ultraThinMaterial)
+                .overlay(c.bg.opacity(c.dark ? 0.62 : 0.55))
+                .ignoresSafeArea(edges: .bottom)
+        )
     }
 }
 
@@ -93,6 +99,8 @@ struct AppRootView: View {
             .environment(\.appColors, colors)
             .tint(colors.accent)
             .background(colors.bg.ignoresSafeArea())
+            // 全局唯一的状态栏控制器：沉浸头图页可见时白字压图
+            .background(StatusBarLightController(light: ui.statusBarLight))
             .preferredColorScheme(preferred)
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 AppBottomBar(selected: tab) { picked in

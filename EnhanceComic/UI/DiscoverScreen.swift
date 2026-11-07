@@ -1,13 +1,11 @@
 import SwiftUI
 
-/// 发现：搜索 + 选源 + 全源聚合的三列网格。
-///
-/// 「全部」模式下会把不同源里**标题完全一致**的作品合并成一张卡，卡角标显示有几个源；
-/// 点进去可以切源。各源没有互通的 ID，所以只认归一化后一模一样的标题，
-/// 宁可少合也不把两本不同的书串成一本。
+/// 发现（v3 沉浸式）：头图紫渐变铺到状态栏后；源列表升级为毛玻璃悬浮卡；
+/// 点源进单源页（同样沉浸头图 + 左上返回圆钮）。
 struct DiscoverScreen: View {
 
     @EnvironmentObject private var store: LibraryStore
+    @EnvironmentObject private var ui: UiStore
     @Environment(\.appColors) private var c
     @ObservedObject private var hub = SourceHub.shared
 
@@ -23,7 +21,7 @@ struct DiscoverScreen: View {
     @State private var reloadTick = 0
     // 点「12 本 ›」打开的分区全部列表
     @State private var openSection: ExploreSection?
-    // 方案 B：搜索框默认收起（右上圆钮展开）；聚合完整列表页开关
+    // 搜索框默认收起（右上圆钮展开）；聚合完整列表页开关
     @State private var showSearch = false
     @State private var showAggAll = false
 
@@ -40,109 +38,229 @@ struct DiscoverScreen: View {
                 comics: sec.comics,
                 onBack: { openSection = nil }
             )
+        } else if showAggAll {
+            aggAllView
+        } else if !picked.isEmpty {
+            sourcePage
         } else {
-            discoverContent
+            discoverRoot
         }
     }
 
-    private var discoverContent: some View {
-        Group {
-            if showAggAll {
-                VStack(spacing: 0) {
-                    navbarBack("全部源聚合") { showAggAll = false }
-                    ScrollView {
-                        if busy { LoadingBox(height: 220).padding(.top, 30) }
-                        else if works.isEmpty { EmptyHint(title: "没有取到内容", message: error ?? "回头再试一次。", glyph: .discover) }
-                        else { aggregateGrid }
-                    }
-                    .background(c.bg)
+    // ══════════════════════ 根页（沉浸头图 + 源卡） ══════════════════════
+
+    private var discoverRoot: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                ImmersiveHeader(
+                    title: "发现",
+                    subtitle: "按源浏览 · \(hub.enabledRows.count) 个源可用"
+                ) {
+                    ImmersivePoster(colors: PosterPalette.violet)
                 }
-            } else if !picked.isEmpty {
-                VStack(spacing: 0) {
-                    navbarBack(pickedName) { picked = "" }
-                    ScrollView {
-                        if busy { LoadingBox(height: 220).padding(.top, 30) }
-                        else if let error {
-                            VStack(spacing: 10) {
-                                EmptyHint(title: "没有找到内容", message: error, glyph: .search)
-                                MiniButton(text: "重新加载", accent: true) { reloadTick += 1 }
-                                    .padding(.bottom, 30)
-                            }
-                        } else { singleSourceGrid }
-                    }
-                    .background(c.bg)
-                }
-            } else {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 0) {
-                        BigTitle(text: "发现", inset: false) {
-                            AnyView(CircleToolButton(glyph: "⌕", onTap: { showSearch.toggle() }))
-                        }
+
+                if showSearch {
+                    searchBar
                         .padding(.horizontal, 18)
+                        .padding(.top, -34)
+                        .padding(.bottom, 4)
+                }
 
-                        if showSearch {
-                            searchBar
-                                .padding(.horizontal, 18)
-                                .padding(.bottom, 6)
-                        }
+                // 毛玻璃源悬浮卡
+                VStack(spacing: 9) {
+                    ForEach(Array(hub.enabledRows.enumerated()), id: \.element.key) { idx, row in
+                        sourceCard(row, idx)
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, showSearch ? 10 : -34)
 
-                        SectionHeader(title: "按源浏览", inset: false)
+                SectionHeader(
+                    title: "全部源聚合",
+                    more: works.isEmpty ? nil : "查看全部 ›",
+                    onMore: works.isEmpty ? nil : { showAggAll = true },
+                    inset: false
+                )
+                .padding(.horizontal, 18)
+
+                if busy {
+                    LoadingBox(height: 120)
+                } else if works.isEmpty {
+                    if error == nil {
+                        Text("源还没有给出内容。")
+                            .font(.system(size: 11.5))
+                            .foregroundColor(c.fg3)
                             .padding(.horizontal, 18)
-                        sourceList
-
-                        SectionHeader(
-                            title: "全部源聚合",
-                            more: works.isEmpty ? nil : "查看全部 ›",
-                            onMore: works.isEmpty ? nil : { showAggAll = true },
-                            inset: false
-                        )
-                        .padding(.horizontal, 18)
-
-                        if busy {
-                            LoadingBox(height: 120)
-                        } else if works.isEmpty {
-                            if error == nil {
-                                Text("源还没有给出内容。")
-                                    .font(.system(size: 11.5))
-                                    .foregroundColor(c.fg3)
-                                    .padding(.horizontal, 18)
-                                    .padding(.bottom, 20)
-                            } else {
-                                Text(error!)
-                                    .font(.system(size: 10.5))
-                                    .foregroundColor(c.fg3)
-                                    .lineLimit(2)
-                                    .padding(.horizontal, 18)
-                                    .padding(.bottom, 20)
-                            }
-                        } else {
-                            LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
-                                ForEach(works.prefix(6)) { work in
-                                    NavigationLink {
-                                        DetailView(work: work)
-                                    } label: {
-                                        ComicCell(
-                                            title: work.title,
-                                            cover: work.cover,
-                                            sub: work.sourceCount > 1 ? work.sourceNames : work.primary.sourceName,
-                                            badge: work.badge,
-                                            seed: work.norm.hashValue
-                                        )
-                                    }
-                                    .buttonStyle(.plain)
-                                }
-                            }
+                            .padding(.bottom, 20)
+                    } else {
+                        Text(error!)
+                            .font(.system(size: 10.5))
+                            .foregroundColor(c.fg3)
+                            .lineLimit(2)
                             .padding(.horizontal, 18)
-                            .padding(.bottom, 26)
+                            .padding(.bottom, 20)
+                    }
+                } else {
+                    LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
+                        ForEach(works.prefix(6)) { work in
+                            NavigationLink {
+                                DetailView(work: work)
+                            } label: {
+                                ComicCell(
+                                    title: work.title,
+                                    cover: work.cover,
+                                    sub: work.sourceCount > 1 ? work.sourceNames : work.primary.sourceName,
+                                    badge: work.badge,
+                                    seed: work.norm.hashValue
+                                )
+                            }
+                            .buttonStyle(.plain)
                         }
                     }
-                    .padding(.top, 4)
+                    .padding(.horizontal, 18)
+                    .padding(.bottom, 26)
                 }
-                .background(c.bg)
-                .task { await load() }
             }
         }
-        .background(c.bg)
+        .background(c.bg.ignoresSafeArea())
+        .coordinateSpace(name: "immersiveScroll")
+        .ignoresSafeArea(edges: .top)
+        .overlay(alignment: .topTrailing) {
+            GlassCircleButton(glyph: .search) {
+                withAnimation(.easeOut(duration: 0.2)) { showSearch.toggle() }
+            }
+            .padding(.trailing, 16)
+            .padding(.top, safeTop() + 8)
+        }
+        .immersiveStatusBar(ui)
+        .task(id: "\(picked)|\(query)|\(reloadTick)") { await load() }
+    }
+
+    /// 毛玻璃源悬浮卡（图标渐变 + 名称 + 登录状态 + 绿点）
+    private func sourceCard(_ row: SourceRow, _ idx: Int) -> some View {
+        Button {
+            picked = row.key
+            reloadTick += 1
+        } label: {
+            HStack(spacing: 12) {
+                Text(String(row.name.prefix(1)))
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundColor(.white)
+                    .frame(width: 40, height: 40)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(
+                                LinearGradient(
+                                    colors: PosterPalette.bySeed(idx),
+                                    startPoint: .topLeading, endPoint: .bottomTrailing
+                                )
+                            )
+                    )
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(row.name)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(c.fg)
+                    Text(row.logged ? "已登录"
+                         : (row.needLogin ? "需要登录后浏览"
+                            : (row.canLogin ? "支持账号登录" : "公开内容")))
+                        .font(.system(size: 10))
+                        .foregroundColor(c.fg3)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+                if row.logged {
+                    Circle().fill(c.ok).frame(width: 6, height: 6)
+                }
+                GlyphView(glyph: .right, tint: c.fg3, size: 13, strokeWidth: 1.6)
+            }
+            .padding(.horizontal, 13)
+            .padding(.vertical, 11)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(c.card.opacity(0.55))
+            )
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(c.border.opacity(0.8), lineWidth: 0.8)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    // ══════════════════════ 单源页（沉浸头图 + 返回圆钮） ══════════════════════
+
+    private var sourcePage: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                ImmersiveHeader(
+                    title: pickedName,
+                    subtitle: pickedSub,
+                    height: 250
+                ) {
+                    ImmersivePoster(colors: PosterPalette.bySeed(pickedSeed))
+                }
+
+                Group {
+                    if busy {
+                        LoadingBox(height: 200)
+                            .padding(.top, -20)
+                    } else if let error {
+                        VStack(spacing: 10) {
+                            EmptyHint(title: "没有找到内容", message: error, glyph: .search)
+                            MiniButton(text: "重新加载", accent: true) { reloadTick += 1 }
+                                .padding(.bottom, 30)
+                        }
+                        .padding(.top, -16)
+                    } else {
+                        singleSourceGrid
+                            .padding(.top, -18)
+                    }
+                }
+            }
+        }
+        .background(c.bg.ignoresSafeArea())
+        .coordinateSpace(name: "immersiveScroll")
+        .ignoresSafeArea(edges: .top)
+        .overlay(alignment: .topLeading) {
+            GlassCircleButton(glyph: .back) { picked = "" }
+                .padding(.leading, 16)
+                .padding(.top, safeTop() + 8)
+        }
+        .immersiveStatusBar(ui)
+        .task(id: "s|\(picked)|\(query)|\(reloadTick)") { await load() }
+    }
+
+    private var pickedName: String {
+        hub.enabledRows.first { $0.key == picked }?.name ?? picked
+    }
+
+    private var pickedSub: String {
+        guard let row = hub.enabledRows.first(where: { $0.key == picked }) else { return "源浏览" }
+        if row.logged { return "已登录 · 源首页" }
+        if row.needLogin { return "不登录看不了这个源" }
+        return row.canLogin ? "支持账号登录" : "公开内容"
+    }
+
+    private var pickedSeed: Int {
+        guard let idx = hub.enabledRows.firstIndex(where: { $0.key == picked }) else { return 0 }
+        return idx
+    }
+
+    // ══════════════════════ 聚合完整列表（普通二级页） ══════════════════════
+
+    private var aggAllView: some View {
+        VStack(spacing: 0) {
+            navbarBack("全部源聚合") { showAggAll = false }
+            ScrollView {
+                if busy { LoadingBox(height: 220).padding(.top, 30) }
+                else if works.isEmpty { EmptyHint(title: "没有取到内容", message: error ?? "回头再试一次。", glyph: .discover) }
+                else { aggregateGrid }
+            }
+            .background(c.bg)
+        }
+        .immersiveStatusBar(ui, light: false)
     }
 
     /// 源浏览页的返回导航条（「‹ 发现」）
@@ -161,57 +279,6 @@ struct DiscoverScreen: View {
         .padding(.horizontal, 18)
         .padding(.top, 10)
         .padding(.bottom, 6)
-    }
-
-    private var pickedName: String {
-        hub.enabledRows.first { $0.key == picked }?.name ?? picked
-    }
-
-    /// 方案 B：源列表（圆角渐变图标 + 名称 + ›）
-    private var sourceList: some View {
-        VStack(spacing: 0) {
-            ForEach(Array(hub.enabledRows.enumerated()), id: \.element.key) { idx, row in
-                Button {
-                    picked = row.key
-                    reloadTick += 1
-                } label: {
-                    HStack(spacing: 11) {
-                        Text(String(row.name.prefix(2)))
-                            .font(.system(size: 12.5, weight: .bold))
-                            .foregroundColor(.white)
-                            .frame(width: 38, height: 38)
-                            .background(
-                                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                    .fill(sourceGradient(idx))
-                            )
-                        Text(row.name)
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundColor(c.fg)
-                        Spacer(minLength: 0)
-                        Text("›")
-                            .font(.system(size: 15))
-                            .foregroundColor(c.fg3)
-                    }
-                    .padding(.vertical, 10)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(.horizontal, 18)
-    }
-
-    private func sourceGradient(_ i: Int) -> LinearGradient {
-        let pairs: [(Color, Color)] = [
-            (Color(red: 0.23, green: 0.18, blue: 0.39), Color(red: 0.78, green: 0.43, blue: 0.84)),
-            (Color(red: 0.36, green: 0.12, blue: 0.21), Color(red: 0.75, green: 0.20, blue: 0.43)),
-            (Color(red: 0.06, green: 0.20, blue: 0.38), Color(red: 0.23, green: 0.48, blue: 0.84)),
-            (Color(red: 0.42, green: 0.20, blue: 0.07), Color(red: 0.88, green: 0.50, blue: 0.18)),
-            (Color(red: 0.17, green: 0.24, blue: 0.15), Color(red: 0.12, green: 0.62, blue: 0.43)),
-            (Color(red: 0.13, green: 0.10, blue: 0.29), Color(red: 0.42, green: 0.29, blue: 0.72)),
-        ]
-        let p = pairs[i % pairs.count]
-        return LinearGradient(colors: [p.0, p.1], startPoint: .topLeading, endPoint: .bottomTrailing)
     }
 
     private var searchBar: some View {
@@ -243,51 +310,6 @@ struct DiscoverScreen: View {
                 .stroke(c.border, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
-    }
-
-    private var sourceChips: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 7) {
-                Chip(text: "全部", selected: picked.isEmpty) {
-                    picked = ""
-                }
-                ForEach(hub.enabledRows) { row in
-                    Chip(
-                        text: row.name,
-                        selected: picked == row.key
-                    ) {
-                        picked = picked == row.key ? "" : row.key
-                    }
-                }
-            }
-            .padding(.horizontal, 18)
-            .padding(.vertical, 10)
-        }
-    }
-
-    @ViewBuilder
-    private var content: some View {
-        ScrollView {
-            if busy {
-                LoadingBox(height: 220)
-            } else if let error {
-                VStack(spacing: 10) {
-                    EmptyHint(
-                        title: query.isEmpty ? "没有取到内容" : "没有找到「\(query)」",
-                        message: error,
-                        glyph: .search
-                    )
-                    MiniButton(text: "重新加载", accent: true) {
-                        reloadTick += 1
-                    }
-                    .padding(.bottom, 30)
-                }
-            } else if picked.isEmpty {
-                aggregateGrid
-            } else {
-                singleSourceGrid
-            }
-        }
     }
 
     private var aggregateGrid: some View {

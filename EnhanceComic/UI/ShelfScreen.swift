@@ -1,10 +1,12 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// 书架：本地书库。原来 LibraryView 的那套导入/删除/进度全部保留，只换了外壳。
+/// 书架（v3 沉浸式）：头图是在读第一本的封面大图，导入按钮和网格悬浮在头图边缘。
+/// 原来库的那套导入/删除/进度全部保留，只换了外壳。
 struct ShelfScreen: View {
 
     @EnvironmentObject private var store: LibraryStore
+    @EnvironmentObject private var ui: UiStore
     @Environment(\.appColors) private var c
     @Environment(\.scenePhase) private var scenePhase
 
@@ -35,11 +37,20 @@ struct ShelfScreen: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                BigTitle(text: "书架", sub: subline, inset: false)
-                    .padding(.horizontal, 18)
+                // 沉浸头图：在读第一本的封面铺到状态栏后面
+                ImmersiveHeader(title: "书架", subtitle: subline) {
+                    ZStack {
+                        ImmersivePoster(colors: PosterPalette.iris)
+                        if let first = readingList.first,
+                           let cover = CoverCache.image(at: store.coverURL(for: first)) {
+                            Image(uiImage: cover).resizable().scaledToFill()
+                        }
+                    }
+                }
 
                 actions
                     .padding(.horizontal, 18)
+                    .padding(.top, -30)
 
                 if importing {
                     importingCard
@@ -52,7 +63,7 @@ struct ShelfScreen: View {
                         emptyState
                     }
                 } else {
-                    // 在读 / 未读 两组（原型定稿），导入入口在标题行的按钮里
+                    // 在读 / 未读 两组（原型定稿）
                     if !readingList.isEmpty {
                         SectionHeader(title: "在读 · \(readingList.count) 本", inset: false)
                             .padding(.horizontal, 18)
@@ -76,9 +87,11 @@ struct ShelfScreen: View {
                     }
                 }
             }
-            .padding(.top, 4)
         }
-        .background(c.bg)
+        .background(c.bg.ignoresSafeArea())
+        .coordinateSpace(name: "immersiveScroll")
+        .ignoresSafeArea(edges: .top)
+        .immersiveStatusBar(ui)
         .task {
             await store.backfillCovers()
             // 文件共享目录里躺着压缩包就顺手收进书库。这条路径不经过选择器，
@@ -145,6 +158,7 @@ struct ShelfScreen: View {
     }
 
     private var subline: String {
+        // 版本号是用户确认装没装上的唯一方式，必须一直显示
         let head = store.books.isEmpty ? "本地书库还是空的" : "本地书库 · \(store.books.count) 本"
         return head + " · " + appVersionText()
     }

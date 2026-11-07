@@ -30,6 +30,13 @@ final class UiStore: ObservableObject {
         didSet { defaults.set(lastTab.rawValue, forKey: Keys.tab) }
     }
 
+    /// 沉浸头图页可见时 = true：状态栏白字压在头图上。
+    /// 全局只有一个状态栏值：页面用 immersiveStatusBar() 在 onAppear 声明、
+    /// onDisappear 交还，AppRootView 背景里的 StatusBarLightController 读它。
+    /// （不能给页面挂 preferredColorScheme(.dark) —— 那会顺着 window 把整套
+    /// 主题判定一起翻成夜间，白天模式直接失效。）
+    @Published var statusBarLight = false
+
     @Published private(set) var history: [OnlineRecord] {
         didSet { saveHistory() }
     }

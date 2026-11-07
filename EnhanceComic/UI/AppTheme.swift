@@ -172,9 +172,11 @@ extension View {
 ///   `.coordinateSpace(name: "immersiveScroll")` + `.ignoresSafeArea(edges: .top)`
 struct ImmersiveHeader<Background: View>: View {
 
-    var height: CGFloat = 286
     let title: String
     var subtitle: String? = nil
+    /// 头图高度。放在 subtitle 后面是为了让 memberwise init 的参数顺序是
+    /// title / subtitle / height —— 调用处绝大多数不传 height。
+    var height: CGFloat = 286
     @ViewBuilder let background: () -> Background
 
     @Environment(\.appColors) private var c
@@ -219,7 +221,7 @@ struct ImmersiveHeader<Background: View>: View {
                 }
                 .padding(.horizontal, 20)
                 .padding(.bottom, 50)
-                .opacity(1 - min(1, sink / 150))
+                .opacity(1 - min(1 as CGFloat, sink / 150))
             }
             .frame(width: geo.size.width, height: height, alignment: .bottom)
         }

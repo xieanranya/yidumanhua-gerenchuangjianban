@@ -369,11 +369,21 @@ final class SourceHub: ObservableObject {
     // 宿主侧声明每源可选线路，写入源 setting（s_<key>_<settingKey>），
     // 源自己的 loadSetting 就能读到。direct = 该线路国内可直连（不用 VPN），
     // 直连的在列表里排前面并标绿——「有直连优先直连」。
+    // 清单来源：禁漫的 API/图片源全部取自官方 App 的「线路与图源」设置页，
+    // 每条都做过直连探测；没有任何一条是凭空写的。面板里还能现场测速复核。
+
+    struct Line {
+        let label: String
+        let value: String
+        let direct: Bool
+        /// 非 nil = 选择面板里会对这个域名现场测速（显示延迟/不通）
+        var probeHost: String? = nil
+    }
 
     struct LineGroup: Identifiable {
         let settingKey: String
         let title: String
-        let lines: [(label: String, value: String, direct: Bool)]
+        let lines: [Line]
         var id: String { settingKey }
     }
 
@@ -386,24 +396,24 @@ final class SourceHub: ObservableObject {
                 LineGroup(
                     settingKey: "apiDomain", title: "API 线路",
                     lines: [
-                        ("www.cdngwc.club", "1", true),
-                        ("www.cdngwc.net", "2", true),
-                        ("www.cdnutc.cc", "3", true),
-                        ("www.cdnbtd.cc", "4", true),
-                        ("www.cdnhjk.net", "5", true),
-                        ("www.cdngwc.cc", "6", true),
-                        ("www.cdnutc.me", "7", true),
+                        Line("www.cdngwc.club", "1", true, probeHost: "www.cdngwc.club"),
+                        Line("www.cdngwc.net", "2", true, probeHost: "www.cdngwc.net"),
+                        Line("www.cdnutc.cc", "3", true, probeHost: "www.cdnutc.cc"),
+                        Line("www.cdnbtd.cc", "4", true, probeHost: "www.cdnbtd.cc"),
+                        Line("www.cdnhjk.net", "5", true, probeHost: "www.cdnhjk.net"),
+                        Line("www.cdngwc.cc", "6", true, probeHost: "www.cdngwc.cc"),
+                        Line("www.cdnutc.me", "7", true, probeHost: "www.cdnutc.me"),
                     ]
                 ),
                 LineGroup(
                     settingKey: "imgDomain", title: "图片源",
                     lines: [
-                        ("跟随服务配置", "follow", true),
-                        ("cdn-msp3.jmapiproxy1.cc", "cdn-msp3.jmapiproxy1.cc", true),
-                        ("cdn-msp.jmapiproxy1.cc", "cdn-msp.jmapiproxy1.cc", true),
-                        ("cdn-msp.jmapiproxy2.cc", "cdn-msp.jmapiproxy2.cc", true),
-                        ("cdn-msp2.jmapiproxy2.cc", "cdn-msp2.jmapiproxy2.cc", true),
-                        ("cdn-msp3.jmapiproxy2.cc", "cdn-msp3.jmapiproxy2.cc", true),
+                        Line("跟随服务配置", "follow", true),
+                        Line("cdn-msp3.jmapiproxy1.cc", "cdn-msp3.jmapiproxy1.cc", true, probeHost: "cdn-msp3.jmapiproxy1.cc"),
+                        Line("cdn-msp.jmapiproxy1.cc", "cdn-msp.jmapiproxy1.cc", true, probeHost: "cdn-msp.jmapiproxy1.cc"),
+                        Line("cdn-msp.jmapiproxy2.cc", "cdn-msp.jmapiproxy2.cc", true, probeHost: "cdn-msp.jmapiproxy2.cc"),
+                        Line("cdn-msp2.jmapiproxy2.cc", "cdn-msp2.jmapiproxy2.cc", true, probeHost: "cdn-msp2.jmapiproxy2.cc"),
+                        Line("cdn-msp3.jmapiproxy2.cc", "cdn-msp3.jmapiproxy2.cc", true, probeHost: "cdn-msp3.jmapiproxy2.cc"),
                     ]
                 ),
             ]
@@ -412,8 +422,8 @@ final class SourceHub: ObservableObject {
                 LineGroup(
                     settingKey: "region", title: "CDN 线路",
                     lines: [
-                        ("大陆（可直连）", "1", true),
-                        ("海外（需代理）", "0", false),
+                        Line("大陆（可直连）", "1", true),
+                        Line("海外（需代理）", "0", false),
                     ]
                 ),
                 // 「节点」不给选了：源里写死的域名都会被域名别名层改写到
@@ -446,6 +456,48 @@ final class SourceHub: ObservableObject {
             return "默认 · 建议选「\(def?.label ?? "-")」"
         }
         return group.lines.first { $0.value == v }?.label ?? v
+    }
+
+    // ---- 线路现场测速 ----
+    //
+    // 判定标准：「连通」= 服务器返回了任何 HTTP 状态码（含 403——禁漫的 CDN
+    // 会拦不带签名的首页请求，但带签名的 API 是通的，node 全源探测验证过）。
+    // 连不上（DNS 失败 / 超时）才会判 ✗。
+
+    func probeLines(_ key: String, _ group: LineGroup) async -> [String: String] {
+        await withTaskGroup(of: (String, String).self) { grp in
+            for line in group.lines {
+                guard let host = line.probeHost else { continue }
+                grp.addTask {
+                    let start = Date()
+                    let ok = await Self.probeHost(host)
+                    let ms = Int(Date().timeIntervalSince(start) * 1000)
+                    return (line.label, ok ? "✓ \(ms)ms" : "✗ 不通")
+                }
+            }
+            var out: [String: String] = [:]
+            for await (k, v) in grp { out[k] = v }
+            return out
+        }
+    }
+
+    static func probeHost(_ host: String) async -> Bool {
+        guard let url = URL(string: "https://\(host)/") else { return false }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 8
+        req.setValue(
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15",
+            forHTTPHeaderField: "User-Agent"
+        )
+        do {
+            let (_, resp) = try await URLSession.shared.data(for: req)
+            if let http = resp as? HTTPURLResponse {
+                return (100..<600).contains(http.statusCode)
+            }
+            return false
+        } catch {
+            return false
+        }
     }
 }
 

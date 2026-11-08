@@ -227,6 +227,9 @@ struct SourceManagerView: View {
     @State private var linePick: LinePickTarget?
     @State private var checkinBusy: Set<String> = []
     @State private var checkinMsg: [String: String] = [:]
+    // 线路现场测速
+    @State private var probeResults: [String: String] = [:]
+    @State private var probeRunning = false
 
     struct LinePickTarget: Identifiable {
         let rowKey: String
@@ -302,15 +305,21 @@ struct SourceManagerView: View {
             titleVisibility: .visible
         ) {
             if let target = linePick {
-                // 直连的排前面、带绿标
+                // 直连的排前面；每条线路旁显示现场测速结果（真实可达性一目了然）
                 ForEach(Array(target.group.lines.sorted { $0.direct && !$1.direct }.enumerated()), id: \.offset) { _, line in
                     Button {
                         SourceHub.setLineValue(target.rowKey, target.group.settingKey, line.value)
                     } label: {
-                        HStack {
+                        HStack(spacing: 6) {
                             Text(line.label)
                             if line.direct {
                                 Text("· 可直连").foregroundColor(c.ok)
+                            }
+                            if probeRunning, line.probeHost != nil {
+                                Text("测速中…").foregroundColor(c.fg3)
+                            } else if let r = probeResults[line.label] {
+                                Text(r)
+                                    .foregroundColor(r.hasPrefix("✓") ? c.ok : c.bad)
                             }
                         }
                     }
@@ -321,7 +330,21 @@ struct SourceManagerView: View {
                 Button("取消", role: .cancel) {}
             }
         } message: {
-            Text("选中的线路会优先使用；连不上时仍会自动换备用线路。")
+            Text("线路清单全部来自官方 App，打开时会自动逐条实测：✓ = 服务器可达（含耗时）。")
+        }
+    }
+
+    /// 打开线路选择时自动对每条线路发一次真实请求（最多 8 秒/条，并发跑）
+    private func probeStart(_ target: LinePickTarget) {
+        probeResults = [:]
+        guard target.group.lines.contains(where: { $0.probeHost != nil }) else { return }
+        probeRunning = true
+        Task {
+            let r = await SourceHub.shared.probeLines(target.rowKey, target.group)
+            await MainActor.run {
+                probeResults = r
+                probeRunning = false
+            }
         }
     }
 
@@ -427,7 +450,9 @@ struct SourceManagerView: View {
             ForEach(Array(groups.enumerated()), id: \.element.settingKey) { gi, group in
                 if gi > 0 { panelDivider }
                 Button {
-                    linePick = LinePickTarget(rowKey: row.key, group: group)
+                    let target = LinePickTarget(rowKey: row.key, group: group)
+                    linePick = target
+                    probeStart(target)
                 } label: {
                     panelRow(
                         glyph: .layout,

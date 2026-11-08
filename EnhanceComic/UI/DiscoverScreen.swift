@@ -48,11 +48,15 @@ struct DiscoverScreen: View {
     private var discoverRoot: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                BrandHeader(title: "发现", subtitle: subline) {
-                    GlassCircleButton(glyph: .search) {
-                        withAnimation(.easeOut(duration: 0.2)) { showSearch.toggle() }
-                    }
-                }
+                BrandHeader(
+                    title: "发现",
+                    subtitle: subline,
+                    trailing: AnyView(
+                        GlassCircleButton(glyph: .search) {
+                            withAnimation(.easeOut(duration: 0.2)) { showSearch.toggle() }
+                        }
+                    )
+                )
 
                 if showSearch {
                     searchBar

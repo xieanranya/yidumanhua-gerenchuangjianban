@@ -47,9 +47,11 @@ struct HomeScreen: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                BrandHeader(title: "画质漫画", subtitle: subline) {
-                    GlassCircleButton(glyph: .search) { onSearch() }
-                }
+                BrandHeader(
+                    title: "画质漫画",
+                    subtitle: subline,
+                    trailing: AnyView(GlassCircleButton(glyph: .search) { onSearch() })
+                )
 
                 // ── 今日热门 ──
                 SectionHeader(

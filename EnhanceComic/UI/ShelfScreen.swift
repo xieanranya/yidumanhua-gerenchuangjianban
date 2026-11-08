@@ -38,9 +38,11 @@ struct ShelfScreen: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 // 品牌头（v4）：紧凑光晕，头图里永远不出现封面
-                BrandHeader(title: "书架", subtitle: subline) {
-                    GlassCircleButton(glyph: .search) { picker = .files }
-                }
+                BrandHeader(
+                    title: "书架",
+                    subtitle: subline,
+                    trailing: AnyView(GlassCircleButton(glyph: .search) { picker = .files })
+                )
 
                 actions
                     .padding(.horizontal, 18)

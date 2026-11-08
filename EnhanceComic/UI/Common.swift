@@ -942,10 +942,10 @@ struct LoadingBox: View {
 /// v4 品牌头（全部页面的顶部统一结构）：
 /// 主题色底 + 粉/紫两团光晕，左下页面大标题 + 副标，右上工具钮槽。
 /// 高度固定 118pt，头图里永远不出现封面图——封面只活在 Hero 卡和网格里。
-struct BrandHeader<Trailing: View>: View {
+struct BrandHeader: View {
     let title: String
     var subtitle: String? = nil
-    @ViewBuilder var trailing: () -> Trailing
+    var trailing: AnyView? = nil
 
     @Environment(\.appColors) private var c
 
@@ -983,9 +983,11 @@ struct BrandHeader<Trailing: View>: View {
         }
         .frame(height: 118)
         .overlay(alignment: .topTrailing) {
-            trailing()
-                .padding(.top, safeTop() + 8)
-                .padding(.trailing, 14)
+            if let trailing {
+                trailing
+                    .padding(.top, safeTop() + 8)
+                    .padding(.trailing, 14)
+            }
         }
     }
 }

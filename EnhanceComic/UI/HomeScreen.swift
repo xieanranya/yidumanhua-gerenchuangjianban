@@ -38,14 +38,10 @@ struct HomeScreen: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                // 沉浸头图：今日最热第一本的封面直接铺到状态栏后面
+                // 沉浸头图：纯渐变（对齐网页版交互稿）——封面自带大字会跟标题打架，
+                // 而且头图用封面会和下面的 Hero 卡重复显示同一本
                 ImmersiveHeader(title: "画质漫画", subtitle: subline) {
-                    ZStack {
-                        ImmersivePoster(colors: PosterPalette.forest)
-                        if let top = hot.first, !top.cover.isEmpty {
-                            RemoteImage(url: top.cover, contentMode: .fill, maxPixel: 900)
-                        }
-                    }
+                    ImmersivePoster(colors: c.dark ? PosterPalette.forest : PosterPalette.iris)
                 }
 
                 if hotBusy {

@@ -48,14 +48,16 @@ struct DiscoverScreen: View {
     private var discoverRoot: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                ImmersiveHeader(title: "发现", subtitle: subline) {
-                    ImmersivePoster(colors: PosterPalette.violet)
+                BrandHeader(title: "发现", subtitle: subline) {
+                    GlassCircleButton(glyph: .search) {
+                        withAnimation(.easeOut(duration: 0.2)) { showSearch.toggle() }
+                    }
                 }
 
                 if showSearch {
                     searchBar
                         .padding(.horizontal, 18)
-                        .padding(.top, -34)
+                        .padding(.top, 8)
                         .padding(.bottom, 4)
                 }
 
@@ -83,7 +85,7 @@ struct DiscoverScreen: View {
                     .padding(.vertical, 2)
                 }
                 .frame(height: 38)
-                .padding(.top, showSearch ? 10 : -34)
+                .padding(.top, showSearch ? 10 : 6)
                 .padding(.bottom, 6)
 
                 if busy {
@@ -107,16 +109,6 @@ struct DiscoverScreen: View {
             .padding(.bottom, 26)
         }
         .background(c.bg.ignoresSafeArea())
-        .coordinateSpace(name: "immersiveScroll")
-        .ignoresSafeArea(edges: .top)
-        .overlay(alignment: .topTrailing) {
-            GlassCircleButton(glyph: .search) {
-                withAnimation(.easeOut(duration: 0.2)) { showSearch.toggle() }
-            }
-            .padding(.trailing, 16)
-            .padding(.top, safeTop() + 8)
-        }
-        .immersiveStatusBar(ui)
         .task(id: "\(picked)|\(query)|\(reloadTick)") { await load() }
     }
 

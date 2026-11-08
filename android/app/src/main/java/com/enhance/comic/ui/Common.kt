@@ -29,6 +29,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -686,5 +689,109 @@ fun ImmersiveFullscreen(enabled: Boolean = true) {
                 view.systemUiVisibility = old
             }
         }
+    }
+}
+
+// ======================================================================= v4 品牌头
+
+/**
+ * v4 品牌头（页面顶部统一结构）：主题色底 + 粉/紫两团光晕，
+ * 左下页面大标题 + 副标，右上工具钮槽。头图里永远不出现封面图。
+ * 外层先 statusBarsPadding()，这里不再处理状态栏。
+ */
+@Composable
+fun BrandHeader(
+    title: String,
+    sub: String? = null,
+    modifier: Modifier = Modifier,
+    actions: (@Composable androidx.compose.foundation.layout.BoxScope.() -> Unit)? = null,
+) {
+    val c = LocalColors.current
+    val accentSoft = if (c.dark) 0.30f else 0.14f
+    val violetSoft = if (c.dark) 0.22f else 0.10f
+    Box(
+        modifier
+            .fillMaxWidth()
+            .height(118.dp)
+            .drawBehind {
+                drawRect(c.bg)
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        colors = listOf(c.accent.copy(alpha = accentSoft), Color.Transparent),
+                        center = Offset(size.width * 0.88f, -size.height * 0.30f),
+                        radius = size.width * 0.92f,
+                    ),
+                    radius = size.width * 0.92f,
+                    center = Offset(size.width * 0.88f, -size.height * 0.30f),
+                )
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        colors = listOf(Color(0xFF7B4BB7).copy(alpha = violetSoft), Color.Transparent),
+                        center = Offset(-size.width * 0.12f, size.height * 1.20f),
+                        radius = size.width * 0.75f,
+                    ),
+                    radius = size.width * 0.75f,
+                    center = Offset(-size.width * 0.12f, size.height * 1.20f),
+                )
+            },
+    ) {
+        Column(
+            Modifier
+                .align(Alignment.BottomStart)
+                .padding(start = 18.dp, bottom = 16.dp),
+        ) {
+            Text(
+                title,
+                color = c.fg,
+                fontSize = 24.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = (-0.6).sp,
+            )
+            if (!sub.isNullOrBlank()) {
+                Spacer(Modifier.height(4.dp))
+                Text(sub, color = c.fg3, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        }
+        actions?.invoke(this)
+    }
+}
+
+/** 排行榜网格单元：封面 + 左上排名角标（No.1 粉 / No.2 银 / No.3 铜，其余半透明黑）。 */
+@Composable
+fun RankCell(
+    index: Int,
+    cover: String,
+    title: String,
+    sub: String,
+    seed: Int,
+    onClick: () -> Unit,
+) {
+    val c = LocalColors.current
+    Box {
+        ComicCell(
+            cover = cover,
+            title = title,
+            sub = sub,
+            seed = seed,
+            onClick = onClick,
+        )
+        val badgeColor = when (index) {
+            0 -> c.accent
+            1 -> Color(0xFF6B7280)
+            2 -> Color(0xFF8A5A2E)
+            else -> Color.Black.copy(alpha = 0.55f)
+        }
+        Text(
+            "No.${index + 1}",
+            color = Color.White,
+            fontSize = 9.sp,
+            fontWeight = FontWeight.Black,
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(6.dp)
+                .clip(RoundedCornerShape(6.dp))
+                .background(badgeColor)
+                .padding(horizontal = 8.dp, vertical = 2.dp),
+        )
     }
 }

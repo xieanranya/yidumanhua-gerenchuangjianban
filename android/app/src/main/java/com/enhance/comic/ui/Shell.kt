@@ -23,6 +23,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 
 /** 四个 Tab 的定义。顺序就是底部栏顺序。 */
@@ -59,15 +60,16 @@ internal fun AppBottomBar(selected: AppTab, onSelect: (AppTab) -> Unit, modifier
                 ) {
                     GlyphView(
                         glyph = tab.glyph,
-                        tint = if (on) c.fg else c.fg3,
+                        tint = if (on) c.accent else c.fg3,
                         size = 21.dp,
                         stroke = if (on) 1.9.dp else 1.5.dp,
                     )
                     Spacer(Modifier.height(3.dp))
                     Text(
                         text = tab.label,
-                        color = if (on) c.fg else c.fg3,
+                        color = if (on) c.accent else c.fg3,
                         fontSize = 9.5.sp,
+                        fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal,
                     )
                 }
             }

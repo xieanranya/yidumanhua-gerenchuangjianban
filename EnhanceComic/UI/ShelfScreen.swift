@@ -37,18 +37,14 @@ struct ShelfScreen: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                // 沉浸头图：氛围背景 = 在读第一本封面的模糊压暗版（同首页）
-                ImmersiveHeader(title: "书架", subtitle: subline) {
-                    AmbientCover(
-                        localImage: readingList.first.flatMap { CoverCache.image(at: store.coverURL(for: $0)) },
-                        seed: readingList.first?.title.hashValue ?? 0,
-                        colors: c.dark ? PosterPalette.iris : PosterPalette.forest
-                    )
+                // 品牌头（v4）：紧凑光晕，头图里永远不出现封面
+                BrandHeader(title: "书架", subtitle: subline) {
+                    GlassCircleButton(glyph: .search) { picker = .files }
                 }
 
                 actions
                     .padding(.horizontal, 18)
-                    .padding(.top, -30)
+                    .padding(.top, 6)
 
                 if importing {
                     importingCard
@@ -87,9 +83,6 @@ struct ShelfScreen: View {
             }
         }
         .background(c.bg.ignoresSafeArea())
-        .coordinateSpace(name: "immersiveScroll")
-        .ignoresSafeArea(edges: .top)
-        .immersiveStatusBar(ui)
         .task {
             await store.backfillCovers()
             // 文件共享目录里躺着压缩包就顺手收进书库。这条路径不经过选择器，

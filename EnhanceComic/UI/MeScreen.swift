@@ -15,15 +15,9 @@ struct MeScreen: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                // 沉浸头图：粉渐变铺到状态栏后面
-                ImmersiveHeader(
-                    title: "我的",
-                    subtitle: "\(hub.rows.count) 个源 · 已登录 \(hub.rows.filter { $0.logged }.count) 个"
-                ) {
-                    ImmersivePoster(colors: PosterPalette.rose)
-                }
+                BrandHeader(title: "我的", subtitle: "\(hub.rows.count) 个源 · 已登录 \(hub.rows.filter { $0.logged }.count) 个")
 
-                // 头像卡悬浮在头图边缘
+                // 头像卡
                 HStack(spacing: 13) {
                     ZStack {
                         RoundedRectangle(cornerRadius: 14, style: .continuous)
@@ -45,7 +39,7 @@ struct MeScreen: View {
                     Text("›").font(.system(size: 16)).foregroundColor(c.fg3)
                 }
                 .padding(.horizontal, 18)
-                .padding(.top, -30)
+                .padding(.top, 8)
                 .padding(.bottom, 18)
 
                 groupCard {
@@ -114,9 +108,6 @@ struct MeScreen: View {
             }
         }
         .background(c.bg.ignoresSafeArea())
-        .coordinateSpace(name: "immersiveScroll")
-        .ignoresSafeArea(edges: .top)
-        .immersiveStatusBar(ui)
         .task { await hub.load() }
         .confirmationDialog("外观", isPresented: $showTheme, titleVisibility: .visible) {
             ForEach(ThemeMode.allCases) { mode in
@@ -132,12 +123,9 @@ struct MeScreen: View {
                 ReaderPrefsSheet()
                     .environmentObject(store)
                     .environment(\.appColors, c)
-                    // sheet 从沉浸页弹出：这里期间状态栏交还给普通样式，关掉自动还原
-                    .immersiveStatusBar(ui, light: false)
             case .about:
                 AboutSheet()
                     .environment(\.appColors, c)
-                    .immersiveStatusBar(ui, light: false)
             }
         }
     }
@@ -246,9 +234,7 @@ struct SourceManagerView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                ImmersiveHeader(title: "源管理", subtitle: subline, height: 240) {
-                    ImmersivePoster(colors: PosterPalette.azure)
-                }
+                BrandHeader(title: "源管理", subtitle: subline)
 
                 VStack(spacing: 9) {
                     ForEach(Array(hub.rows.enumerated()), id: \.element.id) { idx, row in
@@ -259,7 +245,7 @@ struct SourceManagerView: View {
                     }
                 }
                 .padding(.horizontal, 16)
-                .padding(.top, -30)
+                .padding(.top, 6)
 
                 NoteBar(
                     text: "关掉的源不参与「全部源」搜索和首页推荐，单独点进去仍然能看。"
@@ -273,14 +259,11 @@ struct SourceManagerView: View {
             }
         }
         .background(c.bg.ignoresSafeArea())
-        .coordinateSpace(name: "immersiveScroll")
-        .ignoresSafeArea(edges: .top)
         .overlay(alignment: .topLeading) {
             GlassCircleButton(glyph: .back) { dismiss() }
                 .padding(.leading, 16)
                 .padding(.top, safeTop() + 8)
         }
-        .immersiveStatusBar(ui)
         .toolbar(.hidden, for: .navigationBar)
         .task { await hub.load(force: false) }
         .navigationDestination(

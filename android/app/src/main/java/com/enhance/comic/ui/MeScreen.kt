@@ -69,7 +69,7 @@ fun MeScreen(
         modifier = Modifier.fillMaxSize().statusBarsPadding(),
         contentPadding = PaddingValues(bottom = 24.dp),
     ) {
-        item { BigTitle("我的") }
+        item { BrandHeader("我的", sub = sourceSummary(rows)) }
         item {
             Row(
                 modifier = Modifier

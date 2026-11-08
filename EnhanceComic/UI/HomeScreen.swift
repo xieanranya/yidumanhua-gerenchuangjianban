@@ -1,8 +1,8 @@
 import SwiftUI
 
-/// 首页（v3 沉浸式）：头图就是今日最热的封面大图，一直铺到状态栏后面，
-/// 白色大标题压图；Hero 卡悬浮在头图边缘；下面三条带
-/// （今日热门 / 本周上升最快 / 为你挑的）。「继续阅读」已删（与书架重复）。
+/// 首页（v4 简洁版）：品牌头 + 今日热门横排 + 各源单独排行榜。
+/// 排行榜：源 chips（默认禁漫）+ 周期 chips（今日/本周/月/总），
+/// 数据 = 该源 explore 分区里按关键字匹配的排行分区（匹配不到显示空态，不造假）。
 struct HomeScreen: View {
 
     let onSearch: () -> Void
@@ -14,9 +14,20 @@ struct HomeScreen: View {
     @Environment(\.appColors) private var c
     @ObservedObject private var hub = SourceHub.shared
 
+    // 今日热门（三个源并发拉，合并后取前 12 本横排）
     @State private var hot: [Work] = []
     @State private var hotFrom = 0
     @State private var hotBusy = true
+
+    // 排行榜
+    @State private var rankSrc = ""                 // 当前排行源（默认 jm）
+    @State private var rankTab = 0                  // 0 今日 / 1 本周 / 2 月 / 3 总
+    @State private var rankSections: [String: [ExploreSection]] = [:]
+    @State private var rankBusy = false
+    @State private var rankError: String?
+    @State private var rankTick = 0
+
+    static let rankTabs = ["今日", "本周", "月", "总"]
 
     private let columns = [
         GridItem(.flexible(minimum: 0, maximum: .infinity), spacing: 9),
@@ -24,102 +35,153 @@ struct HomeScreen: View {
         GridItem(.flexible(minimum: 0, maximum: .infinity), spacing: 9),
     ]
 
-    // 三条带各 6 本（数据不足时各段按实际数量显示，空段整段隐藏）
-    private var bandHot: Array<Work>.SubSequence { hot.prefix(6) }
-    private var bandRising: Array<Work>.SubSequence { hot.dropFirst(6).prefix(6) }
-    private var bandPicked: Array<Work>.SubSequence { hot.dropFirst(12).prefix(6) }
+    private var rankRow: SourceRow? {
+        hub.enabledRows.first { $0.key == rankSrc } ?? hub.enabledRows.first
+    }
 
     private var subline: String {
         let n = hub.enabledRows.count
-        if hotBusy { return n > 0 ? "内容来自 \(n) 个漫画源" : "正在准备源…" }
-        return n > 0 ? "\(n) 个源在用 · 已连上 \(hotFrom) 个" : "还没有可用的源"
+        return n > 0 ? "\(n) 个源在用 · 已连上 \(hotBusy ? 0 : hotFrom) 个" : "正在准备源…"
     }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                // 沉浸头图：氛围背景 = 今日最热封面的模糊压暗版（Apple Music 式），
-                // 有色彩光影但不抢标题；封面本身只在下面的 Hero 卡出现
-                ImmersiveHeader(title: "画质漫画", subtitle: subline) {
-                    AmbientCover(
-                        url: hot.first?.cover ?? "",
-                        seed: hot.first?.norm.hashValue ?? 0,
-                        colors: c.dark ? PosterPalette.forest : PosterPalette.iris
-                    )
+                BrandHeader(title: "画质漫画", subtitle: subline) {
+                    GlassCircleButton(glyph: .search) { onSearch() }
                 }
+
+                // ── 今日热门 ──
+                SectionHeader(
+                    title: "今日热门",
+                    more: hotBusy ? nil : (hotFrom > 0 ? "\(hotFrom) 个源" : nil),
+                    onMore: hotBusy ? nil : onSearch,
+                    inset: false
+                )
+                .padding(.horizontal, 18)
 
                 if hotBusy {
-                    LoadingBox(height: 170)
-                        .padding(.top, -26)
+                    LoadingBox(height: 150)
                 } else if hot.isEmpty {
-                    EmptyHint(
-                        title: "还没有推荐",
-                        message: "这些源这次都没给出内容，回头再刷一次试试。",
-                        glyph: .discover
-                    )
-                    .padding(.top, -18)
-                } else {
-                    // Hero：今日最热第一本，全宽大卡悬浮在头图边缘
-                    if let top = hot.first {
-                        NavigationLink {
-                            DetailView(work: top)
-                        } label: {
-                            HeroCard(
-                                title: top.title,
-                                cover: top.cover,
-                                sourceText: (top.sourceCount > 1 ? top.sourceNames + " · " : "") + "更新至最新话",
-                                badge: top.badge,
-                                seed: top.norm.hashValue
-                            )
-                        }
-                        .buttonStyle(.plain)
+                    Text("这些源这次都没给出内容，回头再刷一次试试。")
+                        .font(.system(size: 11.5))
+                        .foregroundColor(c.fg3)
                         .padding(.horizontal, 18)
-                        .padding(.top, -30)
-                    }
+                        .padding(.top, 8)
+                } else {
+                    band(hot.prefix(6), width: 118)
+                }
 
-                    band(bandHot.dropFirst(1), width: 118)
+                // ── 排行榜 ──
+                SectionHeader(
+                    title: "排行榜",
+                    more: rankRow != nil ? "\(rankRow!.name) · \(Self.rankTabs[rankTab])" : nil,
+                    inset: false
+                )
+                .padding(.horizontal, 18)
 
-                    if !bandRising.isEmpty {
-                        SectionHeader(title: "本周上升最快", more: "更多 ›", onMore: onSearch, inset: false)
-                            .padding(.horizontal, 18)
-                        band(bandRising, width: 96)
-                    }
-
-                    if !bandPicked.isEmpty {
-                        SectionHeader(title: "为你挑的", more: "换一批", onMore: onSearch, inset: false)
-                            .padding(.horizontal, 18)
-                        LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
-                            ForEach(Array(bandPicked)) { work in
-                                NavigationLink {
-                                    DetailView(work: work)
-                                } label: {
-                                    ComicCell(
-                                        title: work.title,
-                                        cover: work.cover,
-                                        sub: work.sourceCount > 1 ? work.sourceNames : nil,
-                                        badge: work.badge,
-                                        seed: work.norm.hashValue
-                                    )
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 7) {
+                        ForEach(hub.enabledRows) { row in
+                            Chip(text: row.name, selected: rankSrc == row.key) {
+                                if rankSrc != row.key {
+                                    rankSrc = row.key
+                                    rankTick += 1
                                 }
-                                .buttonStyle(.plain)
                             }
                         }
-                        .padding(.horizontal, 18)
                     }
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 2)
                 }
+                .frame(height: 38)
+
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 7) {
+                        ForEach(Self.rankTabs.indices, id: \.self) { i in
+                            Chip(text: Self.rankTabs[i], selected: rankTab == i) {
+                                if rankTab != i {
+                                    rankTab = i
+                                    rankTick += 1
+                                }
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 2)
+                }
+                .frame(height: 38)
+                .padding(.bottom, 4)
+
+                rankContent
             }
             .padding(.bottom, 26)
         }
         .background(c.bg.ignoresSafeArea())
-        .coordinateSpace(name: "immersiveScroll")
-        .ignoresSafeArea(edges: .top)
-        .overlay(alignment: .topTrailing) {
-            GlassCircleButton(glyph: .search) { onSearch() }
-                .padding(.trailing, 16)
-                .padding(.top, safeTop() + 8)
+        .onAppear {
+            if rankSrc.isEmpty {
+                // 用户要求：默认禁漫的排行
+                rankSrc = hub.enabledRows.first { $0.key == "jm" }?.key
+                    ?? hub.enabledRows.first?.key ?? ""
+            }
         }
-        .immersiveStatusBar(ui)
         .task { await loadHot() }
+        .task(id: "\(rankSrc)|\(rankTab)|\(rankTick)|\(hub.enabledRows.count)") { await loadRank() }
+    }
+
+    // ── 排行榜内容 ──
+    @ViewBuilder
+    private var rankContent: some View {
+        if rankBusy {
+            LoadingBox(height: 180)
+        } else if let rankError {
+            Text(rankError)
+                .font(.system(size: 11.5))
+                .foregroundColor(c.fg3)
+                .padding(.horizontal, 18)
+                .padding(.top, 8)
+        } else if let matched = matchedSection {
+            LazyVGrid(columns: columns, alignment: .leading, spacing: 14) {
+                ForEach(Array(matched.comics.enumerated()), id: \.element.id) { i, comic in
+                    NavigationLink {
+                        DetailView(work: comic.asWork)
+                    } label: {
+                        RankCell(
+                            index: i,
+                            title: comic.title,
+                            cover: comic.cover,
+                            seed: comic.comicId.hashValue,
+                            sub: comic.sub.isEmpty ? nil : comic.sub
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 18)
+        } else {
+            Text("这个源没有「\(Self.rankTabs[rankTab])」的排行数据，换一个周期或源试试。")
+                .font(.system(size: 11.5))
+                .foregroundColor(c.fg3)
+                .padding(.horizontal, 18)
+                .padding(.top, 8)
+        }
+    }
+
+    /// 当前周期匹配到的排行分区。找不到匹配时「总」兜底用第一个分区。
+    private var matchedSection: ExploreSection? {
+        guard let secs = rankSections[rankSrc], !secs.isEmpty else { return nil }
+        let keys: [[String]] = [
+            ["日", "今日", "daily"],
+            ["週", "周", "week"],
+            ["月", "month"],
+            ["總", "总", "排行", "rank", "人气", "人氣", "hot"],
+        ]
+        let pats = keys[min(rankTab, keys.count - 1)]
+        for sec in secs {
+            let t = sec.title.lowercased()
+            if pats.contains(where: { t.contains($0.lowercased()) }) { return sec }
+        }
+        return rankTab == 3 ? secs.first : nil
     }
 
     /// 横向滚动的封面条带
@@ -156,10 +218,9 @@ struct HomeScreen: View {
             return
         }
         let sig = "home|" + targets.map { $0.key }.joined(separator: ",")
-        // 3 分钟内刚拉过同一批源：直接用上次的，切回首页不再等一遍
         if let cached = ExploreCache.get(sig) {
             await MainActor.run {
-                hot = Array(cached.works.prefix(18))
+                hot = Array(cached.works.prefix(12))
                 hotFrom = cached.ok
                 hotBusy = false
             }
@@ -168,7 +229,6 @@ struct HomeScreen: View {
         var all: [ComicRow] = []
         var hit = 0
         var done = 0
-        // 并发跑，谁先回来谁先上屏（原来是串行 for，三个源最慢要等 45 秒）
         await withTaskGroup(of: [ComicRow]?.self) { group in
             for s in targets {
                 group.addTask {
@@ -185,7 +245,7 @@ struct HomeScreen: View {
                 if let list = result {
                     hit += 1
                     all.append(contentsOf: list)
-                    let snap = Array(groupWorks(all, sort: false).prefix(18))
+                    let snap = Array(groupWorks(all, sort: false).prefix(12))
                     let h = hit
                     await MainActor.run {
                         hot = snap
@@ -198,13 +258,36 @@ struct HomeScreen: View {
                     let h = hit
                     let miss = targets.count - hit
                     await MainActor.run {
-                        hot = Array(finalWorks.prefix(18))
+                        hot = Array(finalWorks.prefix(12))
                         hotFrom = h
                         hotBusy = false
                         ExploreCache.put(sig, finalWorks, h, miss)
                     }
                 }
             }
+        }
+    }
+
+    private func loadRank() async {
+        guard let row = rankRow else {
+            rankError = "没有可用的源。"
+            return
+        }
+        if rankSections[row.key] != nil { return }   // 已拉过，chips 切换即时显示
+        rankBusy = true
+        rankError = nil
+        let r = await exploreWithTimeout(key: row.key, seconds: 15)
+        guard let r, (r["ok"] as? Bool) == true, let d = r["data"] as? [String: Any] else {
+            await MainActor.run {
+                rankBusy = false
+                rankError = "这个源没返回内容（可能需要代理或登录）。"
+            }
+            return
+        }
+        let secs = ExploreSection.parse(d, sourceKey: row.key, sourceName: row.name)
+        await MainActor.run {
+            rankSections[row.key] = secs
+            rankBusy = false
         }
     }
 }

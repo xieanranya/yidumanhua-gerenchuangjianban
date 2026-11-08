@@ -937,9 +937,116 @@ struct LoadingBox: View {
     }
 }
 
+// ======================================================================= v4 品牌头
+
+/// v4 品牌头（全部页面的顶部统一结构）：
+/// 主题色底 + 粉/紫两团光晕，左下页面大标题 + 副标，右上工具钮槽。
+/// 高度固定 118pt，头图里永远不出现封面图——封面只活在 Hero 卡和网格里。
+struct BrandHeader<Trailing: View>: View {
+    let title: String
+    var subtitle: String? = nil
+    @ViewBuilder var trailing: () -> Trailing
+
+    @Environment(\.appColors) private var c
+
+    var body: some View {
+        ZStack(alignment: .bottomLeading) {
+            Rectangle()
+                .fill(c.bg)
+                .overlay(
+                    ZStack {
+                        RadialGradient(
+                            colors: [c.accent.opacity(c.dark ? 0.30 : 0.14), .clear],
+                            center: UnitPoint(x: 0.88, y: -0.30), startRadius: 0, endRadius: 340
+                        )
+                        RadialGradient(
+                            colors: [Color(hex: 0x7B4BB7).opacity(c.dark ? 0.22 : 0.10), .clear],
+                            center: UnitPoint(x: -0.12, y: 1.20), startRadius: 0, endRadius: 280
+                        )
+                    }
+                    .allowsHitTesting(false)
+                )
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.system(size: 24, weight: .bold))
+                    .foregroundColor(c.fg)
+                    .tracking(-0.6)
+                if let subtitle, !subtitle.isEmpty {
+                    Text(subtitle)
+                        .font(.system(size: 10))
+                        .foregroundColor(c.fg3)
+                        .lineLimit(1)
+                }
+            }
+            .padding(.horizontal, 18)
+            .padding(.bottom, 16)
+        }
+        .frame(height: 118)
+        .overlay(alignment: .topTrailing) {
+            trailing()
+                .padding(.top, safeTop() + 8)
+                .padding(.trailing, 14)
+        }
+    }
+}
+
+/// 排行榜网格单元：封面 + 左上排名角标（No.1 粉 / No.2 银 / No.3 铜，其余半透明黑）。
+struct RankCell: View {
+    let index: Int
+    let title: String
+    let cover: String
+    let seed: Int
+    var sub: String? = nil
+
+    @Environment(\.appColors) private var c
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Color.clear
+                .aspectRatio(0.72, contentMode: .fit)
+                .overlay {
+                    RemoteCover(url: cover, title: title, seed: seed, badge: nil)
+                    rankBadge
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .shadow(color: .black.opacity(c.dark ? 0.30 : 0.10), radius: 8, x: 0, y: 3)
+            Text(title)
+                .font(.system(size: 11.5))
+                .foregroundColor(c.fg)
+                .lineLimit(1)
+            if let sub, !sub.isEmpty {
+                Text(sub)
+                    .font(.system(size: 9.5))
+                    .foregroundColor(c.fg3)
+                    .lineLimit(1)
+            }
+        }
+    }
+
+    private var rankBadge: some View {
+        Text("No.\(index + 1)")
+            .font(.system(size: 9, weight: .heavy))
+            .tracking(0.5)
+            .foregroundColor(.white)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 2.5)
+            .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(badgeColor))
+            .padding(6)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private var badgeColor: Color {
+        switch index {
+        case 0: return c.accent
+        case 1: return Color(hex: 0x6B7280)
+        case 2: return Color(hex: 0x8A5A2E)
+        default: return Color.black.opacity(0.55)
+        }
+    }
+}
+
 /// 「继续阅读」横卡：本地书和在线记录共用一个样子。
-/// 本身不带点击（外面可能要用 NavigationLink 包一层），呼叫方自己决定怎么响应。
-struct ContinueCard: View {
+/// 本身不带点击（外面可能要用 NavigationLink 包一层），呼叫方自己决定怎么响应。struct ContinueCard: View {
     let title: String
     let meta: String
     let label: String

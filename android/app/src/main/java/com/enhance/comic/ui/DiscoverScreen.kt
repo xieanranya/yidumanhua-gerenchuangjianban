@@ -73,7 +73,8 @@ import kotlinx.coroutines.launch
 class DiscoverState {
     var kw by mutableStateOf("")
     var query by mutableStateOf("")
-    var selected by mutableStateOf("")
+    var selected by mutableStateOf("jm")   // v4：默认禁漫（被禁用时自动退回第一个可用源）
+    var sectionIdx by mutableIntStateOf(0) // 单源模式的当前分区（JmBox 式 chips 切换）
     var works by mutableStateOf<List<Work>>(emptyList())
     var sections by mutableStateOf<List<ExploreSection>>(emptyList())
     var rows by mutableStateOf<List<SourceRow>>(emptyList())
@@ -147,9 +148,10 @@ fun DiscoverScreen(
             state.rows = built
             val onRows = built.filter { it.enabled }
 
-            // 选中的源被关掉了：退回「全部」，不然会一直停在一个已经关掉的源上
+            // 选中的源被关掉了：退回第一个可用源（v4 默认单源直显，不再回聚合）
             if (state.selected.isNotBlank() && onRows.none { it.key == state.selected }) {
-                state.selected = ""
+                state.selected = onRows.firstOrNull { it.enabled }?.key ?: ""
+                state.sectionIdx = 0
                 return@LaunchedEffect
             }
 
@@ -182,8 +184,8 @@ fun DiscoverScreen(
     }
 
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
-        BigTitle(
-            text = "发现",
+        BrandHeader(
+            title = "发现",
             sub = when {
                 state.busy && state.progress.isNotBlank() -> state.progress
                 state.busy -> "正在取内容…"
@@ -201,7 +203,7 @@ fun DiscoverScreen(
                         )
                     }
                 }
-                else -> "只看这个源"
+                else -> state.rows.firstOrNull { it.key == state.selected }?.name ?: "只看这个源"
             },
         )
 
@@ -217,10 +219,15 @@ fun DiscoverScreen(
             contentPadding = PaddingValues(horizontal = 18.dp),
             horizontalArrangement = Arrangement.spacedBy(7.dp),
         ) {
-            item { Chip("全部", state.selected.isBlank()) { state.selected = "" } }
+            item { Chip("全部", state.selected.isBlank()) { state.selected = ""; state.sectionIdx = 0 } }
             items(state.rows.filter { it.enabled }, key = { it.key }) { r ->
                 // 点一下先看缓存（立刻有内容），需要刷新时在后台补
-                Chip(r.name, state.selected == r.key) { state.selected = r.key }
+                Chip(r.name, state.selected == r.key) {
+                    if (state.selected != r.key) {
+                        state.selected = r.key
+                        state.sectionIdx = 0
+                    }
+                }
             }
         }
         Spacer(Modifier.height(10.dp))
@@ -258,32 +265,49 @@ fun DiscoverScreen(
                 }
             }
 
-            else -> LazyVerticalGrid(
-                columns = GridCells.Fixed(3),
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(start = 18.dp, end = 18.dp, bottom = 22.dp),
-                horizontalArrangement = Arrangement.spacedBy(GridGap),
-                verticalArrangement = Arrangement.spacedBy(GridGapV),
-            ) {
-                state.sections.forEachIndexed { si, sec ->
-                    if (sec.title.isNotBlank()) {
-                        item(span = { GridItemSpan(maxLineSpan) }, key = "h$si") {
-                            SectionHeader(
-                                title = sec.title,
-                                more = "${sec.comics.size} 本",
-                                onMore = { state.openSection = sec },
-                                inset = false,
-                            )
+            else -> {
+                // v4 单源直显：分区 chips（JmBox 式）+ 当前分区网格
+                Column(Modifier.fillMaxSize()) {
+                    if (state.sections.size > 1) {
+                        LazyRow(
+                            contentPadding = PaddingValues(horizontal = 18.dp),
+                            horizontalArrangement = Arrangement.spacedBy(7.dp),
+                        ) {
+                            items(state.sections.size, key = { "sc$it" }) { si ->
+                                val sec = state.sections[si]
+                                Chip(
+                                    sec.title.ifBlank { "分区 ${si + 1}" },
+                                    state.sectionIdx.coerceIn(0, state.sections.size - 1) == si,
+                                ) {
+                                    state.sectionIdx = si
+                                }
+                            }
                         }
+                        Spacer(Modifier.height(8.dp))
                     }
-                    items(sec.comics, key = { "c$si-" + it.id }) { comic ->
-                        ComicCell(
-                            cover = comic.cover,
-                            title = comic.title,
-                            sub = comic.sub,
-                            seed = comic.title.hashCode(),
-                            onClick = { onOpenWork(comic.asWork()) },
-                        )
+                    val sec = state.sections.getOrNull(
+                        state.sectionIdx.coerceIn(0, (state.sections.size - 1).coerceAtLeast(0)),
+                    ) ?: state.sections.firstOrNull()
+                    if (sec == null) {
+                        EmptyBlock(state.err, onSourceManager) { state.tick++ }
+                    } else {
+                        LazyVerticalGrid(
+                            columns = GridCells.Fixed(3),
+                            modifier = Modifier.fillMaxSize(),
+                            contentPadding = PaddingValues(start = 18.dp, end = 18.dp, bottom = 22.dp),
+                            horizontalArrangement = Arrangement.spacedBy(GridGap),
+                            verticalArrangement = Arrangement.spacedBy(GridGapV),
+                        ) {
+                            items(sec.comics, key = { it.id }) { comic ->
+                                ComicCell(
+                                    cover = comic.cover,
+                                    title = comic.title,
+                                    sub = comic.sub,
+                                    seed = comic.title.hashCode(),
+                                    onClick = { onOpenWork(comic.asWork()) },
+                                )
+                            }
+                        }
                     }
                 }
             }

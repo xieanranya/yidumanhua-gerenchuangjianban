@@ -265,28 +265,65 @@ struct DetailView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                // 沉浸头图：封面大图铺到状态栏后面，白字标题压图
-                ImmersiveHeader(title: title, subtitle: subline, height: 330) {
-                    ZStack {
-                        ImmersivePoster(colors: PosterPalette.bySeed(work.norm.hashValue))
-                        if !cover.isEmpty {
-                            RemoteImage(url: cover, contentMode: .fill, maxPixel: 1000)
-                        }
+                BrandHeader(title: title, subtitle: subline) {
+                    EmptyView()
+                }
+                .overlay(alignment: .topLeading) {
+                    GlassCircleButton(glyph: .back) { dismiss() }
+                        .padding(.leading, 16)
+                        .padding(.top, safeTop() + 8)
+                }
+                .overlay(alignment: .topTrailing) {
+                    NavigationLink {
+                        AccountView(key: entry.sourceKey, fallbackName: entry.sourceName)
+                    } label: {
+                        GlassCircleLabel(glyph: .user)
                     }
+                    .buttonStyle(.plain)
+                    .padding(.trailing, 16)
+                    .padding(.top, safeTop() + 8)
                 }
 
                 Group {
                     if busy {
                         LoadingBox(height: 240)
-                            .padding(.top, -28)
                     } else if let error {
                         VStack(spacing: 10) {
                             EmptyHint(title: "加载失败", message: error, glyph: .spark)
                             MiniButton(text: "重试", accent: true) { Task { await load(entryIndex) } }
                                 .padding(.bottom, 30)
                         }
-                        .padding(.top, -20)
                     } else {
+                        // 封面 + 标题行（信息在品牌头下方，头图保持干净）
+                        HStack(alignment: .top, spacing: 12) {
+                            ZStack {
+                                coverGradient(seed: work.norm.hashValue, dark: c.dark)
+                                if cover.isEmpty {
+                                    Text(String(title.prefix(1)))
+                                        .font(.system(size: 24, weight: .bold))
+                                        .foregroundColor(placeholderInk(c.dark))
+                                } else {
+                                    RemoteImage(url: cover, contentMode: .fill, maxPixel: 420)
+                                }
+                            }
+                            .frame(width: 84, height: 114)
+                            .clipped()
+                            .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text(title)
+                                    .font(.system(size: 15, weight: .semibold))
+                                    .foregroundColor(c.fg)
+                                    .lineLimit(2)
+                                Text("来源：\(entry.sourceName)")
+                                    .font(.system(size: 10.5))
+                                    .foregroundColor(c.accent)
+                            }
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.horizontal, 18)
+                        .padding(.top, 12)
+
                         if !description.isEmpty {
                             Text(description)
                                 .font(.system(size: 12))
@@ -295,7 +332,7 @@ struct DetailView: View {
                                 .lineLimit(10)
                                 .fixedSize(horizontal: false, vertical: true)
                                 .padding(.horizontal, 18)
-                                .padding(.top, -28)
+                                .padding(.top, 10)
                         }
                         sourceSwitch
                         continueButton
@@ -306,24 +343,6 @@ struct DetailView: View {
             .padding(.bottom, 26)
         }
         .background(c.bg.ignoresSafeArea())
-        .coordinateSpace(name: "immersiveScroll")
-        .ignoresSafeArea(edges: .top)
-        .overlay(alignment: .topLeading) {
-            GlassCircleButton(glyph: .back) { dismiss() }
-                .padding(.leading, 16)
-                .padding(.top, safeTop() + 8)
-        }
-        .overlay(alignment: .topTrailing) {
-            NavigationLink {
-                AccountView(key: entry.sourceKey, fallbackName: entry.sourceName)
-            } label: {
-                GlassCircleLabel(glyph: .user)
-            }
-            .buttonStyle(.plain)
-            .padding(.trailing, 16)
-            .padding(.top, safeTop() + 8)
-        }
-        .immersiveStatusBar(ui)
         .toolbar(.hidden, for: .navigationBar)
         .task { await load(0) }
         // 用 fullScreenCover 而不是 sheet：sheet 是个卡片，顶部会露出上一页，

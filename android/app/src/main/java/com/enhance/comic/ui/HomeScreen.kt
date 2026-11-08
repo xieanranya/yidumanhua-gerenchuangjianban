@@ -1,7 +1,6 @@
 package com.enhance.comic.ui
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -13,13 +12,12 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.itemsIndexed
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -30,18 +28,16 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.enhance.comic.data.SourceEngine
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.launch
 import com.enhance.comic.data.UiStore
 import com.enhance.comic.model.Book
 
-/** 首页跨 Tab 状态（同 DiscoverState 的理由：Tab 是 when 渲染的，放页面里会随切走一起丢）。 */
+/** 首页跨 Tab 状态（Tab 是 when 渲染的，放页面里会随切走一起丢）。 */
 class HomeState {
     var rows by mutableStateOf<List<SourceRow>>(emptyList())
     var hot by mutableStateOf<List<Work>>(emptyList())
@@ -50,11 +46,37 @@ class HomeState {
     /** 已经为哪个 sourceRev 拉过；切 Tab 回来不重拉 */
     var settledRev by mutableIntStateOf(-1)
     var settledVpn by mutableStateOf(false)
+
+    // ── 排行榜（各源单独）──
+    var rankSrc by mutableStateOf("jm")          // 当前排行源（默认禁漫）
+    var rankTab by mutableIntStateOf(0)          // 0 今日 / 1 本周 / 2 月 / 3 总
+    var rankSections by mutableStateOf<Map<String, List<ExploreSection>>>(emptyMap())
+    var rankBusy by mutableStateOf(false)
+    var rankError by mutableStateOf<String?>(null)
+}
+
+/** 排行周期 → explore 分区标题的关键字匹配表。匹配不到时「总」兜底用第一个分区。 */
+private val RANK_KEYS = listOf(
+    listOf("日", "今日", "daily"),
+    listOf("週", "周", "week"),
+    listOf("月", "month"),
+    listOf("總", "总", "排行", "rank", "人气", "人氣", "hot"),
+)
+internal val RANK_TAB_NAMES = listOf("今日", "本周", "月", "总")
+
+fun matchRankSection(secs: List<ExploreSection>, tab: Int): ExploreSection? {
+    if (secs.isEmpty()) return null
+    val pats = RANK_KEYS[tab.coerceIn(0, RANK_KEYS.size - 1)]
+    for (sec in secs) {
+        val t = sec.title.lowercase()
+        if (pats.any { t.contains(it.lowercase()) }) return sec
+    }
+    return if (tab == 3) secs.first() else null
 }
 
 /**
- * 首页：只留搜索入口 + 继续阅读 + 热门推荐（越简洁越好，入口都挪到下面的 Tab 里）。
- * 「热门推荐」是真的去问源要一页首页，拿不到就整块不显示，不留假数据。
+ * 首页（v4 简洁版）：品牌头 + 今日热门横排 + 各源单独排行榜。
+ * 排行榜数据 = 选中源 explore 的分区里按周期关键字匹配（匹配不到显示空态，不造假）。
  */
 @Composable
 fun HomeScreen(
@@ -69,9 +91,8 @@ fun HomeScreen(
 ) {
     val c = LocalColors.current
 
-    // 首页推荐的状态放在 Activity 级（见 HomeState）；本地只留「本地书架」相关的。
+    // 今日热门（保留 1.9.54 的三源并发/缓存/冷却逻辑）
     LaunchedEffect(sourceRev) {
-        // 切 Tab 回来：同一个 sourceRev、同一个网络环境、内容还在，直接跳过
         val vpnNow = ExploreCache.vpnOn()
         if (state.settledRev == sourceRev && state.settledVpn == vpnNow && state.hot.isNotEmpty()) {
             return@LaunchedEffect
@@ -79,7 +100,10 @@ fun HomeScreen(
         state.busy = true
         try {
             state.rows = buildRows(engine.sources(), ui.disabledSources(), ui.sourceOrder())
-            // 取前三个**开着的**源：同一本在多个源出现就显示「N 源」
+            // 排行源失效了（被关掉）就退回第一个可用源
+            if (state.rows.none { it.key == state.rankSrc && it.enabled }) {
+                state.rankSrc = state.rows.firstOrNull { it.enabled }?.key ?: "jm"
+            }
             val targets = state.rows.filter { it.enabled }.take(3)
             if (targets.isEmpty()) {
                 state.hot = emptyList()
@@ -87,7 +111,6 @@ fun HomeScreen(
                 return@LaunchedEffect
             }
 
-            // 1) 先拿缓存（和发现页共用同一份单源缓存），一进首页就有内容
             val hits = LinkedHashMap<String, ExploreCache.SectionHit?>()
             targets.forEach { hits[it.key] = ExploreCache.getSections(exploreSig(it.key, "")) }
             val seeded = targets.flatMap { s ->
@@ -100,9 +123,6 @@ fun HomeScreen(
                 state.busy = false
             }
 
-            // 2) 只刷过期/没缓存的源。串行 —— 同步桥上并发等于排队，还会让后面的源被超时误杀
-            // 缓存新鲜的、以及「连续失败还在冷却期」的都先不跑：首页只放三个源，
-            // 里面要是有连不上的，光等超时就能让首页空着半天。
             val runnable = targets.filter { !ExploreCache.isCooling(it.key) }
             val need = (if (runnable.isEmpty()) targets.take(1) else runnable)
                 .filter { hits[it.key]?.fresh != true }
@@ -110,7 +130,7 @@ fun HomeScreen(
                     ExploreCache.cost(exploreSig(s.key, "")).let { if (it <= 0) 5_000L else it }
                 }
             for (s in need) {
-                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                currentCoroutineContext().ensureActive()
                 val t0 = System.currentTimeMillis()
                 val r = kotlinx.coroutines.withTimeoutOrNull(12_000) { engine.explore(s.key, 0) }
                 val cost = System.currentTimeMillis() - t0
@@ -126,7 +146,6 @@ fun HomeScreen(
                 }
             }
 
-            // 3) 用每源最新缓存重组
             val pool = targets.flatMap { s ->
                 ExploreCache.getSections(exploreSig(s.key, ""))?.sections?.flatMap { it.comics }
                     ?: emptyList()
@@ -145,117 +164,165 @@ fun HomeScreen(
         }
     }
 
-    // 最近在读的几本（Aidoku 式「继续阅读」横排；以前只有最近一本的单行卡）
-    val recent = remember(books) {
-        books.filter { it.lastPage > 0 }
-            .sortedByDescending { if (it.lastReadAt > 0) it.lastReadAt else it.addedAt }
-            .take(8)
+    // 排行榜：选中源变化/刷新时拉它的 explore（复用发现页的单源缓存）
+    LaunchedEffect(state.rankSrc, state.rankTab, state.rankSections.size, sourceRev) {
+        val key = state.rankSrc
+        if (key.isBlank()) return@LaunchedEffect
+        if (state.rankSections[key] != null) return@LaunchedEffect   // 已拉过，chips 切换即时显示
+        val cached = ExploreCache.getSections(exploreSig(key, ""))
+        if (cached != null && cached.sections.isNotEmpty()) {
+            state.rankSections = state.rankSections + (key to cached.sections)
+            return@LaunchedEffect
+        }
+        state.rankBusy = true
+        state.rankError = null
+        val r = kotlinx.coroutines.withTimeoutOrNull(15_000) { engine.explore(key, 0) }
+        if (r != null && r.optBoolean("ok")) {
+            val secs = parseSections(r.optJSONObject("data"), key, key)
+                .filter { it.comics.isNotEmpty() }
+            if (secs.isNotEmpty()) {
+                ExploreCache.putSections(exploreSig(key, ""), secs, 0)
+                state.rankSections = state.rankSections + (key to secs)
+            } else {
+                state.rankError = "这个源没有返回内容。"
+            }
+        } else {
+            state.rankError = "这个源没返回内容（可能需要代理或登录）。"
+        }
+        state.rankBusy = false
     }
-    val reading = recent.firstOrNull()
+
+    val rankMatched = matchRankSection(state.rankSections[state.rankSrc] ?: emptyList(), state.rankTab)
+    val rankSrcName = state.rows.firstOrNull { it.key == state.rankSrc }?.name
+        ?: state.rankSrc
 
     LazyVerticalGrid(
         columns = GridCells.Fixed(3),
         modifier = Modifier.fillMaxSize().statusBarsPadding(),
-        contentPadding = PaddingValues(start = 18.dp, end = 18.dp, bottom = 22.dp),
+        contentPadding = PaddingValues(bottom = 22.dp),
         horizontalArrangement = Arrangement.spacedBy(GridGap),
         verticalArrangement = Arrangement.spacedBy(GridGapV),
     ) {
-        // Aidoku 式大标题 + 右上圆形搜索钮（独立搜索框行去掉，视觉更干净）
+        // 品牌头（v4）
         item(span = { GridItemSpan(maxLineSpan) }) {
-            BigTitle("画质漫画", inset = false) {
-                CircleToolButton(Glyph.SEARCH, onClick = { onDiscover() })
+            BrandHeader(
+                title = "画质漫画",
+                sub = "${state.rows.count { it.enabled }} 个源在用" +
+                    if (state.hotLabel.isNotBlank()) " · 已连上 ${state.hotLabel}" else "",
+            ) {
+                Box(
+                    Modifier
+                        .padding(top = 8.dp, end = 14.dp)
+                        .clickable { onDiscover() },
+                ) { CircleToolButton(Glyph.SEARCH, onClick = { onDiscover() }) }
             }
         }
 
-        if (recent.isNotEmpty()) {
+        // ── 今日热门 ──
+        item(span = { GridItemSpan(maxLineSpan) }) {
+            SectionHeader(
+                "今日热门",
+                more = state.hotLabel.ifBlank { null },
+                onMore = if (state.hotLabel.isBlank()) null else ({ onDiscover() }),
+                inset = false,
+            )
+        }
+        if (state.busy && state.hot.isEmpty()) {
+            item(span = { GridItemSpan(maxLineSpan) }) { LoadingBox(150.dp) }
+        } else if (state.hot.isEmpty()) {
             item(span = { GridItemSpan(maxLineSpan) }) {
-                SectionHeader("继续阅读", more = "书架", onMore = onDiscover, inset = false)
+                Text(
+                    "这些源这次都没给出内容，回头再刷一次试试。",
+                    color = c.fg3, fontSize = 11.5.sp,
+                    modifier = Modifier.padding(horizontal = 18.dp),
+                )
             }
+        } else {
             item(span = { GridItemSpan(maxLineSpan) }) {
-                androidx.compose.foundation.lazy.LazyRow(
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                LazyRow(
                     contentPadding = PaddingValues(horizontal = 18.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    items(recent.size) { idx ->
-                        val b = recent[idx]
-                        val progress = if (b.pageCount > 0) {
-                            (b.lastPage + 1f) / b.pageCount
-                        } else 0f
-                        val meta = if (b.pageCount > 0) {
-                            "第 ${b.lastPage + 1} / ${b.pageCount} 页"
-                        } else {
-                            "${b.pageCount} 页"
+                    items(state.hot.size) { idx ->
+                        val w = state.hot[idx]
+                        Box(Modifier.width(118.dp)) {
+                            ComicCell(
+                                cover = w.cover,
+                                title = w.title,
+                                sub = if (w.entries.size > 1) w.sourceNames else w.primary.sourceName,
+                                seed = w.norm.hashCode(),
+                                badge = w.badge,
+                                onClick = { onOpenWork(w) },
+                            )
                         }
-                        ContinueCardLarge(
-                            width = 118.dp,
-                            seed = b.title.hashCode(),
-                            title = b.title,
-                            meta = "$meta · 本地",
-                            progress = progress,
-                            onClick = { onOpenBook(b) },
-                            coverBitmap = rememberFileCover(b.coverPath),
-                        )
                     }
                 }
             }
         }
 
-        if (state.hot.isNotEmpty()) {
-            item(span = { GridItemSpan(maxLineSpan) }) {
-                SectionHeader("热门推荐", more = state.hotLabel, onMore = onDiscover, inset = false)
+        // ── 排行榜（各源单独）──
+        item(span = { GridItemSpan(maxLineSpan) }) {
+            SectionHeader(
+                "排行榜",
+                more = "$rankSrcName · ${RANK_TAB_NAMES[state.rankTab]}",
+                inset = false,
+            )
+        }
+        item(span = { GridItemSpan(maxLineSpan) }) {
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = 18.dp),
+                horizontalArrangement = Arrangement.spacedBy(7.dp),
+            ) {
+                items(state.rows.filter { it.enabled }, key = { "r" + it.key }) { r ->
+                    Chip(r.name, state.rankSrc == r.key) {
+                        if (state.rankSrc != r.key) {
+                            state.rankSrc = r.key
+                        }
+                    }
+                }
             }
-            items(state.hot, key = { it.norm }) { work ->
-                ComicCell(
-                    cover = work.cover,
-                    title = work.title,
-                    sub = if (work.entries.size > 1) work.sourceNames else work.primary.sourceName,
-                    seed = work.norm.hashCode(),
-                    badge = work.badge,
-                    onClick = { onOpenWork(work) },
+        }
+        item(span = { GridItemSpan(maxLineSpan) }) {
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = 18.dp),
+                horizontalArrangement = Arrangement.spacedBy(7.dp),
+            ) {
+                items(RANK_TAB_NAMES.size) { i ->
+                    Chip(RANK_TAB_NAMES[i], state.rankTab == i) {
+                        if (state.rankTab != i) state.rankTab = i
+                    }
+                }
+            }
+        }
+
+        when {
+            state.rankBusy -> item(span = { GridItemSpan(maxLineSpan) }) { LoadingBox(180.dp) }
+            state.rankError != null -> item(span = { GridItemSpan(maxLineSpan) }) {
+                Text(
+                    state.rankError!!,
+                    color = c.fg3, fontSize = 11.5.sp,
+                    modifier = Modifier.padding(horizontal = 18.dp),
+                )
+            }
+            rankMatched != null -> itemsIndexed(rankMatched.comics, key = { _, it -> it.id }) { i, comic ->
+                RankCell(
+                    index = i,
+                    cover = comic.cover,
+                    title = comic.title,
+                    sub = comic.sub,
+                    seed = comic.title.hashCode(),
+                    onClick = { onOpenWork(comic.asWork()) },
+                )
+            }
+            else -> item(span = { GridItemSpan(maxLineSpan) }) {
+                Text(
+                    "这个源没有「${RANK_TAB_NAMES[state.rankTab]}」的排行数据，换一个周期或源试试。",
+                    color = c.fg3, fontSize = 11.5.sp,
+                    modifier = Modifier.padding(horizontal = 18.dp),
                 )
             }
         }
 
-        item(span = { GridItemSpan(maxLineSpan) }) {
-            Box(Modifier.height(if (state.hot.isEmpty() && state.busy) 60.dp else 8.dp))
-        }
-
-    }
-}
-
-@Composable
-private fun QuickEntry(
-    glyph: Glyph,
-    label: String,
-    sub: String,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val c = LocalColors.current
-    Column(
-        modifier = modifier
-            .clip(RoundedCornerShape(11.dp))
-            .background(c.card2)
-            .clickable(onClick = onClick)
-            .padding(horizontal = 10.dp, vertical = 11.dp),
-    ) {
-        GlyphView(glyph, c.fg2, 16.dp)
-        Spacer(Modifier.height(7.dp))
-        Text(
-            label,
-            color = c.fg,
-            fontSize = 11.5.sp,
-            fontWeight = FontWeight.Medium,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-        Spacer(Modifier.height(2.dp))
-        Text(
-            sub,
-            color = c.fg3,
-            fontSize = 9.5.sp,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
+        item(span = { GridItemSpan(maxLineSpan) }) { Box(Modifier.height(8.dp)) }
     }
 }

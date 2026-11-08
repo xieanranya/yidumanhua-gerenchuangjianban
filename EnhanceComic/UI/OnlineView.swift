@@ -265,9 +265,7 @@ struct DetailView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                BrandHeader(title: title, subtitle: subline) {
-                    EmptyView()
-                }
+                BrandHeader(title: title, subtitle: subline)
                 .overlay(alignment: .topLeading) {
                     GlassCircleButton(glyph: .back) { dismiss() }
                         .padding(.leading, 16)

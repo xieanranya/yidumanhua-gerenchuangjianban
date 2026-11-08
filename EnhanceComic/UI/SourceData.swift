@@ -391,10 +391,14 @@ final class SourceHub: ObservableObject {
         let settingKey: String
         let title: String
         let lines: [Line]
+        /// false = 该源只有这条线路，只展示 + 测速，不提供选择
+        var writable: Bool = true
         var id: String { settingKey }
     }
 
-    /// 有多线路的源在这里登记。没有登记的源不显示线路行（单域名没得选）。
+    /// 全部源的线路清单。每个源至少一行「API 域名」：
+    /// 可改的（源里有对应 setting）能选；单域名的只展示 + 现场测速。
+    /// 清单全部来自源代码与官方 App 设置页，没有编造的域名。
     static func lineGroups(for key: String) -> [LineGroup] {
         switch key {
         case "jm":
@@ -433,8 +437,69 @@ final class SourceHub: ObservableObject {
                         Line("海外（需代理）", "0", false),
                     ]
                 ),
-                // 「节点」不给选了：源里写死的域名都会被域名别名层改写到
-                // www.copy5000.com（国内直连镜像），选哪个节点最终发的都是它。
+                // 实际请求域名：源里写死的节点都会被域名别名层统一改写到 copy5000.com
+                LineGroup(
+                    settingKey: "__api", title: "API 域名", writable: false,
+                    lines: [
+                        Line("www.copy5000.com（自动镜像）", "copy5000", true, probeHost: "www.copy5000.com"),
+                    ]
+                ),
+            ]
+        case "Komiic":
+            return [
+                LineGroup(
+                    settingKey: "__api", title: "API / 图片域", writable: false,
+                    lines: [
+                        Line("komiic.cc（自动镜像，可直连）", "api", true, probeHost: "komiic.cc"),
+                        Line("public.komiic.cc（封面）", "img", true, probeHost: "public.komiic.cc"),
+                    ]
+                )
+            ]
+        case "noyacg":
+            return [
+                LineGroup(
+                    settingKey: "__api", title: "API / 图片域", writable: false,
+                    lines: [
+                        Line("noy1.top（可直连）", "api", true, probeHost: "noy1.top"),
+                        Line("img.noy.asia（可直连）", "img", true, probeHost: "img.noy.asia"),
+                    ]
+                )
+            ]
+        case "picacg":
+            return [
+                LineGroup(
+                    settingKey: "__api", title: "API 域名", writable: false,
+                    lines: [
+                        Line("picaapi.picacomic.com（需代理）", "api", false, probeHost: "picaapi.picacomic.com"),
+                    ]
+                )
+            ]
+        case "ehentai":
+            return [
+                LineGroup(
+                    settingKey: "__api", title: "API 域名", writable: false,
+                    lines: [
+                        Line("e-hentai.org（需代理）", "api", false, probeHost: "e-hentai.org"),
+                    ]
+                )
+            ]
+        case "htmanga":
+            return [
+                LineGroup(
+                    settingKey: "__api", title: "API 域名", writable: false,
+                    lines: [
+                        Line("www.wnacg.com（需代理）", "api", false, probeHost: "www.wnacg.com"),
+                    ]
+                )
+            ]
+        case "mh18":
+            return [
+                LineGroup(
+                    settingKey: "__api", title: "API 域名", writable: false,
+                    lines: [
+                        Line("18mh.org（需代理）", "api", false, probeHost: "18mh.org"),
+                    ]
+                )
             ]
         default:
             return []
@@ -455,8 +520,11 @@ final class SourceHub: ObservableObject {
         }
     }
 
-    /// 线路在源里的显示名（把值翻译回 label；没设置返回 defaultLabel）
+    /// 线路在源里的显示名：可写的组显示当前选择；只读组直接显示域名
     static func lineLabel(_ key: String, _ group: LineGroup) -> String {
+        guard group.writable else {
+            return group.lines.first?.label ?? "—"
+        }
         guard let v = lineValue(key, group.settingKey) else {
             // 给出「直连优先」的建议：没设置时提示默认值是什么
             let def = group.lines.first { $0.direct } ?? group.lines.first

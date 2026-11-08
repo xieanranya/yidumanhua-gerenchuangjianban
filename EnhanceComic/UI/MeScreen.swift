@@ -308,7 +308,10 @@ struct SourceManagerView: View {
                 // 直连的排前面；每条线路旁显示现场测速结果（真实可达性一目了然）
                 ForEach(Array(target.group.lines.sorted { $0.direct && !$1.direct }.enumerated()), id: \.offset) { _, line in
                     Button {
-                        SourceHub.setLineValue(target.rowKey, target.group.settingKey, line.value)
+                        // 只读组（单域名源）只展示/测速，不写值
+                        if target.group.writable {
+                            SourceHub.setLineValue(target.rowKey, target.group.settingKey, line.value)
+                        }
                     } label: {
                         HStack(spacing: 6) {
                             Text(line.label)
@@ -324,13 +327,17 @@ struct SourceManagerView: View {
                         }
                     }
                 }
-                Button("恢复默认", role: .destructive) {
-                    SourceHub.setLineValue(target.rowKey, target.group.settingKey, nil)
+                if target.group.writable {
+                    Button("恢复默认", role: .destructive) {
+                        SourceHub.setLineValue(target.rowKey, target.group.settingKey, nil)
+                    }
                 }
-                Button("取消", role: .cancel) {}
+                Button("关闭", role: .cancel) {}
             }
         } message: {
-            Text("线路清单全部来自官方 App，打开时会自动逐条实测：✓ = 服务器可达（含耗时）。")
+            Text(linePick?.group.writable == true
+                 ? "线路清单全部来自官方 App 与源代码，打开时自动逐条实测：✓ = 服务器可达（含耗时）。"
+                 : "这个源只有一条线路（域名来自源代码），打开时自动实测。")
         }
     }
 

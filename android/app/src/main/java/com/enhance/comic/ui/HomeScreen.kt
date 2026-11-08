@@ -1,6 +1,7 @@
 package com.enhance.comic.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -12,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
@@ -273,7 +275,9 @@ fun HomeScreen(
                 contentPadding = PaddingValues(horizontal = 18.dp),
                 horizontalArrangement = Arrangement.spacedBy(7.dp),
             ) {
-                items(state.rows.filter { it.enabled }, key = { "r" + it.key }) { r ->
+                val srcs = state.rows.filter { it.enabled }
+                items(srcs.size) { idx ->
+                    val r = srcs[idx]
                     Chip(r.name, state.rankSrc == r.key) {
                         if (state.rankSrc != r.key) {
                             state.rankSrc = r.key

@@ -394,6 +394,13 @@ final class SourceHub: ObservableObject {
         /// false = 该源只有这条线路，只展示 + 测速，不提供选择
         var writable: Bool = true
         var id: String { settingKey }
+
+        init(settingKey: String, title: String, lines: [Line], writable: Bool = true) {
+            self.settingKey = settingKey
+            self.title = title
+            self.lines = lines
+            self.writable = writable
+        }
     }
 
     /// 全部源的线路清单。每个源至少一行「API 域名」：

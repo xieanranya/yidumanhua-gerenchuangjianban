@@ -397,16 +397,8 @@ final class SourceHub: ObservableObject {
                         ("海外（需代理）", "0", false),
                     ]
                 ),
-                LineGroup(
-                    settingKey: "base_url", title: "节点",
-                    lines: [
-                        ("2026copy.com", "www.2026copy.com", true),
-                        ("2025copy.com", "www.2025copy.com", true),
-                        ("copy20.com", "www.copy20.com", true),
-                        ("mangacopy.com", "www.mangacopy.com", true),
-                        ("copy-manga.com", "www.copy-manga.com", true),
-                    ]
-                ),
+                // 「节点」不给选了：源里写死的域名都会被域名别名层改写到
+                // www.copy5000.com（国内直连镜像），选哪个节点最终发的都是它。
             ]
         default:
             return []

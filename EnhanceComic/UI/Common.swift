@@ -1046,7 +1046,8 @@ struct RankCell: View {
 }
 
 /// 「继续阅读」横卡：本地书和在线记录共用一个样子。
-/// 本身不带点击（外面可能要用 NavigationLink 包一层），呼叫方自己决定怎么响应。struct ContinueCard: View {
+/// 本身不带点击（外面可能要用 NavigationLink 包一层），呼叫方自己决定怎么响应。
+struct ContinueCard: View {
     let title: String
     let meta: String
     let label: String

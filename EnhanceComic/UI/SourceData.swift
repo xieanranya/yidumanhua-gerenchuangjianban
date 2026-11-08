@@ -395,7 +395,7 @@ final class SourceHub: ObservableObject {
         var writable: Bool = true
         var id: String { settingKey }
 
-        init(settingKey: String, title: String, lines: [Line], writable: Bool = true) {
+        init(settingKey: String, title: String, writable: Bool = true, lines: [Line]) {
             self.settingKey = settingKey
             self.title = title
             self.lines = lines

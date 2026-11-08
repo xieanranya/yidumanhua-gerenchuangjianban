@@ -60,6 +60,7 @@ struct DiscoverScreen: View {
                 }
 
                 // 源 chips：默认第一个源（禁漫），最后一个「聚合」
+                // 嵌套在纵向滚动里的横向滚动必须给显式高度，否则手势会被外层吞掉（滑不动）
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 7) {
                         ForEach(hub.enabledRows) { row in
@@ -81,6 +82,7 @@ struct DiscoverScreen: View {
                     .padding(.horizontal, 18)
                     .padding(.vertical, 2)
                 }
+                .frame(height: 38)
                 .padding(.top, showSearch ? 10 : -34)
                 .padding(.bottom, 6)
 
@@ -140,6 +142,7 @@ struct DiscoverScreen: View {
                 .padding(.horizontal, 18)
                 .padding(.vertical, 2)
             }
+            .frame(height: 38)
             .padding(.bottom, 6)
 
             let sec = sections[safeIdx]

@@ -38,10 +38,14 @@ struct HomeScreen: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                // 沉浸头图：纯渐变（对齐网页版交互稿）——封面自带大字会跟标题打架，
-                // 而且头图用封面会和下面的 Hero 卡重复显示同一本
+                // 沉浸头图：氛围背景 = 今日最热封面的模糊压暗版（Apple Music 式），
+                // 有色彩光影但不抢标题；封面本身只在下面的 Hero 卡出现
                 ImmersiveHeader(title: "画质漫画", subtitle: subline) {
-                    ImmersivePoster(colors: c.dark ? PosterPalette.forest : PosterPalette.iris)
+                    AmbientCover(
+                        url: hot.first?.cover ?? "",
+                        seed: hot.first?.norm.hashValue ?? 0,
+                        colors: c.dark ? PosterPalette.forest : PosterPalette.iris
+                    )
                 }
 
                 if hotBusy {

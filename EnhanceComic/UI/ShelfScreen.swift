@@ -37,9 +37,13 @@ struct ShelfScreen: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                // 沉浸头图：纯渐变——封面上的大字会跟标题打架（同首页）
+                // 沉浸头图：氛围背景 = 在读第一本封面的模糊压暗版（同首页）
                 ImmersiveHeader(title: "书架", subtitle: subline) {
-                    ImmersivePoster(colors: c.dark ? PosterPalette.iris : PosterPalette.forest)
+                    AmbientCover(
+                        localImage: readingList.first.flatMap { CoverCache.image(at: store.coverURL(for: $0)) },
+                        seed: readingList.first?.title.hashValue ?? 0,
+                        colors: c.dark ? PosterPalette.iris : PosterPalette.forest
+                    )
                 }
 
                 actions

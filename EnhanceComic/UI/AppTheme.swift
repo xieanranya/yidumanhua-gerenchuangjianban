@@ -255,7 +255,41 @@ struct GlassCircleButton: View {
     }
 }
 
-/// 头图的氛围渐变（没有真封面时兜底）：斜向渐变 + 右上高光，跟封面图一个气质。
+/// 头图的氛围背景（Apple Music 式）：封面大图放大 + 高斯模糊 + 压暗，
+/// 只留色彩和光影——比纯渐变有内容感，又不会让封面上的文字跟标题打架。
+/// 封面没加载 / 没有封面时就是底下的渐变。
+struct AmbientCover: View {
+    var url: String = ""
+    var localImage: UIImage? = nil
+    let seed: Int
+    let colors: [Color]
+
+    @Environment(\.appColors) private var c
+
+    var body: some View {
+        ZStack {
+            ImmersivePoster(colors: colors)
+            let cover: AnyView? = {
+                if let localImage {
+                    return AnyView(Image(uiImage: localImage).resizable().scaledToFill())
+                }
+                if !url.isEmpty {
+                    return AnyView(RemoteImage(url: url, contentMode: .fill, maxPixel: 320))
+                }
+                return nil
+            }()
+            if let cover {
+                cover
+                    .blur(radius: 26)
+                    .scaleEffect(1.14)          // 模糊会把边缘淡出去，放大补边
+                    .overlay(colors.opacity(0.38))  // 压住色调，标题保持可读
+                    .allowsHitTesting(false)
+            }
+        }
+    }
+}
+
+/// 线路的氛围渐变（没有真封面时兜底）：斜向渐变 + 右上高光，跟封面图一个气质。
 struct ImmersivePoster: View {
     let colors: [Color]
     var body: some View {

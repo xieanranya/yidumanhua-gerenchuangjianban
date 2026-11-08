@@ -12,6 +12,10 @@ struct SourceRow: Identifiable, Equatable {
     let canLogin: Bool
     let logged: Bool
     let needLogin: Bool
+    /// 源自己暴露了签到方法（dailyCheckIn / checkin）
+    let canCheckin: Bool
+    /// 签到方法名（invoke 时用）
+    var checkinMethod: String = ""
     /// 用户是否把它算进「全部源」的搜索与首页推荐里
     var enabled: Bool = true
 
@@ -26,7 +30,9 @@ struct SourceRow: Identifiable, Equatable {
                 name: s["name"] as? String ?? key,
                 canLogin: (s["canLogin"] as? Bool) == true,
                 logged: (s["logged"] as? Bool) == true,
-                needLogin: (s["needLogin"] as? Bool) == true
+                needLogin: (s["needLogin"] as? Bool) == true,
+                canCheckin: (s["canCheckin"] as? Bool) == true,
+                checkinMethod: s["checkinMethod"] as? String ?? ""
             )
         }
         return rows
@@ -278,69 +284,157 @@ final class SourceHub: ObservableObject {
         ExploreCache.clear()
     }
 
-    // ================================================================ 禁漫自动签到
+    // ================================================================ 自动签到（所有支持的源）
     //
-    // 触发时机：App 启动 / 每次回前台。三道闸（开关、登录态、今天没签过）都
-    // 直接读 UserDefaults，不花时间；源里的 dailyCheckIn 自带当日去重和
-    // in-progress 锁，重复触发是安全的。失败不弹提示，下次回前台自然再试。
+    // 触发时机：App 启动 / 每次回前台。逐个源检查三道闸（开关、登录态、今天没签过），
+    // 都直接读 UserDefaults；源里的签到方法自带当日去重，重复触发安全。
+    // 失败不弹提示，下次回前台自然再试。签到状态统一记在 d_<key>_lastCheckInDate。
 
-    /// 最近一次手动签到的结果提示（源管理页显示）
+    /// 最近一次签到的结果提示（源管理页显示）
     @Published private(set) var checkinNote: String? = nil
 
     func maybeAutoCheckin() async {
-        let d = UserDefaults.standard
-        guard (d.object(forKey: "s_jm_dailyCheckInTask") as? Bool) == true else { return }
-        guard d.object(forKey: "d_jm___logged") != nil else { return }
-        guard d.string(forKey: "d_jm_lastCheckInDate") != Self.jmToday() else { return }
-        let r = await SourceEngine.shared.invoke(key: "jm", method: "dailyCheckIn", args: [true], timeout: 40)
-        if (r["ok"] as? Bool) == true {
-            await MainActor.run { checkinNote = "已自动签到" }
+        await load()
+        for row in rows where row.canCheckin && row.enabled {
+            guard autoCheckinOn(row.key) else { continue }
+            guard row.logged else { continue }
+            guard lastCheckinDate(row.key) != checkinToday() else { continue }
+            let args: [Any] = row.checkinMethod == "dailyCheckIn" ? [true] : []
+            let r = await SourceEngine.shared.invoke(
+                key: row.key, method: row.checkinMethod, args: args, timeout: 40)
+            if (r["ok"] as? Bool) == true {
+                markCheckedIn(row.key)
+                await MainActor.run { checkinNote = "\(row.name) 已自动签到" }
+            }
         }
     }
 
-    /// 立即签到（源管理页按钮）。返回成功与否 + 源给的原文（「今日已签到」等）。
-    func checkinNow() async -> (Bool, String) {
-        let r = await SourceEngine.shared.invoke(key: "jm", method: "dailyCheckIn", args: [false], timeout: 40)
+    /// 立即签到（源管理页按钮）。返回成功与否 + 文案。
+    func checkinNow(_ row: SourceRow) async -> (Bool, String) {
+        let args: [Any] = row.checkinMethod == "dailyCheckIn" ? [false] : []
+        let r = await SourceEngine.shared.invoke(
+            key: row.key, method: row.checkinMethod, args: args, timeout: 40)
         let ok = (r["ok"] as? Bool) == true
-        let msg = ok
+        var msg = ok
             ? ((r["value"] as? String) ?? "签到成功")
             : ((r["error"] as? String) ?? "签到失败")
-        await MainActor.run { checkinNote = ok ? "签到成功" : msg }
-        return (ok, msg)
+        if ok {
+            markCheckedIn(row.key)
+        }
+        await MainActor.run { checkinNote = "\(row.name)：\(msg)" }
+        return (ok, ok ? msg : friendlyError(msg))
     }
 
-    /// 禁漫源里记的「上次签到日期」。格式跟源一致：toLocaleDateString('zh-CN')。
-    static func jmLastCheckinDate() -> String? {
-        UserDefaults.standard.string(forKey: "d_jm_lastCheckInDate")
+    // ---- 签到状态与开关的存储（d_<key>_lastCheckInDate / s_<key>_autoCheckin）----
+
+    func lastCheckinDate(_ key: String) -> String? {
+        UserDefaults.standard.string(forKey: "d_\(key)_lastCheckInDate")
     }
 
-    /// 今天的日期串（跟源里 toLocaleDateString('zh-CN') 同格式，无前导零）。
-    static func jmToday() -> String {
+    /// 签到成功后由宿主统一落状态（jm 源里自己也写，同 key 同格式，重复写无害）
+    private func markCheckedIn(_ key: String) {
+        UserDefaults.standard.set(checkinToday(), forKey: "d_\(key)_lastCheckInDate")
+    }
+
+    func checkedToday(_ key: String) -> Bool {
+        lastCheckinDate(key) == checkinToday()
+    }
+
+    /// 跟源里 toLocaleDateString('zh-CN') 同格式：2026/11/8（无前导零）
+    static func checkinToday() -> String {
         let f = DateFormatter()
         f.dateFormat = "yyyy/M/d"
         return f.string(from: Date())
     }
 
-    /// 禁漫手动选的线路（"1"~"4"，nil = 默认分流1）
-    static func jmLine() -> String? {
-        UserDefaults.standard.object(forKey: "s_jm_apiDomain") as? String
+    func autoCheckinOn(_ key: String) -> Bool {
+        let d = UserDefaults.standard
+        // 旧版禁漫用的开关名是源内 setting（dailyCheckInTask），兼容读一次
+        if key == "jm", d.object(forKey: "s_jm_autoCheckin") == nil {
+            return (d.object(forKey: "s_jm_dailyCheckInTask") as? Bool) == true
+        }
+        return (d.object(forKey: "s_\(key)_autoCheckin") as? Bool) == true
     }
 
-    static func setJmLine(_ value: String?) {
-        let d = UserDefaults.standard
-        if let value {
-            d.set(value, forKey: "s_jm_apiDomain")
-        } else {
-            d.removeObject(forKey: "s_jm_apiDomain")
+    func setAutoCheckin(_ key: String, _ on: Bool) {
+        UserDefaults.standard.set(on, forKey: "s_\(key)_autoCheckin")
+        if key == "jm" {
+            // 新机制接管后，把源内那份关掉，避免签到跑两遍
+            UserDefaults.standard.set(false, forKey: "s_jm_dailyCheckInTask")
         }
     }
 
-    static func jmAutoCheckinOn() -> Bool {
-        (UserDefaults.standard.object(forKey: "s_jm_dailyCheckInTask") as? Bool) == true
+    // ================================================================ 线路选择（多线路源）
+    //
+    // 宿主侧声明每源可选线路，写入源 setting（s_<key>_<settingKey>），
+    // 源自己的 loadSetting 就能读到。direct = 该线路国内可直连（不用 VPN），
+    // 直连的在列表里排前面并标绿——「有直连优先直连」。
+
+    struct LineGroup: Identifiable {
+        let settingKey: String
+        let title: String
+        let lines: [(label: String, value: String, direct: Bool)]
+        var id: String { settingKey }
     }
 
-    static func setJmAutoCheckin(_ on: Bool) {
-        UserDefaults.standard.set(on, forKey: "s_jm_dailyCheckInTask")
+    /// 有多线路的源在这里登记。没有登记的源不显示线路行（单域名没得选）。
+    static func lineGroups(for key: String) -> [LineGroup] {
+        switch key {
+        case "jm":
+            return [LineGroup(
+                settingKey: "apiDomain", title: "线路",
+                lines: [
+                    ("分流 1", "1", true), ("分流 2", "2", true),
+                    ("分流 3", "3", true), ("分流 4", "4", true),
+                ]
+            )]
+        case "copy_manga":
+            return [
+                LineGroup(
+                    settingKey: "region", title: "CDN 线路",
+                    lines: [
+                        ("大陆（可直连）", "1", true),
+                        ("海外（需代理）", "0", false),
+                    ]
+                ),
+                LineGroup(
+                    settingKey: "base_url", title: "节点",
+                    lines: [
+                        ("2026copy.com", "www.2026copy.com", true),
+                        ("2025copy.com", "www.2025copy.com", true),
+                        ("copy20.com", "www.copy20.com", true),
+                        ("mangacopy.com", "www.mangacopy.com", true),
+                        ("copy-manga.com", "www.copy-manga.com", true),
+                    ]
+                ),
+            ]
+        default:
+            return []
+        }
+    }
+
+    /// 当前选中的线路值（nil = 跟源默认走）
+    static func lineValue(_ key: String, _ setting: String) -> String? {
+        UserDefaults.standard.object(forKey: "s_\(key)_\(setting)") as? String
+    }
+
+    static func setLineValue(_ key: String, _ setting: String, _ value: String?) {
+        let d = UserDefaults.standard
+        if let value {
+            d.set(value, forKey: "s_\(key)_\(setting)")
+        } else {
+            d.removeObject(forKey: "s_\(key)_\(setting)")
+        }
+    }
+
+    /// 线路在源里的显示名（把值翻译回 label；没设置返回 defaultLabel）
+    static func lineLabel(_ key: String, _ group: LineGroup) -> String {
+        guard let v = lineValue(key, group.settingKey) else {
+            // 给出「直连优先」的建议：没设置时提示默认值是什么
+            let def = group.lines.first { $0.direct } ?? group.lines.first
+            return "默认 · 建议选「\(def?.label ?? "-")」"
+        }
+        return group.lines.first { $0.value == v }?.label ?? v
     }
 }
 

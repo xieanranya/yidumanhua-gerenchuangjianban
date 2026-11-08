@@ -223,10 +223,16 @@ struct SourceManagerView: View {
     @Environment(\.appColors) private var c
     @ObservedObject private var hub = SourceHub.shared
     @State private var account: SourceRow?
-    // 禁漫专属区
-    @State private var showLinePicker = false
-    @State private var checkinBusy = false
-    @State private var checkinMsg: String? = nil
+    // 源专属面板：线路选择目标（源key + 设置项 + 标题）
+    @State private var linePick: LinePickTarget?
+    @State private var checkinBusy: Set<String> = []
+    @State private var checkinMsg: [String: String] = [:]
+
+    struct LinePickTarget: Identifiable {
+        let rowKey: String
+        let group: SourceHub.LineGroup
+        var id: String { rowKey + group.settingKey }
+    }
 
     private var loggedCount: Int { hub.rows.filter { $0.logged }.count }
 
@@ -244,8 +250,8 @@ struct SourceManagerView: View {
                 VStack(spacing: 9) {
                     ForEach(Array(hub.rows.enumerated()), id: \.element.id) { idx, row in
                         sourceCard(row, idx)
-                        if row.key == "jm" && row.enabled {
-                            jmPanel
+                        if row.enabled && hasPanel(row) {
+                            sourcePanel(row, idx)
                         }
                     }
                 }
@@ -254,7 +260,7 @@ struct SourceManagerView: View {
 
                 NoteBar(
                     text: "关掉的源不参与「全部源」搜索和首页推荐，单独点进去仍然能看。"
-                        + "E-Hentai / 绅士漫画 / PicACG 这类站点国内仍需自备代理。",
+                        + "标「可直连」的线路不用开代理；连不上时会自动换备用线路。",
                     tone: .neutral,
                     inset: false
                 )
@@ -287,183 +293,117 @@ struct SourceManagerView: View {
         ) {
             AccountView(key: account?.key ?? "", fallbackName: account?.name ?? "")
         }
-        .confirmationDialog("禁漫 API 线路", isPresented: $showLinePicker, titleVisibility: .visible) {
-            ForEach(1...4, id: \.self) { n in
-                Button("分流 \(n)") { SourceHub.setJmLine("\(n)") }
+        .confirmationDialog(
+            "选择\(linePick?.group.title ?? "线路")",
+            isPresented: Binding(
+                get: { linePick != nil },
+                set: { if !$0 { linePick = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            if let target = linePick {
+                // 直连的排前面、带绿标
+                ForEach(Array(target.group.lines.sorted { $0.direct && !$1.direct }.enumerated()), id: \.offset) { _, line in
+                    Button {
+                        SourceHub.setLineValue(target.rowKey, target.group.settingKey, line.value)
+                    } label: {
+                        HStack {
+                            Text(line.label)
+                            if line.direct {
+                                Text("· 可直连").foregroundColor(c.ok)
+                            }
+                        }
+                    }
+                }
+                Button("恢复默认", role: .destructive) {
+                    SourceHub.setLineValue(target.rowKey, target.group.settingKey, nil)
+                }
+                Button("取消", role: .cancel) {}
             }
-            Button("恢复默认", role: .destructive) { SourceHub.setJmLine(nil) }
-            Button("取消", role: .cancel) {}
         } message: {
-            Text("选一条常用的线路；某条连不上时会自动换下一条，不影响使用。")
+            Text("选中的线路会优先使用；连不上时仍会自动换备用线路。")
         }
     }
 
-    private var lineLabel: String {
-        SourceHub.jmLine().map { "分流 \($0)" } ?? "默认（自动轮换）"
+    private func hasPanel(_ row: SourceRow) -> Bool {
+        !SourceHub.lineGroups(for: row.key).isEmpty || (row.canCheckin && row.logged)
     }
 
-    private var checkedToday: Bool {
-        SourceHub.jmLastCheckinDate() == SourceHub.jmToday()
-    }
+    // ────────────────────────── 源专属面板（线路 + 签到） ──────────────────────────
 
-    // ────────────────────────── 源行卡 ──────────────────────────
-
-    private func sourceCard(_ row: SourceRow, _ idx: Int) -> some View {
-        HStack(spacing: 12) {
-            NavigationLink {
-                BrowseView(sourceKey: row.key, sourceName: row.name)
-            } label: {
-                HStack(spacing: 12) {
-                    Text(String(row.name.prefix(1)))
-                        .font(.system(size: 14, weight: .bold))
-                        .foregroundColor(row.enabled ? .white : .white.opacity(0.55))
-                        .frame(width: 40, height: 40)
-                        .background(
-                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .fill(
-                                    LinearGradient(
-                                        colors: PosterPalette.bySeed(idx),
-                                        startPoint: .topLeading, endPoint: .bottomTrailing
-                                    )
-                                )
-                        )
-                    VStack(alignment: .leading, spacing: 2.5) {
-                        Text(row.name)
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundColor(row.enabled ? c.fg : c.fg3)
-                        HStack(spacing: 5) {
-                            if row.logged {
-                                Circle().fill(c.ok).frame(width: 5.5, height: 5.5)
-                            }
-                            Text(row.logged ? "已登录"
-                                 : (row.needLogin ? "不登录看不了"
-                                    : (row.canLogin ? "未登录" : "公开内容")))
-                                .font(.system(size: 10))
-                                .foregroundColor(row.logged ? c.ok : c.fg3)
-                                .lineLimit(1)
-                        }
+    private func sourcePanel(_ row: SourceRow, _ idx: Int) -> some View {
+        let groups = SourceHub.lineGroups(for: row.key)
+        return VStack(spacing: 0) {
+            ForEach(Array(groups.enumerated()), id: \.element.settingKey) { gi, group in
+                if gi > 0 { panelDivider }
+                Button {
+                    linePick = LinePickTarget(rowKey: row.key, group: group)
+                } label: {
+                    panelRow(
+                        glyph: .layout,
+                        tint: Color(red: 0.28, green: 0.62, blue: 0.92),
+                        title: "\(row.name) \(group.title)",
+                        sub: SourceHub.lineLabel(row.key, group)
+                    ) {
+                        GlyphView(glyph: .right, tint: c.fg3, size: 13, strokeWidth: 1.6)
                     }
-                    Spacer(minLength: 0)
                 }
-                .contentShape(Rectangle())
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
 
-            VStack(alignment: .trailing, spacing: 4) {
-                Toggle("", isOn: Binding(
-                    get: { row.enabled },
-                    set: { hub.setEnabled(row.key, $0) }
-                ))
-                .labelsHidden()
-                .tint(c.accent)
-                .scaleEffect(0.82)
-                .frame(width: 43, height: 26)
-
-                HStack(spacing: 4) {
-                    if row.canLogin {
+            if row.canCheckin {
+                if !groups.isEmpty { panelDivider }
+                // 自动签到
+                panelRow(
+                    glyph: .spark,
+                    tint: Color(red: 1.00, green: 0.43, blue: 0.61),
+                    title: "自动签到",
+                    sub: row.logged ? "打开 App 时自动签" : "登录后可用"
+                ) {
+                    Toggle("", isOn: Binding(
+                        get: { row.logged && hub.autoCheckinOn(row.key) },
+                        set: { if row.logged { hub.setAutoCheckin(row.key, $0) } }
+                    ))
+                    .labelsHidden()
+                    .tint(c.accent)
+                    .scaleEffect(0.82)
+                    .frame(width: 43, height: 26)
+                    .disabled(!row.logged)
+                }
+                panelDivider
+                // 立即签到
+                panelRow(
+                    glyph: .bookmark,
+                    tint: Color(red: 0.15, green: 0.56, blue: 0.95),
+                    title: "立即签到",
+                    sub: checkinMsg[row.key]
+                        ?? (hub.checkedToday(row.key) ? "今天已签到" : "今天还没签到")
+                ) {
+                    if checkinBusy.contains(row.key) {
+                        ProgressView().tint(c.accent).scaleEffect(0.8)
+                    } else if hub.checkedToday(row.key) {
+                        GlyphView(glyph: .spark, tint: c.ok, size: 14, strokeWidth: 1.8)
+                    } else {
                         Button {
-                            account = row
+                            checkinBusy.insert(row.key)
+                            Task {
+                                let (ok, msg) = await hub.checkinNow(row)
+                                await MainActor.run {
+                                    checkinMsg[row.key] = ok ? msg : "失败：\(msg)"
+                                    checkinBusy.remove(row.key)
+                                }
+                            }
                         } label: {
-                            Text(row.logged ? "账号" : "登录")
-                                .font(.system(size: 10, weight: .medium))
-                                .foregroundColor(row.logged ? c.ok : c.accent)
-                                .padding(.horizontal, 7)
-                                .padding(.vertical, 3)
-                                .background((row.logged ? c.ok : c.accent).opacity(0.12))
-                                .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                            Text("签到")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundColor(c.accentInk)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 5)
+                                .background(c.accent)
+                                .clipShape(Capsule())
                         }
                         .buttonStyle(.plain)
                     }
-                    moveButton("chevron.up", enabled: idx > 0) {
-                        hub.move(row.key, by: -1)
-                    }
-                    moveButton("chevron.down", enabled: idx < hub.rows.count - 1) {
-                        hub.move(row.key, by: 1)
-                    }
-                }
-            }
-        }
-        .padding(.horizontal, 13)
-        .padding(.vertical, 10)
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(c.card.opacity(0.55))
-        )
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(c.border.opacity(0.8), lineWidth: 0.8)
-        )
-    }
-
-    // ────────────────────────── 禁漫专属面板 ──────────────────────────
-
-    private var jmPanel: some View {
-        VStack(spacing: 0) {
-            // 线路
-            Button {
-                showLinePicker = true
-            } label: {
-                jmRow(
-                    glyph: .layout,
-                    tint: Color(red: 0.28, green: 0.62, blue: 0.92),
-                    title: "线路",
-                    sub: lineLabel
-                ) {
-                    GlyphView(glyph: .right, tint: c.fg3, size: 13, strokeWidth: 1.6)
-                }
-            }
-            .buttonStyle(.plain)
-            jmDivider
-            // 自动签到
-            jmRow(
-                glyph: .spark,
-                tint: Color(red: 1.00, green: 0.43, blue: 0.61),
-                title: "自动签到",
-                sub: "打开 App 时自动签"
-            ) {
-                Toggle("", isOn: Binding(
-                    get: { SourceHub.jmAutoCheckinOn() },
-                    set: { SourceHub.setJmAutoCheckin($0) }
-                ))
-                .labelsHidden()
-                .tint(c.accent)
-                .scaleEffect(0.82)
-                .frame(width: 43, height: 26)
-            }
-            jmDivider
-            // 立即签到
-            jmRow(
-                glyph: .bookmark,
-                tint: Color(red: 0.15, green: 0.56, blue: 0.95),
-                title: "立即签到",
-                sub: checkinMsg ?? (checkedToday ? "今天已签到" : "今天还没签到")
-            ) {
-                if checkinBusy {
-                    ProgressView().tint(c.accent).scaleEffect(0.8)
-                } else if checkedToday {
-                    GlyphView(glyph: .spark, tint: c.ok, size: 14, strokeWidth: 1.8)
-                } else {
-                    Button {
-                        checkinBusy = true
-                        checkinMsg = nil
-                        Task {
-                            let (ok, msg) = await hub.checkinNow()
-                            await MainActor.run {
-                                checkinMsg = ok ? "签到成功" : msg
-                                checkinBusy = false
-                            }
-                        }
-                    } label: {
-                        Text("签到")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundColor(c.accentInk)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 5)
-                            .background(c.accent)
-                            .clipShape(Capsule())
-                    }
-                    .buttonStyle(.plain)
                 }
             }
         }
@@ -477,12 +417,12 @@ struct SourceManagerView: View {
         )
     }
 
-    private var jmDivider: some View {
+    private var panelDivider: some View {
         HLine().padding(.leading, 60)
     }
 
     @ViewBuilder
-    private func jmRow<Trailing: View>(
+    private func panelRow<Trailing: View>(
         glyph: Glyph, tint: Color, title: String, sub: String,
         @ViewBuilder trailing: () -> Trailing
     ) -> some View {

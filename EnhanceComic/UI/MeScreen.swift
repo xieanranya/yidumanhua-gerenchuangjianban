@@ -329,6 +329,96 @@ struct SourceManagerView: View {
         !SourceHub.lineGroups(for: row.key).isEmpty || (row.canCheckin && row.logged)
     }
 
+    // ────────────────────────── 源行卡 ──────────────────────────
+
+    private func sourceCard(_ row: SourceRow, _ idx: Int) -> some View {
+        HStack(spacing: 12) {
+            NavigationLink {
+                BrowseView(sourceKey: row.key, sourceName: row.name)
+            } label: {
+                HStack(spacing: 12) {
+                    Text(String(row.name.prefix(1)))
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundColor(row.enabled ? .white : .white.opacity(0.55))
+                        .frame(width: 40, height: 40)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(
+                                    LinearGradient(
+                                        colors: PosterPalette.bySeed(idx),
+                                        startPoint: .topLeading, endPoint: .bottomTrailing
+                                    )
+                                )
+                        )
+                    VStack(alignment: .leading, spacing: 2.5) {
+                        Text(row.name)
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundColor(row.enabled ? c.fg : c.fg3)
+                        HStack(spacing: 5) {
+                            if row.logged {
+                                Circle().fill(c.ok).frame(width: 5.5, height: 5.5)
+                            }
+                            Text(row.logged ? "已登录"
+                                 : (row.needLogin ? "不登录看不了"
+                                    : (row.canLogin ? "未登录" : "公开内容")))
+                                .font(.system(size: 10))
+                                .foregroundColor(row.logged ? c.ok : c.fg3)
+                                .lineLimit(1)
+                        }
+                    }
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            VStack(alignment: .trailing, spacing: 4) {
+                Toggle("", isOn: Binding(
+                    get: { row.enabled },
+                    set: { hub.setEnabled(row.key, $0) }
+                ))
+                .labelsHidden()
+                .tint(c.accent)
+                .scaleEffect(0.82)
+                .frame(width: 43, height: 26)
+
+                HStack(spacing: 4) {
+                    if row.canLogin {
+                        Button {
+                            account = row
+                        } label: {
+                            Text(row.logged ? "账号" : "登录")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundColor(row.logged ? c.ok : c.accent)
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 3)
+                                .background((row.logged ? c.ok : c.accent).opacity(0.12))
+                                .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    moveButton("chevron.up", enabled: idx > 0) {
+                        hub.move(row.key, by: -1)
+                    }
+                    moveButton("chevron.down", enabled: idx < hub.rows.count - 1) {
+                        hub.move(row.key, by: 1)
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 13)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(c.card.opacity(0.55))
+        )
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(c.border.opacity(0.8), lineWidth: 0.8)
+        )
+    }
+
     // ────────────────────────── 源专属面板（线路 + 签到） ──────────────────────────
 
     private func sourcePanel(_ row: SourceRow, _ idx: Int) -> some View {

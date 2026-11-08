@@ -298,7 +298,7 @@ final class SourceHub: ObservableObject {
         for row in rows where row.canCheckin && row.enabled {
             guard autoCheckinOn(row.key) else { continue }
             guard row.logged else { continue }
-            guard lastCheckinDate(row.key) != checkinToday() else { continue }
+            guard lastCheckinDate(row.key) != Self.checkinToday() else { continue }
             let args: [Any] = row.checkinMethod == "dailyCheckIn" ? [true] : []
             let r = await SourceEngine.shared.invoke(
                 key: row.key, method: row.checkinMethod, args: args, timeout: 40)
@@ -333,11 +333,11 @@ final class SourceHub: ObservableObject {
 
     /// 签到成功后由宿主统一落状态（jm 源里自己也写，同 key 同格式，重复写无害）
     private func markCheckedIn(_ key: String) {
-        UserDefaults.standard.set(checkinToday(), forKey: "d_\(key)_lastCheckInDate")
+        UserDefaults.standard.set(Self.checkinToday(), forKey: "d_\(key)_lastCheckInDate")
     }
 
     func checkedToday(_ key: String) -> Bool {
-        lastCheckinDate(key) == checkinToday()
+        lastCheckinDate(key) == Self.checkinToday()
     }
 
     /// 跟源里 toLocaleDateString('zh-CN') 同格式：2026/11/8（无前导零）

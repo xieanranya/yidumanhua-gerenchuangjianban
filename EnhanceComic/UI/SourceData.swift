@@ -381,13 +381,32 @@ final class SourceHub: ObservableObject {
     static func lineGroups(for key: String) -> [LineGroup] {
         switch key {
         case "jm":
-            return [LineGroup(
-                settingKey: "apiDomain", title: "线路",
-                lines: [
-                    ("分流 1", "1", true), ("分流 2", "2", true),
-                    ("分流 3", "3", true), ("分流 4", "4", true),
-                ]
-            )]
+            // 清单对齐禁漫官方 App 的「线路与图源」设置页（全部直连可用）
+            return [
+                LineGroup(
+                    settingKey: "apiDomain", title: "API 线路",
+                    lines: [
+                        ("www.cdngwc.club", "1", true),
+                        ("www.cdngwc.net", "2", true),
+                        ("www.cdnutc.cc", "3", true),
+                        ("www.cdnbtd.cc", "4", true),
+                        ("www.cdnhjk.net", "5", true),
+                        ("www.cdngwc.cc", "6", true),
+                        ("www.cdnutc.me", "7", true),
+                    ]
+                ),
+                LineGroup(
+                    settingKey: "imgDomain", title: "图片源",
+                    lines: [
+                        ("跟随服务配置", "follow", true),
+                        ("cdn-msp3.jmapiproxy1.cc", "cdn-msp3.jmapiproxy1.cc", true),
+                        ("cdn-msp.jmapiproxy1.cc", "cdn-msp.jmapiproxy1.cc", true),
+                        ("cdn-msp.jmapiproxy2.cc", "cdn-msp.jmapiproxy2.cc", true),
+                        ("cdn-msp2.jmapiproxy2.cc", "cdn-msp2.jmapiproxy2.cc", true),
+                        ("cdn-msp3.jmapiproxy2.cc", "cdn-msp3.jmapiproxy2.cc", true),
+                    ]
+                ),
+            ]
         case "copy_manga":
             return [
                 LineGroup(

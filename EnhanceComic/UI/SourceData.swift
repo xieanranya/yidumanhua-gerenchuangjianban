@@ -277,6 +277,71 @@ final class SourceHub: ObservableObject {
         rows = next.compactMap { byKey[$0] }
         ExploreCache.clear()
     }
+
+    // ================================================================ 禁漫自动签到
+    //
+    // 触发时机：App 启动 / 每次回前台。三道闸（开关、登录态、今天没签过）都
+    // 直接读 UserDefaults，不花时间；源里的 dailyCheckIn 自带当日去重和
+    // in-progress 锁，重复触发是安全的。失败不弹提示，下次回前台自然再试。
+
+    /// 最近一次手动签到的结果提示（源管理页显示）
+    @Published private(set) var checkinNote: String? = nil
+
+    func maybeAutoCheckin() async {
+        let d = UserDefaults.standard
+        guard (d.object(forKey: "s_jm_dailyCheckInTask") as? Bool) == true else { return }
+        guard d.object(forKey: "d_jm___logged") != nil else { return }
+        guard d.string(forKey: "d_jm_lastCheckInDate") != Self.jmToday() else { return }
+        let r = await SourceEngine.shared.invoke(key: "jm", method: "dailyCheckIn", args: [true], timeout: 40)
+        if (r["ok"] as? Bool) == true {
+            await MainActor.run { checkinNote = "已自动签到" }
+        }
+    }
+
+    /// 立即签到（源管理页按钮）。返回成功与否 + 源给的原文（「今日已签到」等）。
+    func checkinNow() async -> (Bool, String) {
+        let r = await SourceEngine.shared.invoke(key: "jm", method: "dailyCheckIn", args: [false], timeout: 40)
+        let ok = (r["ok"] as? Bool) == true
+        let msg = ok
+            ? ((r["value"] as? String) ?? "签到成功")
+            : ((r["error"] as? String) ?? "签到失败")
+        await MainActor.run { checkinNote = ok ? "签到成功" : msg }
+        return (ok, msg)
+    }
+
+    /// 禁漫源里记的「上次签到日期」。格式跟源一致：toLocaleDateString('zh-CN')。
+    static func jmLastCheckinDate() -> String? {
+        UserDefaults.standard.string(forKey: "d_jm_lastCheckInDate")
+    }
+
+    /// 今天的日期串（跟源里 toLocaleDateString('zh-CN') 同格式，无前导零）。
+    static func jmToday() -> String {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy/M/d"
+        return f.string(from: Date())
+    }
+
+    /// 禁漫手动选的线路（"1"~"4"，nil = 默认分流1）
+    static func jmLine() -> String? {
+        UserDefaults.standard.object(forKey: "s_jm_apiDomain") as? String
+    }
+
+    static func setJmLine(_ value: String?) {
+        let d = UserDefaults.standard
+        if let value {
+            d.set(value, forKey: "s_jm_apiDomain")
+        } else {
+            d.removeObject(forKey: "s_jm_apiDomain")
+        }
+    }
+
+    static func jmAutoCheckinOn() -> Bool {
+        (UserDefaults.standard.object(forKey: "s_jm_dailyCheckInTask") as? Bool) == true
+    }
+
+    static func setJmAutoCheckin(_ on: Bool) {
+        UserDefaults.standard.set(on, forKey: "s_jm_dailyCheckInTask")
+    }
 }
 
 // ========================================================================== 带超时的取数

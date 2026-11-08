@@ -2298,6 +2298,25 @@ __SOURCE_CODE["mh18"] = "/** @type {import('./_venera_.js')} */\nclass MH18 exte
       });
     },
 
+    /**
+     * 通用源方法调用：签到这类「源自己暴露的能力」从这走。
+     * 源 throw 的错误原样带出（error = 源里的原文，比如「今日已签到」），
+     * 成功返回 {ok:true}（或源自己的返回对象）。
+     */
+    invoke: function (key, method, argsJson) {
+      return run(async function () {
+        var s = inst(key);
+        await ensureInit(s, key);
+        var fn = s[method];
+        if (typeof fn !== 'function') throw new Error('源不支持: ' + method);
+        var args = argsJson ? JSON.parse(argsJson) : [];
+        var r = await fn.apply(s, args);
+        if (r === undefined || r === null) return { ok: true };
+        if (typeof r === 'object') return r;
+        return { ok: true, value: String(r) };
+      });
+    },
+
     searchOptions: function (key) {
       try {
         var s = inst(key);

@@ -214,108 +214,64 @@ struct MeScreen: View {
 
 // ================================================================================== 源管理
 
+/// 源管理（v3 沉浸式）：头图 + 毛玻璃源卡（渐变图标 / 登录态 / 开关 / 排序）；
+/// 禁漫展开专属区：线路选择 + 自动签到开关 + 立即签到。
 struct SourceManagerView: View {
 
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var ui: UiStore
     @Environment(\.appColors) private var c
     @ObservedObject private var hub = SourceHub.shared
     @State private var account: SourceRow?
+    // 禁漫专属区
+    @State private var showLinePicker = false
+    @State private var checkinBusy = false
+    @State private var checkinMsg: String? = nil
+
+    private var loggedCount: Int { hub.rows.filter { $0.logged }.count }
+
+    private var subline: String {
+        "\(hub.rows.count) 个源 · 已登录 \(loggedCount) 个"
+    }
 
     var body: some View {
-        VStack(spacing: 0) {
-            SubHeader(
-                title: "源管理",
-                subtitle: sourceSummary(hub.rows),
-                onBack: { dismiss() },
-                trailing: nil
-            )
-            HLine()
-
-            ScrollView {
-                VStack(spacing: 0) {
-                    ForEach(Array(hub.rows.enumerated()), id: \.element.id) { idx, row in
-                        HStack(spacing: 11) {
-                            NavigationLink {
-                                BrowseView(sourceKey: row.key, sourceName: row.name)
-                            } label: {
-                                HStack(spacing: 11) {
-                                    ZStack {
-                                        RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                            .fill(c.chip)
-                                        Text(String(row.name.prefix(1)))
-                                            .font(.system(size: 15, weight: .bold))
-                                            .foregroundColor(row.enabled ? c.fg2 : c.fg3)
-                                    }
-                                    .frame(width: 34, height: 34)
-
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(row.name)
-                                            .font(.system(size: 13.5, weight: .medium))
-                                            .foregroundColor(row.enabled ? c.fg : c.fg3)
-                                        Text(row.logged ? "已登录"
-                                             : (row.needLogin ? "不登录看不了"
-                                                : (row.canLogin ? "未登录" : "公开内容")))
-                                            .font(.system(size: 10))
-                                            .foregroundColor(row.logged ? c.ok : c.fg3)
-                                            .lineLimit(1)
-                                    }
-                                    Spacer(minLength: 0)
-                                }
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-
-                            VStack(alignment: .trailing, spacing: 3) {
-                                Toggle("", isOn: Binding(
-                                    get: { row.enabled },
-                                    set: { hub.setEnabled(row.key, $0) }
-                                ))
-                                .labelsHidden()
-                                .tint(c.accent)
-                                .scaleEffect(0.82)
-                                .frame(width: 43, height: 26)
-
-                                HStack(spacing: 3) {
-                                    if row.canLogin {
-                                        Button {
-                                            account = row
-                                        } label: {
-                                            Text(row.logged ? "账号" : "登录")
-                                                .font(.system(size: 10, weight: .medium))
-                                                .foregroundColor(row.logged ? c.ok : c.accent)
-                                                .padding(.horizontal, 7)
-                                                .padding(.vertical, 3)
-                                                .background((row.logged ? c.ok : c.accent).opacity(0.12))
-                                                .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
-                                        }
-                                        .buttonStyle(.plain)
-                                    }
-                                    moveButton("chevron.up", enabled: idx > 0) {
-                                        hub.move(row.key, by: -1)
-                                    }
-                                    moveButton("chevron.down", enabled: idx < hub.rows.count - 1) {
-                                        hub.move(row.key, by: 1)
-                                    }
-                                }
-                            }
-                        }
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 8)
-                        HLine().padding(.leading, 61)
-                    }
-
-                    NoteBar(
-                        text: "关掉的源不参与「全部源」的搜索和首页推荐，箭头调顺序，"
-                            + "单独点进去仍然能看。E-Hentai / 绅士漫画 / PicACG 这类站点国内仍需自备代理。",
-                        tone: .neutral,
-                        inset: false
-                    )
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 14)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                ImmersiveHeader(title: "源管理", subtitle: subline, height: 240) {
+                    ImmersivePoster(colors: PosterPalette.azure)
                 }
+
+                VStack(spacing: 9) {
+                    ForEach(Array(hub.rows.enumerated()), id: \.element.id) { idx, row in
+                        sourceCard(row, idx)
+                        if row.key == "jm" && row.enabled {
+                            jmPanel
+                        }
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, -30)
+
+                NoteBar(
+                    text: "关掉的源不参与「全部源」搜索和首页推荐，单独点进去仍然能看。"
+                        + "E-Hentai / 绅士漫画 / PicACG 这类站点国内仍需自备代理。",
+                    tone: .neutral,
+                    inset: false
+                )
+                .padding(.horizontal, 16)
+                .padding(.top, 14)
+                .padding(.bottom, 30)
             }
         }
         .background(c.bg.ignoresSafeArea())
+        .coordinateSpace(name: "immersiveScroll")
+        .ignoresSafeArea(edges: .top)
+        .overlay(alignment: .topLeading) {
+            GlassCircleButton(glyph: .back) { dismiss() }
+                .padding(.leading, 16)
+                .padding(.top, safeTop() + 8)
+        }
+        .immersiveStatusBar(ui)
         .toolbar(.hidden, for: .navigationBar)
         .task { await hub.load(force: false) }
         .navigationDestination(
@@ -331,6 +287,227 @@ struct SourceManagerView: View {
         ) {
             AccountView(key: account?.key ?? "", fallbackName: account?.name ?? "")
         }
+        .confirmationDialog("禁漫 API 线路", isPresented: $showLinePicker, titleVisibility: .visible) {
+            ForEach(1...4, id: \.self) { n in
+                Button("分流 \(n)") { SourceHub.setJmLine("\(n)") }
+            }
+            Button("恢复默认", role: .destructive) { SourceHub.setJmLine(nil) }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("选一条常用的线路；某条连不上时会自动换下一条，不影响使用。")
+        }
+    }
+
+    private var lineLabel: String {
+        SourceHub.jmLine().map { "分流 \($0)" } ?? "默认（自动轮换）"
+    }
+
+    private var checkedToday: Bool {
+        SourceHub.jmLastCheckinDate() == SourceHub.jmToday()
+    }
+
+    // ────────────────────────── 源行卡 ──────────────────────────
+
+    private func sourceCard(_ row: SourceRow, _ idx: Int) -> some View {
+        HStack(spacing: 12) {
+            NavigationLink {
+                BrowseView(sourceKey: row.key, sourceName: row.name)
+            } label: {
+                HStack(spacing: 12) {
+                    Text(String(row.name.prefix(1)))
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundColor(row.enabled ? .white : .white.opacity(0.55))
+                        .frame(width: 40, height: 40)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(
+                                    LinearGradient(
+                                        colors: PosterPalette.bySeed(idx),
+                                        startPoint: .topLeading, endPoint: .bottomTrailing
+                                    )
+                                )
+                        )
+                    VStack(alignment: .leading, spacing: 2.5) {
+                        Text(row.name)
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundColor(row.enabled ? c.fg : c.fg3)
+                        HStack(spacing: 5) {
+                            if row.logged {
+                                Circle().fill(c.ok).frame(width: 5.5, height: 5.5)
+                            }
+                            Text(row.logged ? "已登录"
+                                 : (row.needLogin ? "不登录看不了"
+                                    : (row.canLogin ? "未登录" : "公开内容")))
+                                .font(.system(size: 10))
+                                .foregroundColor(row.logged ? c.ok : c.fg3)
+                                .lineLimit(1)
+                        }
+                    }
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            VStack(alignment: .trailing, spacing: 4) {
+                Toggle("", isOn: Binding(
+                    get: { row.enabled },
+                    set: { hub.setEnabled(row.key, $0) }
+                ))
+                .labelsHidden()
+                .tint(c.accent)
+                .scaleEffect(0.82)
+                .frame(width: 43, height: 26)
+
+                HStack(spacing: 4) {
+                    if row.canLogin {
+                        Button {
+                            account = row
+                        } label: {
+                            Text(row.logged ? "账号" : "登录")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundColor(row.logged ? c.ok : c.accent)
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 3)
+                                .background((row.logged ? c.ok : c.accent).opacity(0.12))
+                                .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    moveButton("chevron.up", enabled: idx > 0) {
+                        hub.move(row.key, by: -1)
+                    }
+                    moveButton("chevron.down", enabled: idx < hub.rows.count - 1) {
+                        hub.move(row.key, by: 1)
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 13)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(c.card.opacity(0.55))
+        )
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(c.border.opacity(0.8), lineWidth: 0.8)
+        )
+    }
+
+    // ────────────────────────── 禁漫专属面板 ──────────────────────────
+
+    private var jmPanel: some View {
+        VStack(spacing: 0) {
+            // 线路
+            Button {
+                showLinePicker = true
+            } label: {
+                jmRow(
+                    glyph: .layout,
+                    tint: Color(red: 0.28, green: 0.62, blue: 0.92),
+                    title: "线路",
+                    sub: lineLabel
+                ) {
+                    GlyphView(glyph: .right, tint: c.fg3, size: 13, strokeWidth: 1.6)
+                }
+            }
+            .buttonStyle(.plain)
+            jmDivider
+            // 自动签到
+            jmRow(
+                glyph: .spark,
+                tint: Color(red: 1.00, green: 0.43, blue: 0.61),
+                title: "自动签到",
+                sub: "打开 App 时自动签"
+            ) {
+                Toggle("", isOn: Binding(
+                    get: { SourceHub.jmAutoCheckinOn() },
+                    set: { SourceHub.setJmAutoCheckin($0) }
+                ))
+                .labelsHidden()
+                .tint(c.accent)
+                .scaleEffect(0.82)
+                .frame(width: 43, height: 26)
+            }
+            jmDivider
+            // 立即签到
+            jmRow(
+                glyph: .bookmark,
+                tint: Color(red: 0.15, green: 0.56, blue: 0.95),
+                title: "立即签到",
+                sub: checkinMsg ?? (checkedToday ? "今天已签到" : "今天还没签到")
+            ) {
+                if checkinBusy {
+                    ProgressView().tint(c.accent).scaleEffect(0.8)
+                } else if checkedToday {
+                    GlyphView(glyph: .spark, tint: c.ok, size: 14, strokeWidth: 1.8)
+                } else {
+                    Button {
+                        checkinBusy = true
+                        checkinMsg = nil
+                        Task {
+                            let (ok, msg) = await hub.checkinNow()
+                            await MainActor.run {
+                                checkinMsg = ok ? "签到成功" : msg
+                                checkinBusy = false
+                            }
+                        }
+                    } label: {
+                        Text("签到")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(c.accentInk)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 5)
+                            .background(c.accent)
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(c.accent.opacity(0.06))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(c.accent.opacity(0.25), lineWidth: 0.8)
+        )
+    }
+
+    private var jmDivider: some View {
+        HLine().padding(.leading, 60)
+    }
+
+    @ViewBuilder
+    private func jmRow<Trailing: View>(
+        glyph: Glyph, tint: Color, title: String, sub: String,
+        @ViewBuilder trailing: () -> Trailing
+    ) -> some View {
+        HStack(spacing: 12) {
+            GlyphView(glyph: glyph, tint: .white, size: 15, strokeWidth: 1.7)
+                .frame(width: 30, height: 30)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(tint)
+                )
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 13.5, weight: .semibold))
+                    .foregroundColor(c.fg)
+                Text(sub)
+                    .font(.system(size: 10))
+                    .foregroundColor(c.fg3)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 0)
+            trailing()
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .contentShape(Rectangle())
     }
 
     /// 行内的小箭头：调顺序用。到头了就淡掉并禁用，不做「绕回」。

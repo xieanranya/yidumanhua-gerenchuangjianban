@@ -171,6 +171,41 @@ final class SourceEngine {
         await asyncCall("account", [jsLiteral(key)])
     }
 
+    /// 通用源方法调用（禁漫签到这类「源自己暴露的能力」）。
+    /// 源 throw 的错误会在返回的 error 字段里原样带出。
+    func invoke(key: String, method: String, args: [Any] = [], timeout: TimeInterval = 30) async -> [String: Any] {
+        let argsJson: String
+        if let d = try? JSONSerialization.data(withJSONObject: args),
+           let s = String(data: d, encoding: .utf8) {
+            argsJson = s
+        } else {
+            argsJson = "[]"
+        }
+        return await asyncCall("invoke", [jsLiteral(key), jsLiteral(method), jsLiteral(argsJson)], timeout: timeout)
+    }
+
+    // MARK: - KV 直读（宿主 UI 要看源的数据/设置，不经 JS）
+
+    /// 源 saveData 写的 KV（d_<key>_<field>）。比如禁漫的 lastCheckInDate。
+    func kvData(_ key: String, _ field: String) -> Any? {
+        defaults.object(forKey: "d_\(key)_\(field)")
+    }
+
+    /// 源 loadSetting 读的 KV（s_<key>_<field>）。
+    func kvSetting(_ key: String, _ field: String) -> Any? {
+        defaults.object(forKey: "s_\(key)_\(field)")
+    }
+
+    /// 写源的设置（源下次 loadSetting 就能读到）。注意设置名必须和源里 settings 声明的一致。
+    func setKvSetting(_ key: String, _ field: String, _ value: Any) {
+        defaults.set(value, forKey: "s_\(key)_\(field)")
+    }
+
+    /// 删掉一个设置 = 恢复源里的默认值。
+    func removeKvSetting(_ key: String, _ field: String) {
+        defaults.removeObject(forKey: "s_\(key)_\(field)")
+    }
+
     // MARK: - 调 JS
 
     private func syncCall(_ method: String, _ args: [String] = []) async -> Any? {

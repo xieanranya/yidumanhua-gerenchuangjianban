@@ -282,7 +282,7 @@ struct AmbientCover: View {
                 cover
                     .blur(radius: 26)
                     .scaleEffect(1.14)          // 模糊会把边缘淡出去，放大补边
-                    .overlay(colors.opacity(0.38))  // 压住色调，标题保持可读
+                    .overlay(ImmersivePoster(colors: colors).opacity(0.38))  // 压住色调，标题保持可读
                     .allowsHitTesting(false)
             }
         }

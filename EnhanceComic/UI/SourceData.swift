@@ -378,6 +378,13 @@ final class SourceHub: ObservableObject {
         let direct: Bool
         /// 非 nil = 选择面板里会对这个域名现场测速（显示延迟/不通）
         var probeHost: String? = nil
+
+        init(_ label: String, _ value: String, _ direct: Bool, probeHost: String? = nil) {
+            self.label = label
+            self.value = value
+            self.direct = direct
+            self.probeHost = probeHost
+        }
     }
 
     struct LineGroup: Identifiable {

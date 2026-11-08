@@ -1,7 +1,10 @@
 import SwiftUI
 
-/// 发现（v3 沉浸式）：头图紫渐变铺到状态栏后；源列表升级为毛玻璃悬浮卡；
-/// 点源进单源页（同样沉浸头图 + 左上返回圆钮）。
+/// 发现（v3.1 · 单页直显）：打开就是内容，不要「先选源再看」的两级结构。
+///
+/// 布局对齐 JmBox：顶部源 chips（默认第一个源=禁漫）→ 分区 chips（该源的
+/// explore 分区）→ 3 列大封面网格。点源 chips 切换其他源，点「聚合」看全部源
+/// 的合并结果。搜索在右上圆钮里。
 struct DiscoverScreen: View {
 
     @EnvironmentObject private var store: LibraryStore
@@ -11,19 +14,14 @@ struct DiscoverScreen: View {
 
     @State private var keyword = ""
     @State private var query = ""
-    @State private var picked = ""          // "" = 全部源
+    @State private var picked = ""          // 源 key；"agg" = 全部源聚合；"" = 还没选（进页面自动选）
+    @State private var sectionIdx = 0       // 当前分区（单源模式）
     @State private var works: [Work] = []
     @State private var sections: [ExploreSection] = []
     @State private var busy = true
     @State private var error: String?
-    @State private var okSources = 0
-    @State private var failedSources = 0
     @State private var reloadTick = 0
-    // 点「12 本 ›」打开的分区全部列表
-    @State private var openSection: ExploreSection?
-    // 搜索框默认收起（右上圆钮展开）；聚合完整列表页开关
     @State private var showSearch = false
-    @State private var showAggAll = false
 
     private let columns = [
         GridItem(.flexible(minimum: 0, maximum: .infinity), spacing: 9),
@@ -31,31 +29,26 @@ struct DiscoverScreen: View {
         GridItem(.flexible(minimum: 0, maximum: .infinity), spacing: 9),
     ]
 
-    var body: some View {
-        if let sec = openSection {
-            SectionListView(
-                title: sec.title.isEmpty ? "发现" : sec.title,
-                comics: sec.comics,
-                onBack: { openSection = nil }
-            )
-        } else if showAggAll {
-            aggAllView
-        } else if !picked.isEmpty {
-            sourcePage
-        } else {
-            discoverRoot
-        }
+    private var subline: String {
+        let name = pickedName
+        return name.isEmpty ? "\(hub.enabledRows.count) 个源可用" : "\(name) · \(hub.enabledRows.count) 个源可切换"
     }
 
-    // ══════════════════════ 根页（沉浸头图 + 源卡） ══════════════════════
+    private var pickedName: String {
+        if picked == "agg" { return "全部源聚合" }
+        return hub.enabledRows.first { $0.key == picked }?.name ?? ""
+    }
+
+    var body: some View {
+        discoverRoot
+    }
+
+    // ══════════════════════ 单页直显 ══════════════════════
 
     private var discoverRoot: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                ImmersiveHeader(
-                    title: "发现",
-                    subtitle: "按源浏览 · \(hub.enabledRows.count) 个源可用"
-                ) {
+                ImmersiveHeader(title: "发现", subtitle: subline) {
                     ImmersivePoster(colors: PosterPalette.violet)
                 }
 
@@ -66,61 +59,50 @@ struct DiscoverScreen: View {
                         .padding(.bottom, 4)
                 }
 
-                // 毛玻璃源悬浮卡
-                VStack(spacing: 9) {
-                    ForEach(Array(hub.enabledRows.enumerated()), id: \.element.key) { idx, row in
-                        sourceCard(row, idx)
-                    }
-                }
-                .padding(.horizontal, 16)
-                .padding(.top, showSearch ? 10 : -34)
-
-                SectionHeader(
-                    title: "全部源聚合",
-                    more: works.isEmpty ? nil : "查看全部 ›",
-                    onMore: works.isEmpty ? nil : { showAggAll = true },
-                    inset: false
-                )
-                .padding(.horizontal, 18)
-
-                if busy {
-                    LoadingBox(height: 120)
-                } else if works.isEmpty {
-                    if error == nil {
-                        Text("源还没有给出内容。")
-                            .font(.system(size: 11.5))
-                            .foregroundColor(c.fg3)
-                            .padding(.horizontal, 18)
-                            .padding(.bottom, 20)
-                    } else {
-                        Text(error!)
-                            .font(.system(size: 10.5))
-                            .foregroundColor(c.fg3)
-                            .lineLimit(2)
-                            .padding(.horizontal, 18)
-                            .padding(.bottom, 20)
-                    }
-                } else {
-                    LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
-                        ForEach(works.prefix(6)) { work in
-                            NavigationLink {
-                                DetailView(work: work)
-                            } label: {
-                                ComicCell(
-                                    title: work.title,
-                                    cover: work.cover,
-                                    sub: work.sourceCount > 1 ? work.sourceNames : work.primary.sourceName,
-                                    badge: work.badge,
-                                    seed: work.norm.hashValue
-                                )
+                // 源 chips：默认第一个源（禁漫），最后一个「聚合」
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 7) {
+                        ForEach(hub.enabledRows) { row in
+                            Chip(text: row.name, selected: picked == row.key) {
+                                if picked != row.key {
+                                    picked = row.key
+                                    sectionIdx = 0
+                                    reloadTick += 1
+                                }
                             }
-                            .buttonStyle(.plain)
+                        }
+                        Chip(text: "聚合", selected: picked == "agg") {
+                            if picked != "agg" {
+                                picked = "agg"
+                                reloadTick += 1
+                            }
                         }
                     }
                     .padding(.horizontal, 18)
-                    .padding(.bottom, 26)
+                    .padding(.vertical, 2)
+                }
+                .padding(.top, showSearch ? 10 : -34)
+                .padding(.bottom, 6)
+
+                if busy {
+                    LoadingBox(height: 220)
+                } else if let error {
+                    VStack(spacing: 10) {
+                        EmptyHint(
+                            title: query.isEmpty ? "没有取到内容" : "没有找到「\(query)」",
+                            message: error,
+                            glyph: .search
+                        )
+                        MiniButton(text: "重新加载", accent: true) { reloadTick += 1 }
+                            .padding(.bottom, 30)
+                    }
+                } else if picked == "agg" {
+                    aggregateGrid
+                } else {
+                    sourceSections
                 }
             }
+            .padding(.bottom, 26)
         }
         .background(c.bg.ignoresSafeArea())
         .coordinateSpace(name: "immersiveScroll")
@@ -136,149 +118,68 @@ struct DiscoverScreen: View {
         .task(id: "\(picked)|\(query)|\(reloadTick)") { await load() }
     }
 
-    /// 毛玻璃源悬浮卡（图标渐变 + 名称 + 登录状态 + 绿点）
-    private func sourceCard(_ row: SourceRow, _ idx: Int) -> some View {
-        Button {
-            picked = row.key
-            reloadTick += 1
-        } label: {
-            HStack(spacing: 12) {
-                Text(String(row.name.prefix(1)))
-                    .font(.system(size: 14, weight: .bold))
-                    .foregroundColor(.white)
-                    .frame(width: 40, height: 40)
-                    .background(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(
-                                LinearGradient(
-                                    colors: PosterPalette.bySeed(idx),
-                                    startPoint: .topLeading, endPoint: .bottomTrailing
-                                )
-                            )
-                    )
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(row.name)
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundColor(c.fg)
-                    Text(row.logged ? "已登录"
-                         : (row.needLogin ? "需要登录后浏览"
-                            : (row.canLogin ? "支持账号登录" : "公开内容")))
-                        .font(.system(size: 10))
-                        .foregroundColor(c.fg3)
-                        .lineLimit(1)
-                }
-                Spacer(minLength: 0)
-                if row.logged {
-                    Circle().fill(c.ok).frame(width: 6, height: 6)
-                }
-                GlyphView(glyph: .right, tint: c.fg3, size: 13, strokeWidth: 1.6)
-            }
-            .padding(.horizontal, 13)
-            .padding(.vertical, 11)
-            .background(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(c.card.opacity(0.55))
-            )
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .stroke(c.border.opacity(0.8), lineWidth: 0.8)
-            )
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-
-    // ══════════════════════ 单源页（沉浸头图 + 返回圆钮） ══════════════════════
-
-    private var sourcePage: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                ImmersiveHeader(
-                    title: pickedName,
-                    subtitle: pickedSub,
-                    height: 250
-                ) {
-                    ImmersivePoster(colors: PosterPalette.bySeed(pickedSeed))
-                }
-
-                Group {
-                    if busy {
-                        LoadingBox(height: 200)
-                            .padding(.top, -20)
-                    } else if let error {
-                        VStack(spacing: 10) {
-                            EmptyHint(title: "没有找到内容", message: error, glyph: .search)
-                            MiniButton(text: "重新加载", accent: true) { reloadTick += 1 }
-                                .padding(.bottom, 30)
+    /// 单源模式：分区 chips（JmBox 式分类）+ 当前分区的 3 列大封面网格
+    @ViewBuilder
+    private var sourceSections: some View {
+        if sections.isEmpty {
+            Text("这个源没有返回内容，换一个源试试。")
+                .font(.system(size: 11.5))
+                .foregroundColor(c.fg3)
+                .padding(.horizontal, 18)
+                .padding(.top, 20)
+        } else {
+            let safeIdx = min(sectionIdx, sections.count - 1)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 7) {
+                    ForEach(Array(sections.enumerated()), id: \.offset) { i, sec in
+                        Chip(text: sec.title.isEmpty ? "分区 \(i + 1)" : sec.title, selected: safeIdx == i) {
+                            sectionIdx = i
                         }
-                        .padding(.top, -16)
-                    } else {
-                        singleSourceGrid
-                            .padding(.top, -18)
                     }
                 }
+                .padding(.horizontal, 18)
+                .padding(.vertical, 2)
             }
-        }
-        .background(c.bg.ignoresSafeArea())
-        .coordinateSpace(name: "immersiveScroll")
-        .ignoresSafeArea(edges: .top)
-        .overlay(alignment: .topLeading) {
-            GlassCircleButton(glyph: .back) { picked = "" }
-                .padding(.leading, 16)
-                .padding(.top, safeTop() + 8)
-        }
-        .immersiveStatusBar(ui)
-        .task(id: "s|\(picked)|\(query)|\(reloadTick)") { await load() }
-    }
+            .padding(.bottom, 6)
 
-    private var pickedName: String {
-        hub.enabledRows.first { $0.key == picked }?.name ?? picked
-    }
-
-    private var pickedSub: String {
-        guard let row = hub.enabledRows.first(where: { $0.key == picked }) else { return "源浏览" }
-        if row.logged { return "已登录 · 源首页" }
-        if row.needLogin { return "不登录看不了这个源" }
-        return row.canLogin ? "支持账号登录" : "公开内容"
-    }
-
-    private var pickedSeed: Int {
-        guard let idx = hub.enabledRows.firstIndex(where: { $0.key == picked }) else { return 0 }
-        return idx
-    }
-
-    // ══════════════════════ 聚合完整列表（普通二级页） ══════════════════════
-
-    private var aggAllView: some View {
-        VStack(spacing: 0) {
-            navbarBack("全部源聚合") { showAggAll = false }
-            ScrollView {
-                if busy { LoadingBox(height: 220).padding(.top, 30) }
-                else if works.isEmpty { EmptyHint(title: "没有取到内容", message: error ?? "回头再试一次。", glyph: .discover) }
-                else { aggregateGrid }
-            }
-            .background(c.bg)
-        }
-        .immersiveStatusBar(ui, light: false)
-    }
-
-    /// 源浏览页的返回导航条（「‹ 发现」）
-    private func navbarBack(_ title: String, onBack: @escaping () -> Void) -> some View {
-        HStack(spacing: 7) {
-            Button(action: onBack) {
-                HStack(spacing: 4) {
-                    Text("‹").font(.system(size: 18, weight: .semibold))
-                    Text(title).font(.system(size: 14, weight: .semibold))
+            let sec = sections[safeIdx]
+            LazyVGrid(columns: columns, alignment: .leading, spacing: 14) {
+                ForEach(sec.comics) { comic in
+                    NavigationLink {
+                        DetailView(work: comic.asWork)
+                    } label: {
+                        ComicCell(
+                            title: comic.title,
+                            cover: comic.cover,
+                            sub: comic.sub.isEmpty ? nil : comic.sub,
+                            seed: comic.comicId.hashValue
+                        )
+                    }
+                    .buttonStyle(.plain)
                 }
-                .foregroundColor(c.accent)
             }
-            .buttonStyle(.plain)
-            Spacer(minLength: 0)
+            .padding(.horizontal, 18)
+        }
+    }
+
+    private var aggregateGrid: some View {
+        LazyVGrid(columns: columns, alignment: .leading, spacing: 14) {
+            ForEach(works) { work in
+                NavigationLink {
+                    DetailView(work: work)
+                } label: {
+                    ComicCell(
+                        title: work.title,
+                        cover: work.cover,
+                        sub: work.sourceCount > 1 ? work.sourceNames : work.primary.sourceName,
+                        badge: work.badge,
+                        seed: work.norm.hashValue
+                    )
+                }
+                .buttonStyle(.plain)
+            }
         }
         .padding(.horizontal, 18)
-        .padding(.top, 10)
-        .padding(.bottom, 6)
     }
 
     private var searchBar: some View {
@@ -312,103 +213,55 @@ struct DiscoverScreen: View {
         .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
     }
 
-    private var aggregateGrid: some View {
-        LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
-            ForEach(works) { work in
-                NavigationLink {
-                    DetailView(work: work)
-                } label: {
-                    ComicCell(
-                        title: work.title,
-                        cover: work.cover,
-                        sub: work.sourceCount > 1 ? work.sourceNames : work.primary.sourceName,
-                        badge: work.badge,
-                        seed: work.norm.hashValue
-                    )
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(.horizontal, 18)
-        .padding(.top, 12)
-        .padding(.bottom, 26)
-    }
-
-    private var singleSourceGrid: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ForEach(sections) { sec in
-                if !sec.title.isEmpty {
-                    SectionHeader(
-                        title: sec.title,
-                        more: "\(sec.comics.count) 本",
-                        onMore: { openSection = sec },
-                        inset: false
-                    )
-                    .padding(.horizontal, 18)
-                }
-                LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
-                    ForEach(sec.comics) { comic in
-                        NavigationLink {
-                            DetailView(work: comic.asWork)
-                        } label: {
-                            ComicCell(
-                                title: comic.title,
-                                cover: comic.cover,
-                                sub: comic.sub.isEmpty ? nil : comic.sub,
-                                seed: comic.comicId.hashValue
-                            )
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(.horizontal, 18)
-                .padding(.top, 8)
-                .padding(.bottom, 12)
-            }
-        }
-        .padding(.top, 4)
-        .padding(.bottom, 26)
-    }
-
     private func submit() {
         query = keyword.trimmingCharacters(in: .whitespaces)
         reloadTick += 1
     }
 
+    // ══════════════════════ 数据 ══════════════════════
+
     private func load() async {
         await MainActor.run {
             busy = true
             error = nil
-            okSources = 0
-            failedSources = 0
         }
         await hub.load()
-        let rows = hub.enabledRows
-        // 用「已提交」的关键词，别用输入框里的实时文本：切源时不该跟着未提交的字搜
+
+        // 第一次进来：默认选禁漫（用户要求第一个界面就是它），禁漫没启用就用排最前的源
+        if picked.isEmpty {
+            let pref = hub.enabledRows.first { $0.key == "jm" }?.key
+                ?? hub.enabledRows.first?.key
+                ?? ""
+            if pref.isEmpty {
+                await MainActor.run {
+                    busy = false
+                    error = "没有可用的源。去「我的 → 源管理」至少打开一个。"
+                }
+                return
+            }
+            await MainActor.run { picked = pref }
+            return   // picked 变化会重启本 task，带着正确的源重新加载
+        }
+
         let q = query
 
-        if picked.isEmpty {
-            let targets = Array(rows.prefix(8))
+        if picked == "agg" {
+            // ── 全部源聚合 ──
+            let targets = Array(hub.enabledRows.prefix(8))
             if targets.isEmpty {
                 await MainActor.run {
-                    works = []
-                    sections = []
                     busy = false
                     error = "你把所有源都关掉了。去「我的 → 源管理」至少打开一个。"
                 }
                 return
             }
             let cacheSig = "v|" + q + "|" + targets.map { $0.key }.joined(separator: ",")
-            // 缓存两档：10 分钟内直接当结果用；更早的先画出来，再后台静默更新。
-            // 以前只有 3 分钟内存缓存，过了就整页重拉，每次点「发现」都要等一轮。
             var stale = false
             if let hit = ExploreCache.get(cacheSig) {
                 let fresh = hit.fresh
                 await MainActor.run {
                     works = hit.works
                     sections = []
-                    okSources = hit.ok
-                    failedSources = hit.fail
                     busy = false
                     error = nil
                 }
@@ -417,7 +270,6 @@ struct DiscoverScreen: View {
             }
             var all: [ComicRow] = []
             var ok = 0
-            var bad = 0
             await withTaskGroup(of: [ComicRow]?.self) { group in
                 for s in targets {
                     group.addTask {
@@ -426,8 +278,7 @@ struct DiscoverScreen: View {
                                   (r["ok"] as? Bool) == true,
                                   let d = r["data"] as? [String: Any] else { return nil }
                             let secs = ExploreSection.parse(d, sourceKey: s.key, sourceName: s.name)
-                            let comics = secs.flatMap { $0.comics }
-                            return comics.isEmpty ? nil : comics
+                            return secs.flatMap { $0.comics }.isEmpty ? nil : secs.flatMap { $0.comics }
                         } else {
                             guard let r = await searchWithTimeout(key: s.key, keyword: q, seconds: 15),
                                   (r["ok"] as? Bool) == true,
@@ -437,39 +288,29 @@ struct DiscoverScreen: View {
                         }
                     }
                 }
-                // 哪个源先回来就先上屏，不等最慢的那个
                 for await result in group {
                     if let list = result {
                         all.append(contentsOf: list)
                         ok += 1
                         let snapshot = groupWorks(all, sort: false)
                         let okNow = ok
-                        let badNow = bad
-                        // 屏幕上是上次的完整结果时，刷新过程中别把它缩成一两个源
                         if !stale {
                             await MainActor.run {
                                 works = snapshot
                                 sections = []
-                                okSources = okNow
-                                failedSources = badNow
                                 if busy { busy = false }
                             }
                         }
-                    } else {
-                        bad += 1
                     }
                 }
             }
             let grouped = groupWorks(all)
             let okFinal = ok
-            let badFinal = bad
             await MainActor.run {
                 works = grouped
                 sections = []
-                okSources = okFinal
-                failedSources = badFinal
                 busy = false
-                ExploreCache.put(cacheSig, grouped, okFinal, badFinal)
+                ExploreCache.put(cacheSig, grouped, okFinal, targets.count - okFinal)
                 if grouped.isEmpty {
                     error = q.isEmpty
                         ? "这些源这次都没返回内容。可能是网站临时抽风，回头再刷一次。"
@@ -477,7 +318,8 @@ struct DiscoverScreen: View {
                 }
             }
         } else {
-            guard let row = rows.first(where: { $0.key == picked }) else {
+            // ── 单源（默认模式）──
+            guard let row = hub.enabledRows.first(where: { $0.key == picked }) else {
                 await MainActor.run {
                     busy = false
                     error = "这个源不在列表里了。"
@@ -511,11 +353,10 @@ struct DiscoverScreen: View {
             await MainActor.run {
                 sections = finalSecs
                 works = []
-                okSources = finalSecs.isEmpty ? 0 : 1
-                failedSources = finalSecs.isEmpty ? 1 : 0
+                sectionIdx = 0
                 busy = false
                 if finalSecs.isEmpty {
-                    error = friendlyError(finalFail ?? "这个源没有内容。可能需要先登录，或者换个关键词。")
+                    error = friendlyError(finalFail ?? "这个源没有内容。可能需要先登录，或者换个源。")
                 }
             }
         }

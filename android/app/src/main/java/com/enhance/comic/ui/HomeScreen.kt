@@ -173,8 +173,10 @@ fun HomeScreen(
     val rankOptValue = rankOpts.getOrNull(state.rankOptIdx)?.get("value") ?: ""
     val rankSrcName = state.rows.firstOrNull { it.key == state.rankSrc }?.name ?: state.rankSrc
 
-    // 拉当前源当前周期的榜单（缓存 key = 源|周期）
-    LaunchedEffect(state.rankSrc, state.rankOptIdx, state.rankOptions.size) {
+    // 拉当前源当前周期的榜单（缓存 key = 源|周期）。
+    // 今日热门先跑完再拉（引擎同步桥串行，并发只会互相排队堵死），busy 变 false 时本 effect 自动重启
+    LaunchedEffect(state.rankSrc, state.rankOptIdx, state.rankOptions.size, state.busy) {
+        if (state.busy) return@LaunchedEffect
         if (state.rankSrc.isBlank() || rankOptValue.isBlank()) return@LaunchedEffect
         val cacheKey = state.rankSrc + "|" + rankOptValue
         if (state.rankComics[cacheKey] != null) return@LaunchedEffect

@@ -143,9 +143,13 @@ struct HomeScreen: View {
             .padding(.bottom, 26)
         }
         .background(c.bg.ignoresSafeArea())
-        .task(id: "\(rankTick)|\(hub.enabledRows.count)") { await loadRankOptions() }
-        .task(id: rankCacheKey) { await loadRank() }
+        // 今日热门先跑完（引擎队列串行，不能抢），再探测排行选项、再拉榜单
         .task { await loadHot() }
+        .task(id: "\(rankTick)|\(hotBusy)|\(hub.enabledRows.count)") {
+            if hotBusy { return }        // task 会因 hotBusy 变化自动重启
+            await loadRankOptions()
+            await loadRank()
+        }
     }
 
     // ── 排行榜内容 ──

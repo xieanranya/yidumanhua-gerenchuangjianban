@@ -132,7 +132,9 @@ final class SourceEngine {
     }
 
     func explore(key: String, index: Int = 0) async -> [String: Any] {
-        await asyncCall("explore", [jsLiteral(key), "\(index)"])
+        // 探索页：与首页/发现页的超时对齐（12 秒），超时后尽快释放引擎队列，
+        // 不让失败的探索把排在后面的请求（排行榜等）堵死
+        await asyncCall("explore", [jsLiteral(key), "\(index)"], timeout: 14)
     }
 
     func detail(key: String, id: String) async -> [String: Any] {

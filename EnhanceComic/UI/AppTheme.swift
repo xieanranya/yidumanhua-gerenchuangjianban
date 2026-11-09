@@ -1,20 +1,13 @@
 import SwiftUI
 import UIKit
 
-// ================================================================ 帧率自动调节
+// ================================================================ 帧率说明
 
-/// 帧率根据手机自动调节：
-/// - ProMotion 高刷屏（系统上报 maximumFramesPerSecond = 120）开满 120；
-/// - 普通屏跟随系统默认（60）；
-/// - 低电量模式一律降到 60 省电。
-/// App 启动时调一次；低电量状态切换时再调（AppRootView 里监听）。
-enum FrameRate {
-    static func apply() {
-        let maxFPS = UIScreen.main.maximumFramesPerSecond   // 高刷机=120，普通机=60
-        let lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
-        UIScreen.main.maximumFramesPerSecond = lowPower ? 60 : maxFPS
-    }
-}
+// 帧率「根据手机自动调节」是 iOS 系统默认行为：ProMotion 高刷屏（13 Pro 起）
+// 动画自动跑到 120Hz，普通屏 60Hz，无需也不允许 App 干预
+// （UIScreen.maximumFramesPerSecond 是只读的，没有公开的全局帧率 API）。
+// 我们做的是减轻渲染负担让高帧率真正跑满：列表全部懒加载（LazyVGrid/LazyRow）、
+// 远端图片解码限制最大像素（RemoteImage maxPixel）、入场动画用短时长轻动画。
 
 // ================================================================ 主题
 

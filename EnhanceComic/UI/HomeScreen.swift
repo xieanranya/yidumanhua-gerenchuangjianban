@@ -143,6 +143,17 @@ struct HomeScreen: View {
                 .padding(.horizontal, 18)
                 .padding(.top, 8)
         } else if let matched = matchedSection {
+            // 匹配不到对应周期的榜时兜底用第一个分区，这里标明数据实际来源
+            let isFallback = !Self.rankTabs[rankTab].contains(where: { matched.title.contains($0) })
+                && !["日", "今日", "daily", "週", "周", "week", "月", "month", "總", "总", "排行", "rank", "人气", "人氣", "hot"]
+                    .contains(where: { matched.title.lowercased().contains($0.lowercased()) })
+            if isFallback {
+                Text("该源没有独立的「\(Self.rankTabs[rankTab])」榜，以下来自分区「\(matched.title)」")
+                    .font(.system(size: 10))
+                    .foregroundColor(c.fg3)
+                    .padding(.horizontal, 18)
+                    .padding(.bottom, 4)
+            }
             LazyVGrid(columns: columns, alignment: .leading, spacing: 14) {
                 ForEach(Array(matched.comics.enumerated()), id: \.element.id) { i, comic in
                     NavigationLink {
@@ -161,7 +172,7 @@ struct HomeScreen: View {
             }
             .padding(.horizontal, 18)
         } else {
-            Text("这个源没有「\(Self.rankTabs[rankTab])」的排行数据，换一个周期或源试试。")
+            Text("这个源没有返回分区内容，换一个源试试。")
                 .font(.system(size: 11.5))
                 .foregroundColor(c.fg3)
                 .padding(.horizontal, 18)
@@ -169,7 +180,8 @@ struct HomeScreen: View {
         }
     }
 
-    /// 当前周期匹配到的排行分区。找不到匹配时「总」兜底用第一个分区。
+    /// 当前周期匹配到的排行分区。任何 tab 匹配不到都兜底用第一个分区——
+    /// 榜单永远有内容，兜底时界面上会标明数据实际来自哪个分区。
     private var matchedSection: ExploreSection? {
         guard let secs = rankSections[rankSrc], !secs.isEmpty else { return nil }
         let keys: [[String]] = [
@@ -183,7 +195,7 @@ struct HomeScreen: View {
             let t = sec.title.lowercased()
             if pats.contains(where: { t.contains($0.lowercased()) }) { return sec }
         }
-        return rankTab == 3 ? secs.first : nil
+        return secs.first
     }
 
     /// 横向滚动的封面条带
@@ -271,6 +283,12 @@ struct HomeScreen: View {
     }
 
     private func loadRank() async {
+        // 首次进入时源列表可能还没就绪：先确保 hub.load 过，再兜底选源
+        await hub.load()
+        if rankSrc.isEmpty {
+            rankSrc = hub.enabledRows.first { $0.key == "jm" }?.key
+                ?? hub.enabledRows.first?.key ?? ""
+        }
         guard let row = rankRow else {
             rankError = "没有可用的源。"
             return
@@ -289,6 +307,8 @@ struct HomeScreen: View {
         let secs = ExploreSection.parse(d, sourceKey: row.key, sourceName: row.name)
         await MainActor.run {
             rankSections[row.key] = secs
+            // 兜底拉的第一个源回写到 rankSrc，让 chips 选中态和匹配逻辑一致
+            if rankSrc.isEmpty { rankSrc = row.key }
             rankBusy = false
         }
     }

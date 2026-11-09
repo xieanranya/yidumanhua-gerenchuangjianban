@@ -73,7 +73,8 @@ fun matchRankSection(secs: List<ExploreSection>, tab: Int): ExploreSection? {
         val t = sec.title.lowercase()
         if (pats.any { t.contains(it.lowercase()) }) return sec
     }
-    return if (tab == 3) secs.first() else null
+    // 任何周期匹配不到都兜底用第一个分区——榜单永远有内容（UI 会标明来源）
+    return secs.first()
 }
 
 /**
@@ -167,10 +168,19 @@ fun HomeScreen(
     }
 
     // 排行榜：选中源变化/刷新时拉它的 explore（复用发现页的单源缓存）
-    LaunchedEffect(state.rankSrc, state.rankTab, state.rankSections.size, sourceRev) {
+    LaunchedEffect(state.rankSrc, state.rankTab, state.rankSections.size, sourceRev, state.rows.size) {
+        // 源列表还没读到时先等今日热门那轮把 rows 填上（它在本 effect 之前跑）
+        if (state.rows.isEmpty()) return@LaunchedEffect
+        if (state.rows.none { it.enabled }) {
+            state.rankError = "没有可用的源。"
+            return@LaunchedEffect
+        }
         val key = state.rankSrc
-        if (key.isBlank()) return@LaunchedEffect
-        if (state.rankSections[key] != null) return@LaunchedEffect   // 已拉过，chips 切换即时显示
+        if (key.isBlank() || state.rows.none { it.key == key && it.enabled }) {
+            state.rankSrc = state.rows.firstOrNull { it.key == "jm" && it.enabled }?.key
+                ?: state.rows.firstOrNull { it.enabled }?.key ?: ""
+        }
+        if (state.rankSections[state.rankSrc] != null) return@LaunchedEffect   // 已拉过，chips 切换即时显示
         val cached = ExploreCache.getSections(exploreSig(key, ""))
         if (cached != null && cached.sections.isNotEmpty()) {
             state.rankSections = state.rankSections + (key to cached.sections)
@@ -308,15 +318,28 @@ fun HomeScreen(
                     modifier = Modifier.padding(horizontal = 18.dp),
                 )
             }
-            rankMatched != null -> itemsIndexed(rankMatched.comics, key = { _, it -> it.id }) { i, comic ->
-                RankCell(
-                    index = i,
-                    cover = comic.cover,
-                    title = comic.title,
-                    sub = comic.sub,
-                    seed = comic.title.hashCode(),
-                    onClick = { onOpenWork(comic.asWork()) },
-                )
+            rankMatched != null -> {
+                val allKeys = RANK_KEYS.flatten()
+                val isFallback = allKeys.none { rankMatched.title.lowercase().contains(it.lowercase()) }
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                    if (isFallback) {
+                        Text(
+                            "该源没有独立的「${RANK_TAB_NAMES[state.rankTab]}」榜，以下来自分区「${rankMatched.title}」",
+                            color = c.fg3, fontSize = 10.sp,
+                            modifier = Modifier.padding(horizontal = 18.dp),
+                        )
+                    }
+                }
+                itemsIndexed(rankMatched.comics, key = { _, it -> it.id }) { i, comic ->
+                        RankCell(
+                        index = i,
+                        cover = comic.cover,
+                        title = comic.title,
+                        sub = comic.sub,
+                        seed = comic.title.hashCode(),
+                        onClick = { onOpenWork(comic.asWork()) },
+                    )
+                }
             }
             else -> item(span = { GridItemSpan(maxLineSpan) }) {
                 Text(

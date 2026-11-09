@@ -62,6 +62,25 @@ func sourceSummary(_ rows: [SourceRow]) -> String {
     return s
 }
 
+extension OnlineRecord {
+    /// 从阅读记录跳详情时要的 Work（只有当前这一个源）
+    var asWork: Work {
+        let entry = WorkEntry(
+            sourceKey: sourceKey,
+            sourceName: sourceName,
+            comicId: comicId,
+            title: sourceTitle.isEmpty ? title : sourceTitle,
+            cover: cover
+        )
+        return Work(
+            norm: normalizeTitle(entry.title),
+            title: entry.title,
+            cover: cover,
+            entries: [entry]
+        )
+    }
+}
+
 /// 源抛出来的网络错误太生硬（"HTTP 0"），换成用户能照做的说法。
 func friendlyError(_ e: String) -> String {
     let low = e.lowercased()

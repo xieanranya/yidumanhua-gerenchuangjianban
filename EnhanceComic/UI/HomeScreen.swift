@@ -282,7 +282,11 @@ struct HomeScreen: View {
         var opts: [String: [[String: String]]] = [:]
         for row in hub.enabledRows {
             let o = await SourceEngine.shared.rankOptions(key: row.key)
-            if !o.isEmpty { opts[row.key] = o }
+            // 引擎返回 [{value,text}]，元素统一转成纯字符串字典
+            let cleaned: [[String: String]] = o.map { dict in
+                dict.compactMapValues { $0 as? String }
+            }
+            if !cleaned.isEmpty { opts[row.key] = cleaned }
         }
         await MainActor.run {
             rankOptions = opts

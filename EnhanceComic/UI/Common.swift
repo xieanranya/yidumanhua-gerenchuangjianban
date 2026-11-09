@@ -941,7 +941,7 @@ struct LoadingBox: View {
 
 /// v4 品牌头（全部页面的顶部统一结构）：
 /// 主题色底 + 粉/紫两团光晕，左下页面大标题 + 副标，右上工具钮槽。
-/// 高度固定 118pt，头图里永远不出现封面图——封面只活在 Hero 卡和网格里。
+/// 高度固定 92pt（v5 瘦身版），头图里永远不出现封面图——封面只活在网格里。
 struct BrandHeader: View {
     let title: String
     var subtitle: String? = nil
@@ -956,21 +956,21 @@ struct BrandHeader: View {
                 .overlay(
                     ZStack {
                         RadialGradient(
-                            colors: [c.accent.opacity(c.dark ? 0.30 : 0.14), .clear],
-                            center: UnitPoint(x: 0.88, y: -0.30), startRadius: 0, endRadius: 340
+                            colors: [c.accent.opacity(c.dark ? 0.26 : 0.12), .clear],
+                            center: UnitPoint(x: 0.88, y: -0.30), startRadius: 0, endRadius: 300
                         )
                         RadialGradient(
-                            colors: [Color(hex: 0x7B4BB7).opacity(c.dark ? 0.22 : 0.10), .clear],
-                            center: UnitPoint(x: -0.12, y: 1.20), startRadius: 0, endRadius: 280
+                            colors: [Color(hex: 0x7B4BB7).opacity(c.dark ? 0.18 : 0.09), .clear],
+                            center: UnitPoint(x: -0.12, y: 1.20), startRadius: 0, endRadius: 250
                         )
                     }
                     .allowsHitTesting(false)
                 )
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text(title)
-                    .font(.system(size: 24, weight: .bold))
+                    .font(.system(size: 21, weight: .bold))
                     .foregroundColor(c.fg)
-                    .tracking(-0.6)
+                    .tracking(-0.5)
                 if let subtitle, !subtitle.isEmpty {
                     Text(subtitle)
                         .font(.system(size: 10))
@@ -979,13 +979,13 @@ struct BrandHeader: View {
                 }
             }
             .padding(.horizontal, 18)
-            .padding(.bottom, 16)
+            .padding(.bottom, 14)
         }
-        .frame(height: 118)
+        .frame(height: 92)
         .overlay(alignment: .topTrailing) {
             if let trailing {
                 trailing
-                    .padding(.top, safeTop() + 8)
+                    .padding(.top, safeTop() + 6)
                     .padding(.trailing, 14)
             }
         }

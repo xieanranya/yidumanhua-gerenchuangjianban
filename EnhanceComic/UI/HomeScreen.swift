@@ -29,7 +29,6 @@ struct HomeScreen: View {
     @State private var rankError: String?
     @State private var rankTick = 0
     @State private var appeared = false
-    @State private var focusTarget: Work?
 
     private let columns = [
         GridItem(.flexible(minimum: 0, maximum: .infinity), spacing: 9),
@@ -69,7 +68,7 @@ struct HomeScreen: View {
                     trailing: AnyView(GlassCircleButton(glyph: .search) { onSearch() })
                 )
 
-                // ── 今日热门：焦点大卡 + 小卡横排 ──
+                // ── 今日热门：3 列网格直接铺开（v5 极简，无大卡无横排）──
                 SectionHeader(
                     title: "今日热门",
                     more: hotBusy ? nil : (hotFrom > 0 ? "\(hotFrom) 个源" : nil),
@@ -87,20 +86,23 @@ struct HomeScreen: View {
                         .padding(.horizontal, 18)
                         .padding(.top, 8)
                 } else {
-                    // 焦点大卡：第一本（封面铺底 + 文字左下）
-                    FocusCard(
-                        title: hot[0].title,
-                        cover: hot[0].cover,
-                        sub: hot[0].sourceCount > 1 ? hot[0].sourceNames : hot[0].primary.sourceName,
-                        seed: hot[0].norm.hashValue
-                    )
-                    .padding(.horizontal, 18)
-                    .padding(.bottom, 12)
-                    .onTapGesture { focusTarget = hot[0] }
-
-                    if hot.count > 1 {
-                        band(hot.dropFirst(1).prefix(5), width: 96)
+                    LazyVGrid(columns: columns, alignment: .leading, spacing: 14) {
+                        ForEach(Array(hot.prefix(9))) { work in
+                            NavigationLink {
+                                DetailView(work: work)
+                            } label: {
+                                ComicCell(
+                                    title: work.title,
+                                    cover: work.cover,
+                                    sub: work.sourceCount > 1 ? work.sourceNames : nil,
+                                    badge: work.badge,
+                                    seed: work.norm.hashValue
+                                )
+                            }
+                            .buttonStyle(.plain)
+                        }
                     }
+                    .padding(.horizontal, 18)
                 }
 
                 // ── 排行榜（源网站自己的排行）──
@@ -171,17 +173,6 @@ struct HomeScreen: View {
             await loadRankOptions()
             await loadRank()
         }
-        // 焦点大卡 → 详情（多源聚合）
-        .navigationDestination(
-            isPresented: Binding(
-                get: { focusTarget != nil },
-                set: { if !$0 { focusTarget = nil } }
-            )
-        ) {
-            if let target = focusTarget {
-                DetailView(work: target)
-            }
-        }
     }
 
     // ── 排行榜内容 ──
@@ -225,31 +216,6 @@ struct HomeScreen: View {
         }
     }
 
-    /// 横向滚动的封面条带
-    @ViewBuilder
-    private func band(_ works: Array<Work>.SubSequence, width: CGFloat) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 10) {
-                ForEach(Array(works)) { work in
-                    NavigationLink {
-                        DetailView(work: work)
-                    } label: {
-                        ComicCell(
-                            title: work.title,
-                            cover: work.cover,
-                            sub: work.sourceCount > 1 ? work.sourceNames : nil,
-                            badge: work.badge,
-                            seed: work.norm.hashValue
-                        )
-                        .frame(width: width)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(.horizontal, 18)
-            .padding(.vertical, 2)
-        }
-    }
 
     // ══════════════════════ 数据 ══════════════════════
 

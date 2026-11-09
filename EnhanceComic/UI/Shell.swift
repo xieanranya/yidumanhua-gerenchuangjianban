@@ -77,7 +77,6 @@ struct AppBottomBar: View {
 
 /// 整个 App 的壳：主题注入 + 四个 Tab + 底部栏。
 struct AppRootView: View {
-
     @EnvironmentObject private var ui: UiStore
     @Environment(\.colorScheme) private var systemScheme
     @Environment(\.scenePhase) private var scenePhase
@@ -120,8 +119,16 @@ struct AppRootView: View {
             // 禁漫自动签到：启动 + 每次回前台都检查一次；
             // 里面有三道闸（开关 / 登录态 / 当日去重），空跑只是三次 UserDefaults 读
             .task { await SourceHub.shared.maybeAutoCheckin() }
+            // 帧率自动调节：启动 + 每次回前台各调一次（低电量模式切回时恢复高刷）
+            .onAppear { FrameRate.apply() }
+            .onReceive(NotificationCenter.default.publisher(
+                for: .NSProcessInfoPowerStateDidChange
+            )) { _ in
+                FrameRate.apply()
+            }
             .onChange(of: scenePhase) { phase in
                 guard phase == .active else { return }
+                FrameRate.apply()
                 Task { await SourceHub.shared.maybeAutoCheckin() }
             }
     }

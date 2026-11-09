@@ -1,7 +1,22 @@
 import SwiftUI
 import UIKit
 
-// ================================================================================== 主题
+// ================================================================ 帧率自动调节
+
+/// 帧率根据手机自动调节：
+/// - ProMotion 高刷屏（系统上报 maximumFramesPerSecond = 120）开满 120；
+/// - 普通屏跟随系统默认（60）；
+/// - 低电量模式一律降到 60 省电。
+/// App 启动时调一次；低电量状态切换时再调（AppRootView 里监听）。
+enum FrameRate {
+    static func apply() {
+        let maxFPS = UIScreen.main.maximumFramesPerSecond   // 高刷机=120，普通机=60
+        let lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
+        UIScreen.main.maximumFramesPerSecond = lowPower ? 60 : maxFPS
+    }
+}
+
+// ================================================================ 主题
 
 /// 外观三档。开关只放在「我的 → 外观」，阅读界面里不放。
 enum ThemeMode: String, Codable, CaseIterable, Identifiable {

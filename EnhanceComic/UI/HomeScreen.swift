@@ -28,6 +28,8 @@ struct HomeScreen: View {
     @State private var rankBusy = false
     @State private var rankError: String?
     @State private var rankTick = 0
+    @State private var appeared = false
+    @State private var focusTarget: Work?
 
     private let columns = [
         GridItem(.flexible(minimum: 0, maximum: .infinity), spacing: 9),
@@ -67,7 +69,7 @@ struct HomeScreen: View {
                     trailing: AnyView(GlassCircleButton(glyph: .search) { onSearch() })
                 )
 
-                // ── 今日热门 ──
+                // ── 今日热门：焦点大卡 + 小卡横排 ──
                 SectionHeader(
                     title: "今日热门",
                     more: hotBusy ? nil : (hotFrom > 0 ? "\(hotFrom) 个源" : nil),
@@ -77,7 +79,7 @@ struct HomeScreen: View {
                 .padding(.horizontal, 18)
 
                 if hotBusy {
-                    LoadingBox(height: 150)
+                    LoadingBox(height: 190)
                 } else if hot.isEmpty {
                     Text("这些源这次都没给出内容，回头再刷一次试试。")
                         .font(.system(size: 11.5))
@@ -85,7 +87,20 @@ struct HomeScreen: View {
                         .padding(.horizontal, 18)
                         .padding(.top, 8)
                 } else {
-                    band(hot.prefix(6), width: 118)
+                    // 焦点大卡：第一本（封面铺底 + 文字左下）
+                    FocusCard(
+                        title: hot[0].title,
+                        cover: hot[0].cover,
+                        sub: hot[0].sourceCount > 1 ? hot[0].sourceNames : hot[0].primary.sourceName,
+                        seed: hot[0].norm.hashValue
+                    )
+                    .padding(.horizontal, 18)
+                    .padding(.bottom, 12)
+                    .onTapGesture { focusTarget = hot[0] }
+
+                    if hot.count > 1 {
+                        band(hot.dropFirst(1).prefix(5), width: 96)
+                    }
                 }
 
                 // ── 排行榜（源网站自己的排行）──
@@ -141,6 +156,12 @@ struct HomeScreen: View {
                 rankContent
             }
             .padding(.bottom, 26)
+            // 入场：整页轻微上移淡入（低帧率设备也流畅）
+            .opacity(appeared ? 1 : 0)
+            .offset(y: appeared ? 0 : 14)
+            .onAppear {
+                withAnimation(.easeOut(duration: 0.35)) { appeared = true }
+            }
         }
         .background(c.bg.ignoresSafeArea())
         // 今日热门先跑完（引擎队列串行，不能抢），再探测排行选项、再拉榜单
@@ -149,6 +170,17 @@ struct HomeScreen: View {
             if hotBusy { return }        // task 会因 hotBusy 变化自动重启
             await loadRankOptions()
             await loadRank()
+        }
+        // 焦点大卡 → 详情（多源聚合）
+        .navigationDestination(
+            isPresented: Binding(
+                get: { focusTarget != nil },
+                set: { if !$0 { focusTarget = nil } }
+            )
+        ) {
+            if let target = focusTarget {
+                DetailView(work: target)
+            }
         }
     }
 

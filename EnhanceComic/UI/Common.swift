@@ -992,6 +992,51 @@ struct BrandHeader: View {
     }
 }
 
+/// 首页焦点大卡：今日热门第一本。封面铺满当背景（顶部亮、底部压暗），
+/// 左下角 pill + 大标题 + 来源。整卡可点（NavigationLink 包在外面的场景用 onTapGesture）。
+struct FocusCard: View {
+    let title: String
+    let cover: String
+    let sub: String
+    let seed: Int
+
+    @Environment(\.appColors) private var c
+
+    var body: some View {
+        ZStack(alignment: .bottomLeading) {
+            RemoteImage(url: cover, contentMode: .fill, maxPixel: 1000)
+            LinearGradient(
+                colors: [.black.opacity(0.04), .black.opacity(0.10), .black.opacity(0.74)],
+                startPoint: .top, endPoint: .bottom
+            )
+            VStack(alignment: .leading, spacing: 6) {
+                Text("今日热门 · No.1")
+                    .font(.system(size: 9, weight: .heavy))
+                    .tracking(1.2)
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 3.5)
+                    .background(Capsule().fill(c.accent.opacity(0.92)))
+                Text(title)
+                    .font(.system(size: 20, weight: .bold))
+                    .foregroundColor(.white)
+                    .shadow(color: .black.opacity(0.4), radius: 4, y: 1)
+                    .lineLimit(1)
+                Text(sub)
+                    .font(.system(size: 11))
+                    .foregroundColor(.white.opacity(0.85))
+                    .shadow(color: .black.opacity(0.4), radius: 3, y: 1)
+                    .lineLimit(1)
+            }
+            .padding(14)
+        }
+        .frame(height: 176)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .shadow(color: .black.opacity(c.dark ? 0.35 : 0.16), radius: 10, x: 0, y: 4)
+        .contentShape(Rectangle())
+    }
+}
+
 /// 排行榜网格单元：封面 + 左上排名角标（No.1 粉 / No.2 银 / No.3 铜，其余半透明黑）。
 struct RankCell: View {
     let index: Int

@@ -213,6 +213,14 @@ class SourceEngine private constructor(private val app: Context) {
     suspend fun explore(key: String, index: Int = 0): JSONObject =
         callAsync("explore", JSONObject.quote(key), index.toString())
 
+    /** 排行榜能力：该源的排行选项 [{value,text}]；源网站没有排行接口返回空数组 */
+    suspend fun rankOptions(key: String): JSONArray =
+        runCatching { JSONArray(callSync("rankOptions", JSONObject.quote(key))) }.getOrElse { JSONArray() }
+
+    /** 拉一份排行榜（option 来自 rankOptions 的 value） */
+    suspend fun rank(key: String, option: String, page: Int = 1): JSONObject =
+        callAsync("rank", JSONObject.quote(key), JSONObject.quote(option), page.toString())
+
     suspend fun login(key: String, user: String, pass: String): JSONObject =
         callAsync("login", JSONObject.quote(key), JSONObject.quote(user), JSONObject.quote(pass))
 

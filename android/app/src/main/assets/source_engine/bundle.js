@@ -2130,6 +2130,28 @@ __SOURCE_CODE["mh18"] = "/** @type {import('./_venera_.js')} */\nclass MH18 exte
     }
   }
 
+  /**
+   * 浅递归找「排行块」：{ options: ["value-text", ...], load: fn }。
+   * 明确跳过 explore / search 两个分支，避免把分类/搜索的 optionList 当成排行。
+   */
+  function __findRanking(s) {
+    function probe(o, depth) {
+      if (!o || typeof o !== 'object' || depth > 3) return null;
+      if (typeof o.load === 'function' && Array.isArray(o.options) && o.options.length
+        && o.options.every(function (x) { return typeof x === 'string' && x.indexOf('-') > 0; })) {
+        return o;
+      }
+      for (var k in o) {
+        if (!Object.prototype.hasOwnProperty.call(o, k)) continue;
+        if (k === 'explore' || k === 'search') continue;
+        var r = probe(o[k], depth + 1);
+        if (r) return r;
+      }
+      return null;
+    }
+    return probe(s, 0);
+  }
+
   /** 把 vendor 里的源码注册成实例 */
   function register(key, code) {
     try {
@@ -2283,6 +2305,64 @@ __SOURCE_CODE["mh18"] = "/** @type {import('./_venera_.js')} */\nclass MH18 exte
           needLogin: !!(acc && (acc.login || acc.loginWithCookies) && s.settings && s.settings.loginRequired),
           items: items
         };
+      });
+    },
+
+    /**
+     * 排行榜（源网站自己的排行）：返回该源的排行选项 [{value,text}]。
+     * 源文件里 ranking 块的位置五花八门（标准类字段 / 嵌在 categoryComics / 嵌在
+     * explore 元素里都有），这里按「options 数组 + load 函数」的特征浅递归探测。
+     * 源网站没有排行接口的源返回空数组，宿主不显示排行入口，不硬凑。
+     */
+    rankOptions: function (key) {
+      try {
+        var s = loaded[key];
+        if (!s) return [];
+        var rank = __findRanking(s);
+        if (rank) {
+          return (rank.options || []).map(function (o) {
+            var i = o.indexOf('-');
+            return { value: o.slice(0, i), text: o.slice(i + 1) };
+          });
+        }
+        // 分类式排行（拷贝漫画）：category「排行」的 isRanking 分支，周期 = rank 接口的 table
+        var parts = s.category && Array.isArray(s.category.parts) ? s.category.parts : [];
+        var hasCatRank = parts.some(function (pt) {
+          return pt && Array.isArray(pt.categories) && pt.categories.indexOf('排行') >= 0;
+        });
+        if (s.categoryComics && typeof s.categoryComics.load === 'function' && hasCatRank) {
+          return [
+            { value: 'day', text: '日榜' },
+            { value: 'week', text: '周榜' },
+            { value: 'month', text: '月榜' },
+            { value: 'total', text: '总榜' },
+          ];
+        }
+        return [];
+      } catch (e) { return []; }
+    },
+
+    /** 拉一份排行榜（option 来自 rankOptions 的 value，page 从 1 开始） */
+    rank: function (key, option, page) {
+      return run(async function () {
+        var s = inst(key);
+        await ensureInit(s, key);
+        var rank = __findRanking(s);
+        var r;
+        if (rank) {
+          r = await rank.load(option, page || 1);
+        } else {
+          var parts2 = s.category && Array.isArray(s.category.parts) ? s.category.parts : [];
+          var hasCatRank2 = parts2.some(function (pt) {
+            return pt && Array.isArray(pt.categories) && pt.categories.indexOf('排行') >= 0;
+          });
+          if (!(s.categoryComics && typeof s.categoryComics.load === 'function' && hasCatRank2)) {
+            throw new Error('该源没有排行接口');
+          }
+          // 拷贝式：load(「排行」, ranking, [type, table], page)
+          r = await s.categoryComics.load('排行', 'ranking', ['male', option], page || 1);
+        }
+        return { comics: (r && r.comics) || [], maxPage: (r && r.maxPage) || 1 };
       });
     },
 

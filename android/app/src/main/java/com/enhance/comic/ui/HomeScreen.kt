@@ -18,7 +18,6 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -38,6 +37,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import com.enhance.comic.data.UiStore
 import com.enhance.comic.model.Book
+import org.json.JSONArray
 
 /** 首页跨 Tab 状态（Tab 是 when 渲染的，放页面里会随切走一起丢）。 */
 class HomeState {
@@ -49,37 +49,20 @@ class HomeState {
     var settledRev by mutableIntStateOf(-1)
     var settledVpn by mutableStateOf(false)
 
-    // ── 排行榜（各源单独）──
-    var rankSrc by mutableStateOf("jm")          // 当前排行源（默认禁漫）
-    var rankTab by mutableIntStateOf(0)          // 0 今日 / 1 本周 / 2 月 / 3 总
-    var rankSections by mutableStateOf<Map<String, List<ExploreSection>>>(emptyMap())
+    // ── 排行榜（各源网站自己的排行，rankOptions 探测到的源才显示）──
+    var rankSrc by mutableStateOf("")
+    var rankOptIdx by mutableIntStateOf(0)
+    /** 源 key → 排行选项 [{value,text}] */
+    var rankOptions by mutableStateOf<Map<String, List<Map<String, String>>>>(emptyMap())
+    /** "key|value" → 榜单 */
+    var rankComics by mutableStateOf<Map<String, List<ComicRow>>>(emptyMap())
     var rankBusy by mutableStateOf(false)
     var rankError by mutableStateOf<String?>(null)
 }
 
-/** 排行周期 → explore 分区标题的关键字匹配表。匹配不到时「总」兜底用第一个分区。 */
-private val RANK_KEYS = listOf(
-    listOf("日", "今日", "daily"),
-    listOf("週", "周", "week"),
-    listOf("月", "month"),
-    listOf("總", "总", "排行", "rank", "人气", "人氣", "hot"),
-)
-internal val RANK_TAB_NAMES = listOf("今日", "本周", "月", "总")
-
-fun matchRankSection(secs: List<ExploreSection>, tab: Int): ExploreSection? {
-    if (secs.isEmpty()) return null
-    val pats = RANK_KEYS[tab.coerceIn(0, RANK_KEYS.size - 1)]
-    for (sec in secs) {
-        val t = sec.title.lowercase()
-        if (pats.any { t.contains(it.lowercase()) }) return sec
-    }
-    // 任何周期匹配不到都兜底用第一个分区——榜单永远有内容（UI 会标明来源）
-    return secs.first()
-}
-
 /**
- * 首页（v4 简洁版）：品牌头 + 今日热门横排 + 各源单独排行榜。
- * 排行榜数据 = 选中源 explore 的分区里按周期关键字匹配（匹配不到显示空态，不造假）。
+ * 首页（v4 简洁版）：品牌头 + 今日热门横排 + 各源排行榜。
+ * 排行榜 = 源网站自己的排行（引擎 rankOptions 探测，没有排行接口的源不显示，不硬凑）。
  */
 @Composable
 fun HomeScreen(
@@ -94,7 +77,7 @@ fun HomeScreen(
 ) {
     val c = LocalColors.current
 
-    // 今日热门（保留 1.9.54 的三源并发/缓存/冷却逻辑）
+    // 今日热门（保留三源缓存/冷却逻辑）
     LaunchedEffect(sourceRev) {
         val vpnNow = ExploreCache.vpnOn()
         if (state.settledRev == sourceRev && state.settledVpn == vpnNow && state.hot.isNotEmpty()) {
@@ -103,10 +86,6 @@ fun HomeScreen(
         state.busy = true
         try {
             state.rows = buildRows(engine.sources(), ui.disabledSources(), ui.sourceOrder())
-            // 排行源失效了（被关掉）就退回第一个可用源
-            if (state.rows.none { it.key == state.rankSrc && it.enabled }) {
-                state.rankSrc = state.rows.firstOrNull { it.enabled }?.key ?: "jm"
-            }
             val targets = state.rows.filter { it.enabled }.take(3)
             if (targets.isEmpty()) {
                 state.hot = emptyList()
@@ -167,46 +146,57 @@ fun HomeScreen(
         }
     }
 
-    // 排行榜：选中源变化/刷新时拉它的 explore（复用发现页的单源缓存）
-    LaunchedEffect(state.rankSrc, state.rankTab, state.rankSections.size, sourceRev, state.rows.size) {
-        // 源列表还没读到时先等今日热门那轮把 rows 填上（它在本 effect 之前跑）
-        if (state.rows.isEmpty()) return@LaunchedEffect
-        if (state.rows.none { it.enabled }) {
-            state.rankError = "没有可用的源。"
-            return@LaunchedEffect
+    // 探测每个源的排行选项（同步调用，无网络）；默认选第一个有排行的源（jm 优先）
+    LaunchedEffect(sourceRev) {
+        val opts = LinkedHashMap<String, List<Map<String, String>>>()
+        for (row in buildRows(engine.sources(), ui.disabledSources(), ui.sourceOrder())
+            .filter { it.enabled }) {
+            val arr = runCatching { engine.rankOptions(row.key) }.getOrElse { JSONArray() }
+            if (arr.length() > 0) {
+                val list = (0 until arr.length()).mapNotNull { i ->
+                    arr.optJSONObject(i)?.let { o ->
+                        mapOf("value" to o.optString("value"), "text" to o.optString("text"))
+                    }
+                }
+                if (list.isNotEmpty()) opts[row.key] = list
+            }
         }
-        val key = state.rankSrc
-        if (key.isBlank() || state.rows.none { it.key == key && it.enabled }) {
-            state.rankSrc = state.rows.firstOrNull { it.key == "jm" && it.enabled }?.key
-                ?: state.rows.firstOrNull { it.enabled }?.key ?: ""
+        state.rankOptions = opts
+        if (state.rankSrc.isBlank() || opts[state.rankSrc] == null) {
+            state.rankSrc = opts.keys.firstOrNull { it == "jm" }
+                ?: opts.keys.firstOrNull() ?: ""
         }
-        if (state.rankSections[state.rankSrc] != null) return@LaunchedEffect   // 已拉过，chips 切换即时显示
-        val cached = ExploreCache.getSections(exploreSig(key, ""))
-        if (cached != null && cached.sections.isNotEmpty()) {
-            state.rankSections = state.rankSections + (key to cached.sections)
-            return@LaunchedEffect
-        }
+        state.rankOptIdx = 0
+    }
+
+    val rankOpts = state.rankOptions[state.rankSrc] ?: emptyList()
+    val rankOptValue = rankOpts.getOrNull(state.rankOptIdx)?.get("value") ?: ""
+    val rankSrcName = state.rows.firstOrNull { it.key == state.rankSrc }?.name ?: state.rankSrc
+
+    // 拉当前源当前周期的榜单（缓存 key = 源|周期）
+    LaunchedEffect(state.rankSrc, state.rankOptIdx, state.rankOptions.size) {
+        if (state.rankSrc.isBlank() || rankOptValue.isBlank()) return@LaunchedEffect
+        val cacheKey = state.rankSrc + "|" + rankOptValue
+        if (state.rankComics[cacheKey] != null) return@LaunchedEffect
         state.rankBusy = true
         state.rankError = null
-        val r = kotlinx.coroutines.withTimeoutOrNull(15_000) { engine.explore(key, 0) }
-        if (r != null && r.optBoolean("ok")) {
-            val secs = parseSections(r.optJSONObject("data"), key, key)
-                .filter { it.comics.isNotEmpty() }
-            if (secs.isNotEmpty()) {
-                ExploreCache.putSections(exploreSig(key, ""), secs, 0)
-                state.rankSections = state.rankSections + (key to secs)
-            } else {
-                state.rankError = "这个源没有返回内容。"
+        val r = runCatching {
+            kotlinx.coroutines.withTimeoutOrNull(30_000) {
+                engine.rank(state.rankSrc, rankOptValue, 1)
             }
-        } else {
-            state.rankError = "这个源没返回内容（可能需要代理或登录）。"
+        }.getOrElse { null }
+        val ok = r?.optBoolean("ok") == true
+        val comics = if (ok) {
+            parseRankComics(r!!.optJSONObject("data"), state.rankSrc, rankSrcName)
+        } else emptyList()
+        state.rankComics = state.rankComics + (cacheKey to comics)
+        if (!ok) {
+            state.rankError = r?.optString("error")?.takeIf { it.isNotBlank() } ?: "拉取失败"
         }
         state.rankBusy = false
     }
 
-    val rankMatched = matchRankSection(state.rankSections[state.rankSrc] ?: emptyList(), state.rankTab)
-    val rankSrcName = state.rows.firstOrNull { it.key == state.rankSrc }?.name
-        ?: state.rankSrc
+    val rankMatched = state.rankComics[state.rankSrc + "|" + rankOptValue] ?: emptyList()
 
     LazyVerticalGrid(
         columns = GridCells.Fixed(3),
@@ -272,66 +262,69 @@ fun HomeScreen(
             }
         }
 
-        // ── 排行榜（各源单独）──
+        // ── 排行榜（各源网站自己的排行）──
         item(span = { GridItemSpan(maxLineSpan) }) {
             SectionHeader(
                 "排行榜",
-                more = "$rankSrcName · ${RANK_TAB_NAMES[state.rankTab]}",
+                more = if (rankSrcName.isNotBlank() && rankOpts.isNotEmpty())
+                    "$rankSrcName · ${rankOpts.getOrNull(state.rankOptIdx)?.get("text") ?: ""}" else null,
                 inset = false,
             )
         }
-        item(span = { GridItemSpan(maxLineSpan) }) {
-            LazyRow(
-                contentPadding = PaddingValues(horizontal = 18.dp),
-                horizontalArrangement = Arrangement.spacedBy(7.dp),
-            ) {
-                val srcs = state.rows.filter { it.enabled }
-                items(srcs.size) { idx ->
-                    val r = srcs[idx]
-                    Chip(r.name, state.rankSrc == r.key) {
-                        if (state.rankSrc != r.key) {
-                            state.rankSrc = r.key
+
+        if (state.rankSrc.isBlank()) {
+            item(span = { GridItemSpan(maxLineSpan) }) { LoadingBox(60.dp) }
+        } else {
+            // 源 chips：只有真有排行接口的源出现
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                val rankable = state.rows.filter { (state.rankOptions[it.key] ?: emptyList()).isNotEmpty() }
+                LazyRow(
+                    contentPadding = PaddingValues(horizontal = 18.dp),
+                    horizontalArrangement = Arrangement.spacedBy(7.dp),
+                ) {
+                    items(rankable.size) { idx ->
+                        val r = rankable[idx]
+                        Chip(r.name, state.rankSrc == r.key) {
+                            if (state.rankSrc != r.key) {
+                                state.rankSrc = r.key
+                                state.rankOptIdx = 0
+                            }
                         }
                     }
                 }
             }
-        }
-        item(span = { GridItemSpan(maxLineSpan) }) {
-            LazyRow(
-                contentPadding = PaddingValues(horizontal = 18.dp),
-                horizontalArrangement = Arrangement.spacedBy(7.dp),
-            ) {
-                items(RANK_TAB_NAMES.size) { i ->
-                    Chip(RANK_TAB_NAMES[i], state.rankTab == i) {
-                        if (state.rankTab != i) state.rankTab = i
+            // 周期 chips：来自源自己的排行选项
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                LazyRow(
+                    contentPadding = PaddingValues(horizontal = 18.dp),
+                    horizontalArrangement = Arrangement.spacedBy(7.dp),
+                ) {
+                    items(rankOpts.size) { i ->
+                        Chip(rankOpts[i]["text"] ?: "", state.rankOptIdx == i) {
+                            if (state.rankOptIdx != i) state.rankOptIdx = i
+                        }
                     }
                 }
             }
-        }
 
-        when {
-            state.rankBusy -> item(span = { GridItemSpan(maxLineSpan) }) { LoadingBox(180.dp) }
-            state.rankError != null -> item(span = { GridItemSpan(maxLineSpan) }) {
-                Text(
-                    state.rankError!!,
-                    color = c.fg3, fontSize = 11.5.sp,
-                    modifier = Modifier.padding(horizontal = 18.dp),
-                )
-            }
-            rankMatched != null -> {
-                val allKeys = RANK_KEYS.flatten()
-                val isFallback = allKeys.none { rankMatched.title.lowercase().contains(it.lowercase()) }
-                item(span = { GridItemSpan(maxLineSpan) }) {
-                    if (isFallback) {
-                        Text(
-                            "该源没有独立的「${RANK_TAB_NAMES[state.rankTab]}」榜，以下来自分区「${rankMatched.title}」",
-                            color = c.fg3, fontSize = 10.sp,
-                            modifier = Modifier.padding(horizontal = 18.dp),
-                        )
-                    }
+            when {
+                state.rankBusy -> item(span = { GridItemSpan(maxLineSpan) }) { LoadingBox(180.dp) }
+                state.rankError != null && rankMatched.isEmpty() -> item(span = { GridItemSpan(maxLineSpan) }) {
+                    Text(
+                        state.rankError!!,
+                        color = c.fg3, fontSize = 11.5.sp,
+                        modifier = Modifier.padding(horizontal = 18.dp),
+                    )
                 }
-                itemsIndexed(rankMatched.comics, key = { _, it -> it.id }) { i, comic ->
-                        RankCell(
+                rankMatched.isEmpty() -> item(span = { GridItemSpan(maxLineSpan) }) {
+                    Text(
+                        "这个榜现在没有数据（源站还没更新），换一个周期或源试试。",
+                        color = c.fg3, fontSize = 11.5.sp,
+                        modifier = Modifier.padding(horizontal = 18.dp),
+                    )
+                }
+                else -> itemsIndexed(rankMatched, key = { _, it -> it.id }) { i, comic ->
+                    RankCell(
                         index = i,
                         cover = comic.cover,
                         title = comic.title,
@@ -341,15 +334,27 @@ fun HomeScreen(
                     )
                 }
             }
-            else -> item(span = { GridItemSpan(maxLineSpan) }) {
-                Text(
-                    "这个源没有「${RANK_TAB_NAMES[state.rankTab]}」的排行数据，换一个周期或源试试。",
-                    color = c.fg3, fontSize = 11.5.sp,
-                    modifier = Modifier.padding(horizontal = 18.dp),
-                )
-            }
         }
 
         item(span = { GridItemSpan(maxLineSpan) }) { Box(Modifier.height(8.dp)) }
+    }
+}
+
+/** rank 返回的 comics → ComicRow（引擎已解析成 {id,title,cover,subtitle}） */
+private fun parseRankComics(data: org.json.JSONObject?, sourceKey: String, sourceName: String): List<ComicRow> {
+    data ?: return emptyList()
+    val arr = data.optJSONArray("comics") ?: return emptyList()
+    return (0 until arr.length()).mapNotNull { i ->
+        arr.optJSONObject(i)?.let { o ->
+            val id = o.optString("id")
+            if (id.isBlank()) null else ComicRow(
+                id,
+                o.optString("title"),
+                o.optString("cover"),
+                o.optString("subTitle", "").ifBlank { o.optString("subtitle") },
+                sourceKey,
+                sourceName,
+            )
+        }
     }
 }

@@ -171,6 +171,16 @@ final class SourceEngine {
         await asyncCall("account", [jsLiteral(key)])
     }
 
+    /// 排行榜能力：该源的排行选项 [{value,text}]；源网站没有排行接口返回空数组
+    func rankOptions(key: String) async -> [[String: Any]] {
+        (await syncCall("rankOptions", [jsLiteral(key)]) as? [[String: Any]]) ?? []
+    }
+
+    /// 拉一份排行榜（option 来自 rankOptions 的 value）
+    func rank(key: String, option: String, page: Int = 1) async -> [String: Any] {
+        await asyncCall("rank", [jsLiteral(key), jsLiteral(option), "\(page)"], timeout: 30)
+    }
+
     /// 通用源方法调用（禁漫签到这类「源自己暴露的能力」）。
     /// 源 throw 的错误会在返回的 error 字段里原样带出。
     func invoke(key: String, method: String, args: [Any] = [], timeout: TimeInterval = 30) async -> [String: Any] {

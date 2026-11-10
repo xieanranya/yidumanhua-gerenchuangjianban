@@ -86,8 +86,9 @@ struct HomeScreen: View {
                         .padding(.horizontal, 18)
                         .padding(.top, 8)
                 } else {
+                    // 6 本（2 行）：给排行榜留出首屏位置
                     LazyVGrid(columns: columns, alignment: .leading, spacing: 14) {
-                        ForEach(Array(hot.prefix(9))) { work in
+                        ForEach(Array(hot.prefix(6))) { work in
                             NavigationLink {
                                 DetailView(work: work)
                             } label: {

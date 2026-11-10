@@ -2318,6 +2318,9 @@ __SOURCE_CODE["mh18"] = "/** @type {import('./_venera_.js')} */\nclass MH18 exte
       try {
         var s = loaded[key];
         if (!s) return [];
+        // 封面低清的源不放排行（网格放大必糊，按「源不支持就不硬凑」原则剔除）：
+        // Komiic 的封面源站只有 180x240。
+        if (key === 'Komiic') return [];
         var rank = __findRanking(s);
         if (rank) {
           return (rank.options || []).map(function (o) {

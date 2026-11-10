@@ -1236,13 +1236,24 @@ enum CoverTint {
         let fallback = Color(hex: 0xEFE7F0)
         guard !url.isEmpty,
               let img = await RemoteImageLoader.shared.image(url, maxPixel: 320) else { return fallback }
-        // 缩到 1x1 取平均色
-        let renderer = UIGraphicsImageRenderer(size: CGSize(width: 1, height: 1))
+        // 缩到 4x4 再画进 1x1 的已知 RGBA 上下文取平均色
+        // （UIColor(cgImage:) 的分量提取不可靠，必须用显式 RGBA 位图上下文）
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: 4, height: 4))
         let small = renderer.image { _ in
-            img.draw(in: CGRect(origin: .zero, size: CGSize(width: 1, height: 1)))
+            img.draw(in: CGRect(origin: .zero, size: CGSize(width: 4, height: 4)))
         }
-        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
-        UIColor(cgImage: small.cgImage).getRed(&r, green: &g, blue: &b, alpha: &a)
+        var pixel = [UInt8](repeating: 0, count: 4)
+        let bitmapCtx = CGContext(
+            data: &pixel, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        )
+        guard let bitmapCtx,
+              let cg = small.cgImage else { return fallback }
+        bitmapCtx.draw(cg, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+        let r = CGFloat(pixel[0]) / 255.0
+        let g = CGFloat(pixel[1]) / 255.0
+        let b = CGFloat(pixel[2]) / 255.0
         // 平均色调成浅色（向白混合 84%）
         let ui = UIColor(
             red: r + (1 - r) * 0.84,

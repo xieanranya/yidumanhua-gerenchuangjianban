@@ -15,7 +15,11 @@ struct MeScreen: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                BrandHeader(title: "我的", subtitle: "\(hub.rows.count) 个源 · 已登录 \(hub.rows.filter { $0.logged }.count) 个")
+                PageTopBar(title: "我的", trailing: AnyView(
+                    Text("\(hub.rows.filter { $0.logged }.count)/\(hub.rows.count) 源已登录")
+                        .font(.system(size: 10.5))
+                        .foregroundColor(c.fg3)
+                ))
 
                 // 头像卡
                 HStack(spacing: 13) {
@@ -234,7 +238,7 @@ struct SourceManagerView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                BrandHeader(title: "源管理", subtitle: subline)
+                PageTopBar(title: "源管理")
 
                 VStack(spacing: 9) {
                     ForEach(Array(hub.rows.enumerated()), id: \.element.id) { idx, row in

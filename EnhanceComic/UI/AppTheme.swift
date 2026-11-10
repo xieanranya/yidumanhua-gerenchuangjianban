@@ -100,13 +100,12 @@ struct AppColors {
 
     static let day = AppColors(
         dark: false,
-        // v3 沉浸式：内容底不再是纯白，是 #F4F4F7 的浅灰底，卡片浮在上面。
-        // （和网页版交互稿一致；Android 的 AppTheme.kt 对齐时同步这两个值）
-        bg: Color(hex: 0xF4F4F7),
+        // v6：暖白底 / 墨黑字（和网页版 v6 交互稿一致；Android 对齐时同步）
+        bg: Color(hex: 0xFAF7F2),
         card: Color(hex: 0xFFFFFF),
         card2: Color(hex: 0xFFFFFF),
-        border: Color(hex: 0xE4E4E9),
-        fg: Color(hex: 0x111111),
+        border: Color(hex: 0xEAE5DC),
+        fg: Color(hex: 0x1C1A17),
         fg2: Color(hex: 0x636363),
         fg3: Color(hex: 0x9B9B9B),
         chip: Color(hex: 0xEAEAEE),

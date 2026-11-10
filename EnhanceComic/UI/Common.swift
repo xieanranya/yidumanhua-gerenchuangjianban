@@ -1192,3 +1192,147 @@ struct SubHeader: View {
         .padding(.bottom, 8)
     }
 }
+
+// ======================================================================= v6 杂志封面
+
+/// v6 轻顶栏：页面名 + 右侧工具钮，透明底（配合暖白/海报色块），替代品牌头。
+struct PageTopBar: View {
+    let title: String
+    var trailing: AnyView? = nil
+
+    @Environment(\.appColors) private var c
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Text(title)
+                .font(.system(size: 16, weight: .bold))
+                .foregroundColor(c.fg)
+                .tracking(-0.3)
+            Spacer(minLength: 0)
+            if let trailing { trailing }
+        }
+        .padding(.horizontal, 18)
+        .padding(.top, safeTop() + 4)
+        .padding(.bottom, 6)
+    }
+}
+
+extension Color {
+    /// 向白色混合 ratio 比例（0.85 ≈ 调成浅色）
+    func lightened(_ ratio: CGFloat = 0.85) -> Color {
+        let ui = UIColor(self)
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        ui.getRed(&r, green: &g, blue: &b, alpha: &a)
+        return Color(red: r + (1 - r) * ratio, green: g + (1 - g) * ratio, blue: b + (1 - b) * ratio)
+    }
+}
+
+/// 海报底色：从封面提取平均色再调成浅色。封面未加载时回退暖灰。
+enum CoverTint {
+    private static let cache = NSCache<NSString, UIColor>()
+
+    static func posterTint(url: String) async -> Color {
+        if let hit = cache.object(forKey: url as NSString) { return Color(hit) }
+        let fallback = Color(hex: 0xEFE7F0)
+        guard !url.isEmpty,
+              let img = await RemoteImageLoader.shared.image(url, maxPixel: 320) else { return fallback }
+        // 缩到 1x1 取平均色
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: 1, height: 1))
+        let small = renderer.image { _ in
+            img.draw(in: CGRect(origin: .zero, size: CGSize(width: 1, height: 1)))
+        }
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        UIColor(cgImage: small.cgImage).getRed(&r, green: &g, blue: &b, alpha: &a)
+        // 平均色调成浅色（向白混合 84%）
+        let ui = UIColor(
+            red: r + (1 - r) * 0.84,
+            green: g + (1 - g) * 0.84,
+            blue: b + (1 - b) * 0.84,
+            alpha: 1
+        )
+        cache.setObject(ui, forKey: url as NSString)
+        return Color(ui)
+    }
+}
+
+/// v6 杂志封面海报：浅色色块（封面提取色）+ 右侧竖版封面伸出上沿 20px +
+/// 左侧竖排大字标题 + 底部 pill/进度/主按钮。
+struct MagazinePoster: View {
+    let title: String
+    let cover: String
+    let pill: String
+    let progressLine: String
+    let buttonLabel: String
+    let onButton: () -> Void
+    let onCover: () -> Void
+
+    @Environment(\.appColors) private var c
+    @State private var tint: Color = Color(hex: 0xF1E8F4)
+
+    var body: some View {
+        ZStack(alignment: .bottomLeading) {
+            // 色块：封面提取色的浅色版
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .fill(LinearGradient(colors: [tint, tint.lightened(0.4)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                .frame(height: 330)
+                .shadow(color: .black.opacity(c.dark ? 0.3 : 0.12), radius: 12, x: 0, y: 5)
+
+            // 竖排大字标题（左）
+            Text(title.map { String($0) }.joined(separator: "\n"))
+                .font(.system(size: 24, weight: .bold))
+                .foregroundColor(c.fg)
+                .lineSpacing(6)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .padding(.leading, 16)
+                .padding(.top, 26)
+
+            // 竖版封面（右上，伸出上沿 20px）
+            Button(action: onCover) {
+                RemoteImage(url: cover, contentMode: .fill, maxPixel: 1000)
+                    .frame(height: 262)
+                    .frame(maxWidth: 196)
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .shadow(color: .black.opacity(c.dark ? 0.4 : 0.24), radius: 14, x: 0, y: 8)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+            .padding(.trailing, 14)
+            .offset(y: -20)
+
+            // 底部：pill + 进度行 + 主按钮
+            VStack(alignment: .leading, spacing: 9) {
+                Text(pill)
+                    .font(.system(size: 9, weight: .heavy))
+                    .tracking(1.1)
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(Capsule().fill(c.accent.opacity(0.94)))
+                Text(progressLine)
+                    .font(.system(size: 11))
+                    .foregroundColor(c.fg.opacity(0.72))
+                    .lineLimit(1)
+                Button(action: onButton) {
+                    HStack(spacing: 6) {
+                        GlyphView(glyph: .right, tint: .white, size: 11, strokeWidth: 2.2)
+                            .rotationEffect(.degrees(-90))
+                        Text(buttonLabel)
+                            .font(.system(size: 12.5, weight: .bold))
+                    }
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 10)
+                    .background(Capsule().fill(c.accent))
+                    .shadow(color: c.accent.opacity(0.34), radius: 9, x: 0, y: 4)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.leading, 18)
+            .padding(.trailing, 18)
+            .padding(.bottom, 18)
+        }
+        .task(id: cover) { tint = await CoverTint.posterTint(url: cover) }
+        .contentShape(Rectangle())
+    }
+}

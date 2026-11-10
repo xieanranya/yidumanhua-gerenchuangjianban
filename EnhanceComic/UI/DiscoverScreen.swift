@@ -24,9 +24,8 @@ struct DiscoverScreen: View {
     @State private var showSearch = false
 
     private let columns = [
-        GridItem(.flexible(minimum: 0, maximum: .infinity), spacing: 9),
-        GridItem(.flexible(minimum: 0, maximum: .infinity), spacing: 9),
-        GridItem(.flexible(minimum: 0, maximum: .infinity), spacing: 9),
+        GridItem(.flexible(minimum: 0, maximum: .infinity), spacing: 12),
+        GridItem(.flexible(minimum: 0, maximum: .infinity), spacing: 12),
     ]
 
     private var subline: String {
@@ -48,9 +47,8 @@ struct DiscoverScreen: View {
     private var discoverRoot: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                BrandHeader(
+                PageTopBar(
                     title: "发现",
-                    subtitle: subline,
                     trailing: AnyView(
                         GlassCircleButton(glyph: .search) {
                             withAnimation(.easeOut(duration: 0.2)) { showSearch.toggle() }

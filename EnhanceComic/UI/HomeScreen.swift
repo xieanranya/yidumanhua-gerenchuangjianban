@@ -29,6 +29,7 @@ struct HomeScreen: View {
     @State private var rankError: String?
     @State private var rankTick = 0
     @State private var appeared = false
+    @State private var posterDetail: Work?
 
     private let columns = [
         GridItem(.flexible(minimum: 0, maximum: .infinity), spacing: 9),
@@ -59,14 +60,60 @@ struct HomeScreen: View {
         return n > 0 ? "\(n) 个源在用 · 已连上 \(hotBusy ? 0 : hotFrom) 个" : "正在准备源…"
     }
 
+    /// 海报内容：优先最近阅读记录，其次今日热门第一本
+    private var poster: (title: String, cover: String, pill: String, progress: String, button: String,
+                         target: Work?) {
+        if let rec = ui.history.first {
+            return (
+                title: rec.title.isEmpty ? "未命名" : rec.title,
+                cover: rec.cover,
+                pill: rec.epTitle.isEmpty ? "继续阅读" : "继续阅读 · \(rec.epTitle)",
+                progress: "来源 \(rec.sourceName) · 已读 \(rec.epIndex + 1) 话",
+                button: "继续阅读",
+                target: rec.asWork
+            )
+        }
+        if let first = hot.first {
+            return (
+                title: first.title,
+                cover: first.cover,
+                pill: "今日热门 · No.1",
+                progress: first.sourceCount > 1 ? "来源 \(first.sourceNames)" : "来源 \(first.primary.sourceName)",
+                button: "开始阅读",
+                target: first
+            )
+        }
+        return (
+            title: "画质漫画",
+            cover: "",
+            pill: "今日热门",
+            progress: "内容加载中…",
+            button: "开始阅读",
+            target: nil
+        )
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                BrandHeader(
+                PageTopBar(
                     title: "画质漫画",
-                    subtitle: subline,
                     trailing: AnyView(GlassCircleButton(glyph: .search) { onSearch() })
                 )
+
+                // ── 杂志封面海报：最近在读（有记录）或今日热门第一本 ──
+                MagazinePoster(
+                    title: poster.title,
+                    cover: poster.cover,
+                    pill: poster.pill,
+                    progressLine: poster.progress,
+                    buttonLabel: poster.button,
+                    onButton: { if let t = poster.target { posterDetail = t } },
+                    onCover: { if let t = poster.target { posterDetail = t } }
+                )
+                .padding(.horizontal, 14)
+                .padding(.top, 4)
+                .padding(.bottom, 6)
 
                 // ── 今日热门：3 列网格直接铺开（v5 极简，无大卡无横排）──
                 SectionHeader(
@@ -167,6 +214,15 @@ struct HomeScreen: View {
             }
         }
         .background(c.bg.ignoresSafeArea())
+        // 海报封面/按钮 → 详情（多源聚合，里面再继续阅读）
+        .navigationDestination(
+            isPresented: Binding(
+                get: { posterDetail != nil },
+                set: { if !$0 { posterDetail = nil } }
+            )
+        ) {
+            if let w = posterDetail { DetailView(work: w) }
+        }
         // 今日热门先跑完（引擎队列串行，不能抢），再探测排行选项、再拉榜单
         .task { await loadHot() }
         .task(id: "\(rankTick)|\(hotBusy)|\(hub.enabledRows.count)") {

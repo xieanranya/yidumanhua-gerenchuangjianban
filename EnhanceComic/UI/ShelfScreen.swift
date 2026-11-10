@@ -10,6 +10,8 @@ struct ShelfScreen: View {
     @Environment(\.appColors) private var c
     @Environment(\.scenePhase) private var scenePhase
 
+    @State private var shelfTab = 0
+    @State private var historyTarget: OnlineRecord?
     @State private var picker: PickerKind?
     @State private var importing = false
     @State private var importNote = ""
@@ -29,20 +31,44 @@ struct ShelfScreen: View {
         store.books.filter { $0.lastPage == 0 }
     }
 
+    private func segBtn(_ text: String, on: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(text)
+                .font(.system(size: 12, weight: .bold))
+                .foregroundColor(on ? .white : c.fg2)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 9)
+                .background(on ? AnyShapeStyle(c.accent) : AnyShapeStyle(c.card))
+                .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        .stroke(on ? c.accent : c.border, lineWidth: 1)
+                )
+        }
+        .buttonStyle(.plain)
+    }
+
     private var columns: [GridItem] {
-        let n = c.dark ? 3 : 2
-        return Array(repeating: GridItem(.flexible(minimum: 0, maximum: .infinity), spacing: 9), count: n)
+        // v6：漫画列表统一两列封面，用留白区分
+        Array(repeating: GridItem(.flexible(minimum: 0, maximum: .infinity), spacing: 12), count: 2)
     }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 // 品牌头（v4）：紧凑光晕，头图里永远不出现封面
-                BrandHeader(
+                PageTopBar(
                     title: "书架",
-                    subtitle: subline,
                     trailing: AnyView(GlassCircleButton(glyph: .search) { picker = .files })
                 )
+
+                // 收藏（本地书） / 历史（在线记录）分段切换
+                HStack(spacing: 8) {
+                    segBtn("收藏 · 本地", on: shelfTab == 0) { shelfTab = 0 }
+                    segBtn("历史 · 在线", on: shelfTab == 1) { shelfTab = 1 }
+                }
+                .padding(.horizontal, 18)
+                .padding(.bottom, 6)
 
                 actions
                     .padding(.horizontal, 18)
@@ -54,7 +80,38 @@ struct ShelfScreen: View {
                         .padding(.top, 10)
                 }
 
-                if store.books.isEmpty {
+                if shelfTab == 1 {
+                    // 历史：在线阅读记录（两列封面 + 来源与章节）
+                    if ui.history.isEmpty {
+                        emptyState
+                    } else {
+                        LazyVGrid(columns: columns, alignment: .leading, spacing: 16) {
+                            ForEach(ui.history) { rec in
+                                Button {
+                                    historyTarget = rec
+                                } label: {
+                                    VStack(alignment: .leading, spacing: 0) {
+                                        RemoteCover(url: rec.cover, title: rec.title, seed: rec.comicId.hashValue)
+                                            .aspectRatio(3 / 4, contentMode: .fit)
+                                        Text(rec.title)
+                                            .font(.system(size: 11, weight: .semibold))
+                                            .foregroundColor(c.fg)
+                                            .lineLimit(1)
+                                            .padding(.top, 7)
+                                        Text("\(rec.sourceName) · \(rec.epTitle.isEmpty ? "已读" : rec.epTitle)")
+                                            .font(.system(size: 9.5))
+                                            .foregroundColor(c.fg3)
+                                            .lineLimit(1)
+                                            .padding(.top, 2)
+                                    }
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .padding(.horizontal, 18)
+                        .padding(.bottom, 26)
+                    }
+                } else if store.books.isEmpty {
                     if !importing {
                         emptyState
                     }
@@ -85,6 +142,14 @@ struct ShelfScreen: View {
             }
         }
         .background(c.bg.ignoresSafeArea())
+        .navigationDestination(
+            isPresented: Binding(
+                get: { historyTarget != nil },
+                set: { if !$0 { historyTarget = nil } }
+            )
+        ) {
+            if let rec = historyTarget { DetailView(work: rec.asWork) }
+        }
         .task {
             await store.backfillCovers()
             // 文件共享目录里躺着压缩包就顺手收进书库。这条路径不经过选择器，

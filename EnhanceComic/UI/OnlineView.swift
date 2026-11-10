@@ -265,22 +265,22 @@ struct DetailView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                BrandHeader(title: title, subtitle: subline)
-                .overlay(alignment: .topLeading) {
+                HStack(spacing: 12) {
                     GlassCircleButton(glyph: .back) { dismiss() }
-                        .padding(.leading, 16)
-                        .padding(.top, safeTop() + 8)
-                }
-                .overlay(alignment: .topTrailing) {
+                    Text("详情")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundColor(c.fg3)
+                    Spacer(minLength: 0)
                     NavigationLink {
                         AccountView(key: entry.sourceKey, fallbackName: entry.sourceName)
                     } label: {
                         GlassCircleLabel(glyph: .user)
                     }
                     .buttonStyle(.plain)
-                    .padding(.trailing, 16)
-                    .padding(.top, safeTop() + 8)
                 }
+                .padding(.horizontal, 16)
+                .padding(.top, safeTop() + 6)
+                .padding(.bottom, 8)
 
                 Group {
                     if busy {
@@ -292,35 +292,41 @@ struct DetailView: View {
                                 .padding(.bottom, 30)
                         }
                     } else {
-                        // 封面 + 标题行（信息在品牌头下方，头图保持干净）
-                        HStack(alignment: .top, spacing: 12) {
+                        // 封面 + 标题/作者/来源（v6：突出封面与标题）
+                        HStack(alignment: .top, spacing: 16) {
                             ZStack {
                                 coverGradient(seed: work.norm.hashValue, dark: c.dark)
                                 if cover.isEmpty {
                                     Text(String(title.prefix(1)))
-                                        .font(.system(size: 24, weight: .bold))
+                                        .font(.system(size: 26, weight: .bold))
                                         .foregroundColor(placeholderInk(c.dark))
                                 } else {
-                                    RemoteImage(url: cover, contentMode: .fill, maxPixel: 420)
+                                    RemoteImage(url: cover, contentMode: .fill, maxPixel: 640)
                                 }
                             }
-                            .frame(width: 84, height: 114)
+                            .frame(width: 112, height: 150)
                             .clipped()
-                            .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            .shadow(color: .black.opacity(c.dark ? 0.3 : 0.14), radius: 9, x: 0, y: 4)
 
-                            VStack(alignment: .leading, spacing: 6) {
+                            VStack(alignment: .leading, spacing: 7) {
                                 Text(title)
-                                    .font(.system(size: 15, weight: .semibold))
+                                    .font(.system(size: 18, weight: .bold))
                                     .foregroundColor(c.fg)
-                                    .lineLimit(2)
+                                    .lineLimit(3)
                                 Text("来源：\(entry.sourceName)")
                                     .font(.system(size: 10.5))
                                     .foregroundColor(c.accent)
+                                if !chapters.isEmpty {
+                                    Text("连载中 · \(chapters.count) 话")
+                                        .font(.system(size: 10.5))
+                                        .foregroundColor(c.fg3)
+                                }
                             }
                             Spacer(minLength: 0)
                         }
                         .padding(.horizontal, 18)
-                        .padding(.top, 12)
+                        .padding(.top, 8)
 
                         if !description.isEmpty {
                             Text(description)
@@ -386,34 +392,29 @@ struct DetailView: View {
     private var continueButton: some View {
         if !chapters.isEmpty {
             let target = chapters.first { $0.id == currentEpId } ?? chapters[0]
-            HStack(spacing: 9) {
-                Button {
-                    Task { await open(target) }
-                } label: {
-                    HStack(spacing: 6) {
-                        GlyphView(glyph: .right, tint: c.accentInk, size: 14, strokeWidth: 2)
-                        Text(record != nil ? "继续阅读 · \(target.title)" : "从第一话开始")
-                            .font(.system(size: 13, weight: .semibold))
-                            .lineLimit(1)
-                    }
-                    .foregroundColor(c.accentInk)
-                    .padding(.horizontal, 14)
-                    .frame(height: 40)
-                    .frame(maxWidth: .infinity)
-                    .background(c.accent)
-                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            Button {
+                Task { await open(target) }
+            } label: {
+                HStack(spacing: 6) {
+                    GlyphView(glyph: .right, tint: .white, size: 13, strokeWidth: 2.2)
+                        .rotationEffect(.degrees(-90))
+                    Text(record != nil ? "继续阅读 · \(target.title)" : "从第一话开始")
+                        .font(.system(size: 14, weight: .bold))
+                        .lineLimit(1)
                 }
-                .buttonStyle(.plain)
-
-                Text("\(chapters.count) 话")
-                    .font(.system(size: 10.5))
-                    .foregroundColor(c.fg3)
+                .foregroundColor(.white)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+                .background(Capsule().fill(c.accent))
+                .shadow(color: c.accent.opacity(0.32), radius: 10, x: 0, y: 4)
             }
+            .buttonStyle(.plain)
             .padding(.horizontal, 18)
             .padding(.top, 14)
         }
     }
 
+    /// 章节列表：细分隔线行（v6 安静化，不再是圆角小卡网格）
     private var chapterGrid: some View {
         VStack(alignment: .leading, spacing: 0) {
             SectionHeader(
@@ -423,26 +424,34 @@ struct DetailView: View {
             )
             .padding(.horizontal, 18)
 
-            LazyVGrid(columns: chapterColumns, alignment: .leading, spacing: 7) {
+            LazyVStack(alignment: .leading, spacing: 0) {
                 ForEach(chapters) { ep in
                     Button {
                         Task { await open(ep) }
                     } label: {
-                        Text(ep.title)
-                            .font(.system(size: 10.5, weight: ep.id == currentEpId ? .semibold : .regular))
-                            .foregroundColor(ep.id == currentEpId ? c.accentInk : c.fg2)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                            .frame(maxWidth: .infinity)
-                            .padding(.horizontal, 6)
-                            .frame(height: 32)
-                            .background(ep.id == currentEpId ? c.accent : c.card2)
-                            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                        HStack {
+                            Text(ep.title)
+                                .font(.system(size: 12.5, weight: ep.id == currentEpId ? .semibold : .regular))
+                                .foregroundColor(ep.id == currentEpId ? c.accent : c.fg)
+                                .lineLimit(1)
+                            Spacer(minLength: 0)
+                            if ep.id == currentEpId {
+                                Text("读到这")
+                                    .font(.system(size: 9.5))
+                                    .foregroundColor(c.accent)
+                            }
+                        }
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 12)
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .overlay(alignment: .bottom) {
+                        Rectangle().fill(c.border.opacity(0.6)).frame(height: 0.7)
+                            .padding(.horizontal, 18)
+                    }
                 }
             }
-            .padding(.horizontal, 18)
         }
     }
 

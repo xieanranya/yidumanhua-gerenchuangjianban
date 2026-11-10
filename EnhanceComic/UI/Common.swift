@@ -1267,7 +1267,9 @@ enum CoverTint {
 }
 
 /// v6 杂志封面海报：浅色色块（封面提取色）+ 右侧竖版封面伸出上沿 20px +
-/// 左侧竖排大字标题 + 底部 pill/进度/主按钮。
+/// 左上竖排装饰标题（最多 6 字）+ 底部完整标题/进度/主按钮。
+/// 实机教训：竖排标题不限字数会把海报撑爆（书名+作者 20+ 字全竖排）——
+/// 竖排只做装饰（prefix 6），完整标题横排在底部行，整个 ZStack 限高 330。
 struct MagazinePoster: View {
     let title: String
     let cover: String
@@ -1280,6 +1282,11 @@ struct MagazinePoster: View {
     @Environment(\.appColors) private var c
     @State private var tint: Color = Color(hex: 0xF1E8F4)
 
+    /// 竖排装饰标题：最多 6 字，超出的部分在底部完整显示
+    private var verticalTitle: String {
+        String(title.replacingOccurrences(of: " ", with: "").prefix(6))
+    }
+
     var body: some View {
         ZStack(alignment: .bottomLeading) {
             // 色块：封面提取色的浅色版
@@ -1288,14 +1295,16 @@ struct MagazinePoster: View {
                 .frame(height: 330)
                 .shadow(color: .black.opacity(c.dark ? 0.3 : 0.12), radius: 12, x: 0, y: 5)
 
-            // 竖排大字标题（左）
-            Text(title.map { String($0) }.joined(separator: "\n"))
+            // 竖排装饰标题（左上，限高 240）
+            Text(verticalTitle.map { String($0) }.joined(separator: "\n"))
                 .font(.system(size: 24, weight: .bold))
                 .foregroundColor(c.fg)
                 .lineSpacing(6)
+                .frame(width: 36, height: 240, alignment: .top)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .padding(.leading, 16)
                 .padding(.top, 26)
+                .allowsHitTesting(false)
 
             // 竖版封面（右上，伸出上沿 20px）
             Button(action: onCover) {
@@ -1310,9 +1319,10 @@ struct MagazinePoster: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
             .padding(.trailing, 14)
             .offset(y: -20)
+            .allowsHitTesting(true)
 
-            // 底部：pill + 进度行 + 主按钮
-            VStack(alignment: .leading, spacing: 9) {
+            // 底部：pill + 完整标题 + 进度 + 主按钮
+            VStack(alignment: .leading, spacing: 8) {
                 Text(pill)
                     .font(.system(size: 9, weight: .heavy))
                     .tracking(1.1)
@@ -1320,8 +1330,14 @@ struct MagazinePoster: View {
                     .padding(.horizontal, 10)
                     .padding(.vertical, 4)
                     .background(Capsule().fill(c.accent.opacity(0.94)))
+                    .lineLimit(1)
+                Text(title)
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundColor(c.fg)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
                 Text(progressLine)
-                    .font(.system(size: 11))
+                    .font(.system(size: 10.5))
                     .foregroundColor(c.fg.opacity(0.72))
                     .lineLimit(1)
                 Button(action: onButton) {
@@ -1339,10 +1355,11 @@ struct MagazinePoster: View {
                 }
                 .buttonStyle(.plain)
             }
-            .padding(.leading, 18)
+            .padding(.leading, 62)
             .padding(.trailing, 18)
             .padding(.bottom, 18)
         }
+        .frame(height: 330)   // 整体限高：竖排/封面都不允许把海报撑开（封面伸出上沿靠 ZStack 不裁剪）
         .task(id: cover) { tint = await CoverTint.posterTint(url: cover) }
         .contentShape(Rectangle())
     }

@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -37,6 +38,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
@@ -44,6 +46,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlin.math.max
+import kotlin.math.min
 import androidx.compose.runtime.collectAsState
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.rememberCoroutineScope
@@ -64,31 +68,43 @@ import com.enhance.comic.model.ReaderPrefs
  * 一屏只干一件事，不会像之前那样把滑杆和开关全堆在一起。
  */
 
-private val OnlineAccent = Color(0xFFFF6E9C)
+// v7 配色（计划书）：画布 #101217 / 面板 #191C23 / 文字 #F2F3F6 / 当前值 #B6BBC8 / 强调淡紫 #CDBBFF
+private val OnlineAccent = Color(0xFFCDBBFF)
+private val OnlineCanvas = Color(0xFF101217)
+private val OnlineSheetBg = Color(0xFF191C23)
+private val OnlineFg = Color(0xFFF2F3F6)
+private val OnlineValue = Color(0xFFB6BBC8)
+private val OnlineDisabled = Color(0xFF4A4D58)
 private val OnlineBarBg = Color(0xCC000000)
-private val OnlineSheetBg = Color(0xFF1A1A1D)
 private val OnlineCard = Color(0xFF242428)
 private val OnlineHair = Color(0x1FFFFFFF)
 private val OnlineDim = Color(0x99FFFFFF)
 private val OnlineHint = Color(0x66FFFFFF)
-private val OnlineOnAccent = Color(0xFF16080C)
+private val OnlineOnAccent = Color(0xFF1A1526)
 
-/** 一行顶栏：返回 + 标题/页码 + 目录 + 设置。 */
+/** v7 顶栏：返回 + 章节名/书名 + 页码胶囊。衬底是画布色的顶部渐变。 */
 @Composable
 internal fun OnlineTopBar(
     title: String,
+    subtitle: String,
     pageLabel: String,
     onBack: () -> Unit,
-    onChapters: (() -> Unit)?,
-    onSettings: () -> Unit,
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(OnlineBarBg)
+            .background(
+                Brush.verticalGradient(
+                    listOf(
+                        OnlineCanvas.copy(alpha = 0.96f),
+                        OnlineCanvas.copy(alpha = 0.60f),
+                        Color.Transparent,
+                    )
+                )
+            )
             .statusBarsPadding()
-            .height(52.dp)
-            .padding(horizontal = 4.dp),
+            .height(58.dp)
+            .padding(horizontal = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(
@@ -99,25 +115,142 @@ internal fun OnlineTopBar(
         Column(Modifier.weight(1f).padding(end = 6.dp)) {
             Text(
                 text = title.ifBlank { "阅读" },
-                color = Color.White,
-                fontSize = 13.5.sp,
-                fontWeight = FontWeight.Medium,
+                color = OnlineFg,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Bold,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            Text(pageLabel, color = OnlineDim, fontSize = 10.5.sp, maxLines = 1)
+            if (subtitle.isNotBlank()) {
+                Text(
+                    subtitle,
+                    color = OnlineValue,
+                    fontSize = 10.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
 
-        if (onChapters != null) {
-            Box(
-                Modifier.size(44.dp).clickable(onClick = onChapters),
-                contentAlignment = Alignment.Center,
-            ) { GlyphView(Glyph.LIST, Color.White, 20.dp) }
-        }
         Box(
-            Modifier.size(44.dp).clickable(onClick = onSettings),
-            contentAlignment = Alignment.Center,
-        ) { GlyphView(Glyph.GEAR, Color.White, 20.dp) }
+            Modifier
+                .background(Color(0x14FFFFFF), RoundedCornerShape(50))
+                .padding(horizontal = 10.dp, vertical = 4.dp),
+        ) {
+            Text(pageLabel, color = OnlineValue, fontSize = 10.5.sp, maxLines = 1)
+        }
+    }
+}
+
+/**
+ * v7 底部栏：进度行（页码 + 细进度条 + 章节序号）+「上一话 / 目录 / 设置 / 下一话」四键。
+ * 翻页类布局进度条可拖跳页；条漫类只做展示。衬底是画布色的底部渐变。
+ */
+@Composable
+internal fun OnlineBottomBar(
+    current: Int,
+    total: Int,
+    chapterLabel: String,
+    hasPrev: Boolean,
+    hasNext: Boolean,
+    chaptersAvailable: Boolean,
+    seekable: Boolean,
+    onSeek: (Int) -> Unit,
+    onPrev: () -> Unit,
+    onContents: () -> Unit,
+    onSettings: () -> Unit,
+    onNext: () -> Unit,
+) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .background(
+                Brush.verticalGradient(
+                    listOf(
+                        Color.Transparent,
+                        OnlineCanvas.copy(alpha = 0.78f),
+                        OnlineCanvas.copy(alpha = 0.97f),
+                    )
+                )
+            )
+            .navigationBarsPadding(),
+    ) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .padding(top = 10.dp, bottom = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "${min(current + 1, max(total, 1))} / $total",
+                color = OnlineValue,
+                fontSize = 9.5.sp,
+                maxLines = 1,
+            )
+            val ratio = if (total > 1) ((current + 1f) / total).coerceIn(0f, 1f) else 1f
+            Box(
+                Modifier
+                    .weight(1f)
+                    .padding(horizontal = 10.dp)
+                    .height(20.dp)
+                    .then(if (seekable && total > 1) Modifier.pointerSeek(total, onSeek) else Modifier),
+            ) {
+                Box(
+                    Modifier
+                        .align(Alignment.CenterStart)
+                        .fillMaxWidth()
+                        .height(3.dp)
+                        .background(Color(0x24FFFFFF), RoundedCornerShape(1.5.dp)),
+                )
+                Box(
+                    Modifier
+                        .align(Alignment.CenterStart)
+                        .fillMaxWidth(ratio)
+                        .height(3.dp)
+                        .background(OnlineAccent, RoundedCornerShape(1.5.dp)),
+                )
+            }
+            Text(
+                chapterLabel,
+                color = OnlineValue,
+                fontSize = 9.5.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 10.dp)
+                .padding(top = 2.dp, bottom = 4.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            BarKey("上一话", Glyph.LEFT, hasPrev, onPrev)
+            BarKey("目录", Glyph.LIST, chaptersAvailable, onContents)
+            BarKey("设置", Glyph.GEAR, true, onSettings)
+            BarKey("下一话", Glyph.RIGHT, hasNext, onNext)
+        }
+    }
+}
+
+@Composable
+private fun RowScope.BarKey(label: String, icon: Glyph, enabled: Boolean, onClick: () -> Unit) {
+    Column(
+        Modifier
+            .width(66.dp)
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(vertical = 4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        GlyphView(icon, if (enabled) OnlineFg else OnlineDisabled, 17.dp)
+        Text(
+            label,
+            color = if (enabled) OnlineFg else OnlineDisabled,
+            fontSize = 10.sp,
+            modifier = Modifier.padding(top = 4.dp),
+        )
     }
 }
 
@@ -132,12 +265,12 @@ private const val PAGE_COLORIZE = "colorize"
 private const val PAGE_BRIGHT = "bright"
 private const val PAGE_BLUE = "blue"
 private const val PAGE_FILTER = "filter"
-private const val PAGE_LIST = "list"
 
 /**
- * 底部设置面板。
+ * 底部设置面板（v7）：「阅读 / 图像 / 显示」三组 tab，每次只显示两三项。
+ * 章节挪到工具栏「目录」键（OnlineChapterSheet）。
  *
- * page 为空 = 目录；否则只画那一个功能的小界面。切换不做转场动画 ——
+ * page 为空 = 当前组列表；否则只画那一个功能的小界面。切换不做转场动画 ——
  * 阅读页一直在跑图片解码，少一层动画少一份卡顿。
  */
 @Composable
@@ -147,11 +280,9 @@ internal fun OnlineSettingsSheet(
     onPrefs: (ReaderPrefs) -> Unit,
     onEnhance: (EnhanceSettings) -> Unit,
     onDismiss: () -> Unit,
-    chapters: List<Pair<String, String>> = emptyList(),
-    chapterIndex: Int = 0,
-    onPickChapter: (Int) -> Unit = {},
 ) {
     var page by remember { mutableStateOf(PAGE_HOME) }
+    var tab by remember { mutableStateOf(0) }
     val sheetScope = rememberCoroutineScope()
 
     Box(Modifier.fillMaxSize()) {
@@ -172,8 +303,7 @@ internal fun OnlineSettingsSheet(
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp))
                 .background(OnlineSheetBg)
-                .navigationBarsPadding()
-                .heightIn(max = 580.dp),
+                .navigationBarsPadding(),
         ) {
             Box(
                 Modifier.fillMaxWidth().padding(top = 10.dp).padding(bottom = 4.dp),
@@ -193,44 +323,9 @@ internal fun OnlineSettingsSheet(
                     enhance,
                     onOpen = { page = it },
                     onDone = onDismiss,
-                    chapters = chapters,
-                    chapterIndex = chapterIndex,
-                    onPickChapter = {
-                        onPickChapter(it)
-                        page = PAGE_HOME
-                    },
+                    tab = tab,
+                    onTab = { tab = it },
                 )
-
-                PAGE_LIST -> SheetScreen("目录", { page = PAGE_HOME }, onDismiss) {
-                    LazyColumn(Modifier.fillMaxWidth()) {
-                        itemsIndexed(chapters) { i, (id, title) ->
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable {
-                                        onPickChapter(i)
-                                        page = PAGE_HOME
-                                    }
-                                    .padding(horizontal = 14.dp, vertical = 12.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Text(
-                                    title,
-                                    color = if (i == chapterIndex) OnlineAccent else Color.White,
-                                    fontSize = 12.5.sp,
-                                    fontWeight = if (i == chapterIndex) FontWeight.SemiBold else FontWeight.Normal,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.weight(1f),
-                                )
-                                if (i == chapterIndex) {
-                                    Text("读到这", color = OnlineAccent, fontSize = 9.5.sp)
-                                }
-                            }
-                            HLine()
-                        }
-                    }
-                }
 
                 PAGE_LAYOUT -> SheetScreen("阅读器", { page = PAGE_HOME }, onDismiss) {
                     ReaderLayout.entries.forEach { layout ->
@@ -437,88 +532,121 @@ internal fun OnlineSettingsSheet(
     }
 }
 
-/** 目录：每个功能一行，显示当前值。 */
+/** 当前组的两三行（v7 三组 tab）：名称左 / 当前值右 / 细箭头。 */
 @Composable
 private fun SettingsHome(
     prefs: ReaderPrefs,
     enhance: EnhanceSettings,
     onOpen: (String) -> Unit,
     onDone: () -> Unit,
-    chapters: List<Pair<String, String>>,
-    chapterIndex: Int,
-    onPickChapter: (Int) -> Unit,
+    tab: Int,
+    onTab: (Int) -> Unit,
 ) {
-    val colorizeState = ColorizeEngine.downloadState.collectAsState().value
-    val colorizeProgress = ColorizeEngine.downloadProgress.collectAsState().value
     Column(Modifier.fillMaxWidth()) {
         SheetHead(title = "阅读设置", onBack = null, onDone = onDone)
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp)
+                .padding(top = 2.dp, bottom = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            listOf("阅读", "图像", "显示").forEachIndexed { i, name ->
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(if (tab == i) Color(0x14FFFFFF) else Color(0x05FFFFFF))
+                        .clickable { onTab(i) }
+                        .padding(vertical = 9.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        name,
+                        color = if (tab == i) OnlineFg else OnlineValue,
+                        fontSize = 13.sp,
+                        fontWeight = if (tab == i) FontWeight.SemiBold else FontWeight.Normal,
+                    )
+                }
+            }
+        }
         Column(
             Modifier
                 .fillMaxWidth()
-                .heightIn(max = 452.dp)
+                .heightIn(max = 380.dp)
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 14.dp)
                 .padding(bottom = 24.dp),
         ) {
-            RowEntry("阅读器",
-                ReaderLayout.entries.firstOrNull { it == prefs.onlineLayout }?.label ?: "Webtoon",
-            ) { onOpen(PAGE_LAYOUT) }
-            RowEntry( "阅读方向", if (prefs.rightToLeft) "右到左" else "左到右") {
-                onOpen(PAGE_DIR)
-            }
-            RowEntry("页间距",
-                if (prefs.pageGapPercent == 0) "无缝" else "${prefs.pageGapPercent}%",
-            ) { onOpen(PAGE_GAP) }
-            RowEntry("自动裁白边",
-                if (prefs.autoCropOnline) {
-                    "开 · " + listOf("保守", "中", "激进")[prefs.cropLevel.coerceIn(0, 2)]
-                } else {
-                    "关"
-                },
-            ) { onOpen(PAGE_CROP) }
-            RowEntry("黑白上色",
-                when (ColorizeEngine.stateOf(ColorizeEngine.Model.byId(prefs.colorizeStyle))) {
-                    is ColorizeEngine.ModelState.Downloading ->
-                        "开 · 下载" + (if (prefs.colorizeStyle == "realistic") "写实" else "动漫") + "模型"
-                    else ->
-                        if (prefs.colorizeOnline)
-                            "开 · " + (if (prefs.colorizeStyle == "realistic") "写实" else "动漫")
-                        else "关"
-                },
-            ) { onOpen(PAGE_COLORIZE) }
-            RowEntry("亮度",
-                if (prefs.autoBrightness) "跟随系统" else "${prefs.brightness}%",
-            ) { onOpen(PAGE_BRIGHT) }
-            RowEntry("蓝光过滤",
-                if (prefs.blueLight == 0) "关" else "${prefs.blueLight}",
-            ) { onOpen(PAGE_BLUE) }
-            val filterOn = listOfNotNull(
-                "灰度".takeIf { prefs.grayscale },
-                "反色".takeIf { prefs.invert },
-                "锐化".takeIf { enhance.sharpen },
-            )
-            RowEntry( "画面", if (filterOn.isEmpty()) "正常" else filterOn.joinToString(" · ")) {
-                onOpen(PAGE_FILTER)
+            when (tab) {
+                0 -> {
+                    RowEntry("阅读器",
+                        ReaderLayout.entries.firstOrNull { it == prefs.onlineLayout }?.label ?: "Webtoon",
+                    ) { onOpen(PAGE_LAYOUT) }
+                    RowEntry("阅读方向", if (prefs.rightToLeft) "右到左" else "左到右") {
+                        onOpen(PAGE_DIR)
+                    }
+                    RowEntry("页间距",
+                        if (prefs.pageGapPercent == 0) "无缝" else "${prefs.pageGapPercent}%",
+                        last = true,
+                    ) { onOpen(PAGE_GAP) }
+                }
+                1 -> {
+                    RowEntry("自动裁白边",
+                        if (prefs.autoCropOnline) {
+                            "开 · " + listOf("保守", "中", "激进")[prefs.cropLevel.coerceIn(0, 2)]
+                        } else {
+                            "关"
+                        },
+                    ) { onOpen(PAGE_CROP) }
+                    RowEntry("黑白上色",
+                        when (ColorizeEngine.stateOf(ColorizeEngine.Model.byId(prefs.colorizeStyle))) {
+                            is ColorizeEngine.ModelState.Downloading ->
+                                "开 · 下载" + (if (prefs.colorizeStyle == "realistic") "写实" else "动漫") + "模型"
+                            else ->
+                                if (prefs.colorizeOnline)
+                                    "开 · " + (if (prefs.colorizeStyle == "realistic") "写实" else "动漫")
+                                else "关"
+                        },
+                    ) { onOpen(PAGE_COLORIZE) }
+                    val filterOn = listOfNotNull(
+                        "灰度".takeIf { prefs.grayscale },
+                        "反色".takeIf { prefs.invert },
+                        "锐化".takeIf { enhance.sharpen },
+                    )
+                    RowEntry("画面", if (filterOn.isEmpty()) "正常" else filterOn.joinToString(" · "), last = true) {
+                        onOpen(PAGE_FILTER)
+                    }
+                }
+                else -> {
+                    RowEntry("亮度",
+                        if (prefs.autoBrightness) "跟随系统" else "${prefs.brightness}%",
+                    ) { onOpen(PAGE_BRIGHT) }
+                    RowEntry("蓝光过滤",
+                        if (prefs.blueLight == 0) "关" else "${prefs.blueLight}",
+                        last = true,
+                    ) { onOpen(PAGE_BLUE) }
+                }
             }
         }
     }
 }
 
 @Composable
-/** 目录行（v6 对齐 iOS）：无图标，名称左 / 当前值右 / 细箭头，发丝线分隔。 */
-private fun RowEntry(name: String, value: String, onClick: () -> Unit) {
+/** 组内行（v7）：名称左 / 当前值右（#B6BBC8）/ 细箭头，发丝线分隔。 */
+private fun RowEntry(name: String, value: String, last: Boolean = false, onClick: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
-            .padding(vertical = 12.dp),
+            .padding(vertical = 13.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(name, color = Color.White, fontSize = 12.5.sp, fontWeight = FontWeight.Medium)
+        Text(name, color = OnlineFg, fontSize = 12.5.sp, fontWeight = FontWeight.Medium)
         Spacer(Modifier.weight(1f))
         Text(
             value,
-            color = OnlineDim,
+            color = OnlineValue,
             fontSize = 10.5.sp,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
@@ -526,7 +654,7 @@ private fun RowEntry(name: String, value: String, onClick: () -> Unit) {
         )
         Text("›", color = Color(0x55FFFFFF), fontSize = 14.sp)
     }
-    HLine()
+    if (!last) HLine()
 }
 
 /** 子界面外壳：返回 / 标题 / 完成 + 可滚内容。 */
@@ -542,7 +670,7 @@ private fun SheetScreen(
         Column(
             Modifier
                 .fillMaxWidth()
-                .heightIn(max = 452.dp)
+                .heightIn(max = 380.dp)
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 14.dp)
                 .padding(bottom = 24.dp),
@@ -589,7 +717,7 @@ private fun SheetOption(name: String, desc: String, selected: Boolean, onClick: 
             .fillMaxWidth()
             .padding(bottom = 2.dp)
             .clip(RoundedCornerShape(12.dp))
-            .background(if (selected) Color(0x1AFF6E9C) else Color.Transparent)
+            .background(if (selected) Color(0x1ACDBBFF) else Color.Transparent)
             .clickable(onClick = onClick)
             .padding(horizontal = 14.dp, vertical = 13.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -737,9 +865,10 @@ internal fun OnlineChapterSheet(
                 Text("${chapters.size} 话", color = OnlineDim, fontSize = 10.5.sp)
                 Spacer(Modifier.weight(1f))
                 Text(
-                    "关闭",
-                    color = OnlineDim,
-                    fontSize = 11.sp,
+                    "完成",
+                    color = OnlineAccent,
+                    fontSize = 12.5.sp,
+                    fontWeight = FontWeight.Medium,
                     modifier = Modifier.clickable(onClick = onDismiss).padding(8.dp),
                 )
             }
@@ -752,7 +881,7 @@ internal fun OnlineChapterSheet(
                             .fillMaxWidth()
                             .padding(horizontal = 8.dp)
                             .clip(RoundedCornerShape(9.dp))
-                            .background(if (active) Color(0x1AFF6E9C) else Color.Transparent)
+                            .background(if (active) Color(0x1ACDBBFF) else Color.Transparent)
                             .clickable {
                                 if (!active) onPick(i)
                                 onDismiss()
@@ -777,68 +906,6 @@ internal fun OnlineChapterSheet(
     }
 }
 
-// ==================================================================== 翻页滑条
-
-/**
- * 底部翻页滑条（相册 / 双页才有）：一条细线 + 两端页码，没有 thumb ——
- * 拖动时手指就是 thumb。
- */
-@Composable
-internal fun OnlineSeekBar(
-    current: Int,
-    total: Int,
-    onSeek: (Int) -> Unit,
-) {
-    if (total <= 1) return
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(OnlineBarBg)
-            .navigationBarsPadding()
-            .padding(horizontal = 16.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text("${current + 1}", color = Color.White, fontSize = 11.sp)
-        Box(
-            modifier = Modifier
-                .weight(1f)
-                .padding(horizontal = 12.dp)
-                .height(24.dp)
-                .pointerSeek(total, onSeek),
-            contentAlignment = Alignment.CenterStart,
-        ) {
-            Box(
-                Modifier
-                    .fillMaxWidth()
-                    .height(2.dp)
-                    .background(Color(0x33FFFFFF), RoundedCornerShape(1.dp)),
-            )
-            Box(
-                Modifier
-                    .fillMaxWidth(((current + 1f) / total).coerceIn(0f, 1f))
-                    .height(2.dp)
-                    .background(OnlineAccent, RoundedCornerShape(1.dp)),
-            )
-        }
-        Text("/ $total", color = OnlineDim, fontSize = 11.sp)
-    }
-}
-
-/** 点 / 拖都能跳页。 */
-private fun Modifier.pointerSeek(total: Int, onSeek: (Int) -> Unit): Modifier =
-    this
-        .pointerInput(total) {
-            detectTapGestures { o ->
-                onSeek(((o.x / size.width) * total).toInt().coerceIn(0, total - 1))
-            }
-        }
-        .pointerInput(total) {
-            detectDragGestures { change, _ ->
-                change.consume()
-                onSeek(((change.position.x / size.width) * total).toInt().coerceIn(0, total - 1))
-            }
-        }
-
 @Composable
 private fun SheetOptionRow(label: String, desc: String, selected: Boolean, onClick: () -> Unit) {
     Row(
@@ -860,3 +927,18 @@ private fun SheetOptionRow(label: String, desc: String, selected: Boolean, onCli
         if (selected) Text("✓", color = OnlineAccent, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
     }
 }
+
+/** 点 / 拖都能跳页（底部进度条用）。 */
+private fun Modifier.pointerSeek(total: Int, onSeek: (Int) -> Unit): Modifier =
+    this
+        .pointerInput(total) {
+            detectTapGestures { o ->
+                onSeek(((o.x / size.width) * total).toInt().coerceIn(0, total - 1))
+            }
+        }
+        .pointerInput(total) {
+            detectDragGestures { change, _ ->
+                change.consume()
+                onSeek(((change.position.x / size.width) * total).toInt().coerceIn(0, total - 1))
+            }
+        }

@@ -104,7 +104,14 @@ private sealed class Nav {
         /** 同作品多源聚合的其它入口；空表示这本只在当前源出现 */
         val alts: List<WorkEntry> = emptyList(),
     ) : Nav()
-    data class Read(val urls: List<String>, val referer: String?, val title: String, val back: Nav) : Nav()
+    data class Read(
+        val urls: List<String>,
+        val referer: String?,
+        val title: String,
+        val back: Nav,
+        /** 书名（顶栏副标）；title 是章节名 */
+        val workTitle: String = "",
+    ) : Nav()
     /** 惰性取图：只给页数，每页真的地址由阅读器按需解 */
     data class ReadLazy(
         val key: String,
@@ -116,6 +123,8 @@ private sealed class Nav {
         /** 整本目录（id to 标题）—— 阅读时能直接换话，不用退出去重进 */
         val chapters: List<Pair<String, String>> = emptyList(),
         val index: Int = 0,
+        /** 书名（顶栏副标）；title 是章节名 */
+        val workTitle: String = "",
     ) : Nav()
     /** 独立的账号页：登录 / 退出 / 看账号信息，退出后回到来的那一页 */
     data class Account(val key: String, val name: String, val back: Nav) : Nav()
@@ -188,10 +197,10 @@ fun OnlineSourceScreen(
                 val back = Nav.Info(n.key, n.id, n.title, n.alts)
                 nav = if (data.optBoolean("lazy")) {
                     Nav.ReadLazy(
-                        n.key, comicId, epId, data.optInt("count"), t, back, chapters, index,
+                        n.key, comicId, epId, data.optInt("count"), t, back, chapters, index, n.title,
                     )
                 } else {
-                    Nav.Read(imageUrls(data), null, t, back)
+                    Nav.Read(imageUrls(data), null, t, back, n.title)
                 }
             },
             onRemember = {
@@ -1709,26 +1718,34 @@ private fun OnlineReader(
             onTap = { if (showSettings) showSettings = false else showBar = !showBar },
         )
         if (showBar) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
+            Column(Modifier.fillMaxSize()) {
                 OnlineTopBar(
                     title = title,
+                    subtitle = "",
                     pageLabel = "${current + 1}/${urls.size} 页",
                     onBack = onBack,
-                    onChapters = null,
-                    onSettings = { showSettings = true },
                 )
-            }
-            if (prefs.onlineLayout == ReaderLayout.PAGED ||
-                prefs.onlineLayout == ReaderLayout.DOUBLE
-            ) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
-                    OnlineSeekBar(current, urls.size) { target ->
+                Spacer(Modifier.weight(1f))
+                OnlineBottomBar(
+                    current = current,
+                    total = urls.size,
+                    chapterLabel = "第 1 话",
+                    hasPrev = false,
+                    hasNext = false,
+                    chaptersAvailable = false,
+                    seekable = prefs.onlineLayout == ReaderLayout.PAGED ||
+                        prefs.onlineLayout == ReaderLayout.DOUBLE,
+                    onSeek = { target ->
                         scope.launch {
                             val p = if (prefs.onlineLayout == ReaderLayout.DOUBLE) target / 2 else target
                             pager.scrollToPage(p)
                         }
-                    }
-                }
+                    },
+                    onPrev = {},
+                    onContents = {},
+                    onSettings = { showSettings = true },
+                    onNext = {},
+                )
             }
         }
         if (showSettings) {
@@ -1851,28 +1868,34 @@ private fun OnlineLazyReader(
             },
         )
         if (showBar) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
+            Column(Modifier.fillMaxSize()) {
                 OnlineTopBar(
                     title = nav.title,
+                    subtitle = nav.workTitle,
                     pageLabel = "${current + 1}/${nav.count} 页",
                     onBack = onBack,
-                    onChapters = if (nav.chapters.isEmpty()) null else {
-                        { showChapters = true }
-                    },
-                    onSettings = { showSettings = true },
                 )
-            }
-            if (prefs.onlineLayout == ReaderLayout.PAGED ||
-                prefs.onlineLayout == ReaderLayout.DOUBLE
-            ) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
-                    OnlineSeekBar(current, nav.count) { target ->
+                Spacer(Modifier.weight(1f))
+                OnlineBottomBar(
+                    current = current,
+                    total = nav.count,
+                    chapterLabel = "第 ${nav.index + 1} 话",
+                    hasPrev = nav.index > 0,
+                    hasNext = nav.index < nav.chapters.size - 1,
+                    chaptersAvailable = nav.chapters.isNotEmpty(),
+                    seekable = prefs.onlineLayout == ReaderLayout.PAGED ||
+                        prefs.onlineLayout == ReaderLayout.DOUBLE,
+                    onSeek = { target ->
                         scope.launch {
                             val p = if (prefs.onlineLayout == ReaderLayout.DOUBLE) target / 2 else target
                             pager.scrollToPage(p)
                         }
-                    }
-                }
+                    },
+                    onPrev = { if (nav.index > 0) onPickChapter(nav.index - 1) },
+                    onContents = { showChapters = true },
+                    onSettings = { showSettings = true },
+                    onNext = { if (nav.index < nav.chapters.size - 1) onPickChapter(nav.index + 1) },
+                )
             }
         }
         if (showSettings) {
@@ -1882,9 +1905,6 @@ private fun OnlineLazyReader(
                 onPrefs = onPrefs,
                 onEnhance = onEnhance,
                 onDismiss = { showSettings = false },
-                chapters = nav.chapters,
-                chapterIndex = nav.index,
-                onPickChapter = onPickChapter,
             )
         }
         if (showChapters) {
@@ -1964,7 +1984,7 @@ private fun ReaderSkinEffects(prefs: ReaderPrefs) {
 
 /** 阅读页底色（设置里那三个：纯黑 / 深灰 / 米白） */
 private fun readerBg(index: Int): Color = when (index) {
-    0 -> Color(0xFF000000)
+    0 -> Color(0xFF101217)   // v7 画布深墨
     1 -> Color(0xFF16161A)
     else -> Color(0xFFEDEDE6)
 }

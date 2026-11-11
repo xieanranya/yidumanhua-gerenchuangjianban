@@ -537,6 +537,7 @@ struct DetailView: View {
             await MainActor.run {
                 reading = ReadingPayload(
                     title: ep.title,
+                    workTitle: title,
                     urls: [],
                     lazy: LazyRef(
                         key: entry.sourceKey,
@@ -560,6 +561,7 @@ struct DetailView: View {
         await MainActor.run {
             reading = ReadingPayload(
                 title: ep.title,
+                workTitle: title,
                 urls: urls,
                 sourceKey: entry.sourceKey,
                 comicId: entry.comicId,
@@ -957,6 +959,7 @@ struct LazyRef {
 struct ReadingPayload: Identifiable {
     let id = UUID()
     let title: String
+    var workTitle: String = ""      // 书名（顶栏副标）；章节标题是 title
     let urls: [String]
     var lazy: LazyRef? = nil
     /// 源 key / 作品 id：换话时要重新请求 pages，非惰性源也得有这两个
@@ -1004,6 +1007,7 @@ struct OnlineReader: View {
     @State private var current = 0
     @State private var showBar = true
     @State private var showSettings = false
+    @State private var showChapters = false
 
     /// 当前这一话（换话时改）
     @State private var epId: String
@@ -1055,7 +1059,7 @@ struct OnlineReader: View {
 
     var body: some View {
         ZStack(alignment: .top) {
-            Color.black.ignoresSafeArea()
+            OnlineSkin.canvas.ignoresSafeArea()
 
             content
 
@@ -1063,19 +1067,31 @@ struct OnlineReader: View {
                 VStack(spacing: 0) {
                     OnlineTopBar(
                         title: epTitle,
+                        subtitle: payload.workTitle,
                         pageLabel: total > 0 ? "\(min(current + 1, total)) / \(total) 页" : "0 页",
-                        onBack: { dismiss() },
+                        onBack: { dismiss() }
+                    )
+                    Spacer(minLength: 0)
+                    OnlineBottomBar(
+                        current: current,
+                        total: total,
+                        chapterLabel: "第 \(chapterIndex + 1) 话",
+                        hasPrev: chapterIndex > 0,
+                        hasNext: chapterIndex < chapters.count - 1,
+                        chaptersAvailable: !chapters.isEmpty,
+                        seekable: needsSeekBar,
+                        onSeek: { seek(to: $0) },
+                        onPrev: { if chapterIndex > 0 { switchChapter(chapterIndex - 1) } },
+                        onContents: {
+                            hideTask?.cancel()
+                            withAnimation(.easeOut(duration: 0.22)) { showChapters = true }
+                        },
                         onSettings: {
                             hideTask?.cancel()
                             withAnimation(.easeOut(duration: 0.22)) { showSettings = true }
-                        }
+                        },
+                        onNext: { if chapterIndex < chapters.count - 1 { switchChapter(chapterIndex + 1) } }
                     )
-                    Spacer(minLength: 0)
-                    if needsSeekBar {
-                        OnlineSeekBar(current: current, total: total) { target in
-                            seek(to: target)
-                        }
-                    }
                 }
                 .transition(.opacity)
             }
@@ -1092,9 +1108,30 @@ struct OnlineReader: View {
                     Spacer(minLength: 0)
                     OnlineSettingsPanel(
                         prefs: $store.prefs,
+                        onClose: { closePanels() }
+                    )
+                }
+                .ignoresSafeArea(edges: .bottom)
+                .transition(.move(edge: .bottom))
+            }
+
+            if showChapters {
+                OnlineSkin.scrim
+                    .ignoresSafeArea()
+                    .onTapGesture { closePanels() }
+                    .transition(.opacity)
+            }
+
+            if showChapters {
+                VStack(spacing: 0) {
+                    Spacer(minLength: 0)
+                    OnlineChapterPanel(
                         chapters: chapters,
                         chapterIndex: chapterIndex,
-                        onPickChapter: { switchChapter($0) },
+                        onPick: { i in
+                            if i != chapterIndex { switchChapter(i) }
+                            closePanels()
+                        },
                         onClose: { closePanels() }
                     )
                 }
@@ -1295,7 +1332,7 @@ struct OnlineReader: View {
 
     private var tapGesture: some Gesture {
         SpatialTapGesture().onEnded { _ in
-            guard !showSettings else { return }
+            guard !showSettings, !showChapters else { return }
             withAnimation(.easeInOut(duration: 0.16)) { showBar.toggle() }
             scheduleHide()
         }
@@ -1308,7 +1345,7 @@ struct OnlineReader: View {
             try? await Task.sleep(nanoseconds: 4_000_000_000)
             if Task.isCancelled { return }
             await MainActor.run {
-                guard !showSettings else { return }
+                guard !showSettings, !showChapters else { return }
                 withAnimation(.easeInOut(duration: 0.2)) { showBar = false }
             }
         }
@@ -1317,6 +1354,7 @@ struct OnlineReader: View {
     private func closePanels() {
         withAnimation(.easeInOut(duration: 0.2)) {
             showSettings = false
+            showChapters = false
             showBar = true
         }
         scheduleHide()
@@ -1350,6 +1388,7 @@ struct OnlineReader: View {
         loading = []
         current = 0
         showSettings = false
+        showChapters = false
         showBar = true
         scheduleHide()
 

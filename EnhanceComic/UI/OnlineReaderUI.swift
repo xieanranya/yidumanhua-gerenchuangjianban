@@ -1,32 +1,35 @@
 import SwiftUI
 
-/// 在线阅读器自己的视觉。
+/// 在线阅读器自己的视觉（v7 · 按《在线阅读 UI 重构计划书》定稿）。
 ///
-/// 原则：**装饰越少越好**。
-/// 顶栏只在需要时出现（很淡的渐变），设置是一张纯列表 —— 名字、当前值、一根细线，
-/// 没有卡片、没有图标方块、没有整行染色。粉色只留给「当前选中」和「完成」。
+/// 配色取自计划书：画布 #101217 / 面板 #191C23 / 文字 #F2F3F6 / 当前值 #B6BBC8 / 强调淡紫 #CDBBFF。
+/// 淡紫只用在阅读进度、当前选项与「完成」，其余都是深墨衬底上的白灰文字。
+/// 结构：点画面中央呼出上下浮层 —— 顶部章节名、底部「上一话 / 目录 / 设置 / 下一话」四键；
+/// 设置按「阅读 / 图像 / 显示」分三组，每次只显示两三项。
 enum OnlineSkin {
-    static let accent = Color(red: 1.0, green: 0.431, blue: 0.612)      // #FF6E9C
-    static let sheet = Color(red: 0.098, green: 0.102, blue: 0.118)     // #191A1E
-    static let hair = Color.white.opacity(0.065)
-    static let fg = Color(red: 0.925, green: 0.925, blue: 0.933)        // #ECECEE
-    static let dim = Color.white.opacity(0.48)
-    static let dim2 = Color.white.opacity(0.30)
-    static let scrim = Color.black.opacity(0.46)
+    static let accent = Color(hex: 0xCDBBFF)                            // 强调淡紫
+    static let canvas = Color(hex: 0x101217)                            // 阅绘画布
+    static let sheet  = Color(hex: 0x191C23)                            // 面板
+    static let hair   = Color.white.opacity(0.065)
+    static let fg     = Color(hex: 0xF2F3F6)                            // 文字
+    static let value  = Color(hex: 0xB6BBC8)                            // 当前值
+    static let disabled = Color(hex: 0x4A4D58)
+    static let dim    = Color.white.opacity(0.48)
+    static let dim2   = Color.white.opacity(0.30)
+    static let scrim  = Color.black.opacity(0.46)
 }
 
-// MARK: - 顶栏
+// MARK: - 顶栏（章节名衬底）
 
-/// 一行只有三样：返回 / 标题+页码 / 设置。目录收进了设置第一行。
-/// 背景不是实心条，而是一条很淡的顶部渐变 —— 画面不会被切掉一块。
+/// 返回 / 章节名+书名 / 页码。衬底是画布色的顶部渐变 —— 画面不会被切掉一块。
 struct OnlineTopBar: View {
     let title: String
+    let subtitle: String
     let pageLabel: String
     let onBack: () -> Void
-    let onSettings: () -> Void
 
     var body: some View {
-        HStack(spacing: 0) {
+        HStack(spacing: 4) {
             Button(action: onBack) {
                 Image(systemName: "chevron.left")
                     .font(.system(size: 17, weight: .semibold))
@@ -36,34 +39,36 @@ struct OnlineTopBar: View {
             }
             .buttonStyle(.plain)
 
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text(title.isEmpty ? "阅读" : title)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(.white)
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundColor(OnlineSkin.fg)
                     .lineLimit(1)
-                Text(pageLabel)
-                    .font(.system(size: 10.5))
-                    .foregroundColor(Color.white.opacity(0.5))
-                    .lineLimit(1)
-                    .monospacedDigit()
+                if !subtitle.isEmpty {
+                    Text(subtitle)
+                        .font(.system(size: 10))
+                        .foregroundColor(OnlineSkin.value)
+                        .lineLimit(1)
+                }
             }
 
             Spacer(minLength: 0)
 
-            Button(action: onSettings) {
-                Image(systemName: "slider.horizontal.3")
-                    .font(.system(size: 16, weight: .medium))
-                    .foregroundColor(.white)
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
+            Text(pageLabel)
+                .font(.system(size: 10.5))
+                .foregroundColor(OnlineSkin.value)
+                .lineLimit(1)
+                .monospacedDigit()
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .background(Capsule().fill(Color.white.opacity(0.08)))
         }
-        .padding(.horizontal, 10)
-        .frame(height: 56)
+        .padding(.horizontal, 8)
+        .padding(.top, 4)
+        .frame(height: 58)
         .background(
             LinearGradient(
-                colors: [Color.black.opacity(0.58), Color.black.opacity(0.20), .clear],
+                colors: [OnlineSkin.canvas.opacity(0.96), OnlineSkin.canvas.opacity(0.60), OnlineSkin.canvas.opacity(0)],
                 startPoint: .top,
                 endPoint: .bottom
             )
@@ -72,66 +77,105 @@ struct OnlineTopBar: View {
     }
 }
 
-// MARK: - 底部翻页滑条
+// MARK: - 底部栏（进度 + 四键）
 
-/// 只有一条细线和两端页码，没有 thumb —— 拖动时手指就是 thumb。
-struct OnlineSeekBar: View {
+/// 进度行（页码 + 细进度条 + 章节序号）+「上一话 / 目录 / 设置 / 下一话」。
+/// 翻页类布局进度条可拖跳页；条漫类只做展示（位置本来就是连续的）。
+struct OnlineBottomBar: View {
     let current: Int
     let total: Int
+    let chapterLabel: String
+    let hasPrev: Bool
+    let hasNext: Bool
+    let chaptersAvailable: Bool
+    let seekable: Bool
     let onSeek: (Int) -> Void
+    let onPrev: () -> Void
+    let onContents: () -> Void
+    let onSettings: () -> Void
+    let onNext: () -> Void
+
+    private var ratio: CGFloat {
+        guard total > 1 else { return 1 }
+        return CGFloat(min(current + 1, total)) / CGFloat(total)
+    }
 
     var body: some View {
-        HStack(spacing: 12) {
-            Text("\(current + 1)")
-                .font(.system(size: 10))
-                .foregroundColor(Color.white.opacity(0.55))
-                .monospacedDigit()
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Text("\(min(current + 1, max(total, 1))) / \(total)")
+                    .font(.system(size: 9.5))
+                    .foregroundColor(OnlineSkin.value)
+                    .monospacedDigit()
 
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Capsule()
-                        .fill(Color.white.opacity(0.18))
-                        .frame(height: 2)
-                    Capsule()
-                        .fill(OnlineSkin.accent)
-                        .frame(
-                            width: max(2, geo.size.width * CGFloat(current + 1) / CGFloat(max(total, 1))),
-                            height: 2
-                        )
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(Color.white.opacity(0.14)).frame(height: 3)
+                        Capsule().fill(OnlineSkin.accent)
+                            .frame(width: max(3, geo.size.width * ratio), height: 3)
+                    }
+                    .frame(maxHeight: .infinity, alignment: .center)
+                    .contentShape(Rectangle())
+                    .gesture(seekable ?
+                        DragGesture(minimumDistance: 0).onChanged { value in
+                            let r = min(max(value.location.x / max(geo.size.width, 1), 0), 1)
+                            onSeek(Int((r * CGFloat(max(total - 1, 1))).rounded()))
+                        } : nil
+                    )
                 }
-                .frame(maxHeight: .infinity, alignment: .center)
-                .contentShape(Rectangle())
-                .gesture(
-                    DragGesture(minimumDistance: 0)
-                        .onChanged { value in
-                            let ratio = min(max(value.location.x / max(geo.size.width, 1), 0), 1)
-                            onSeek(Int((ratio * CGFloat(max(total - 1, 1))).rounded()))
-                        }
-                )
-            }
-            .frame(height: 22)
+                .frame(height: 20)
 
-            Text("\(total)")
-                .font(.system(size: 10))
-                .foregroundColor(Color.white.opacity(0.55))
-                .monospacedDigit()
+                Text(chapterLabel)
+                    .font(.system(size: 9.5))
+                    .foregroundColor(OnlineSkin.value)
+                    .monospacedDigit()
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 10)
+            .padding(.bottom, 4)
+
+            HStack {
+                key("chevron.left", "上一话", enabled: hasPrev, action: onPrev)
+                Spacer(minLength: 0)
+                key("list.bullet", "目录", enabled: chaptersAvailable, action: onContents)
+                Spacer(minLength: 0)
+                key("gearshape", "设置", enabled: true, action: onSettings)
+                Spacer(minLength: 0)
+                key("chevron.right", "下一话", enabled: hasNext, action: onNext)
+            }
+            .padding(.horizontal, 10)
+            .padding(.top, 2)
+            .padding(.bottom, 4)
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 6)
-        .padding(.bottom, 8)
         .background(
             LinearGradient(
-                colors: [.clear, Color.black.opacity(0.55)],
+                colors: [OnlineSkin.canvas.opacity(0), OnlineSkin.canvas.opacity(0.78), OnlineSkin.canvas.opacity(0.97)],
                 startPoint: .top,
                 endPoint: .bottom
             )
             .ignoresSafeArea(edges: .bottom)
         )
     }
+
+    private func key(_ icon: String, _ label: String, enabled: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 4) {
+                Image(systemName: icon)
+                    .font(.system(size: 17, weight: .medium))
+                Text(label)
+                    .font(.system(size: 10))
+            }
+            .foregroundColor(enabled ? OnlineSkin.fg : OnlineSkin.disabled)
+            .frame(width: 66, height: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+    }
 }
 
-/// 量设置面板内容的高度：内容少的页（比如「蓝光过滤」）不该留一大片空白，
-/// 内容多的页（目录）也不能被截断。
+/// 量设置面板内容的高度：内容少的组不留大片空白，内容多的组再滚动。
 private struct PanelHeightKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
@@ -139,25 +183,21 @@ private struct PanelHeightKey: PreferenceKey {
     }
 }
 
-// MARK: - 设置（两层：目录 → 单项）
+// MARK: - 设置（三组 tab：阅读 / 图像 / 显示）
 
-/// 第一层是纯列表：名字 / 当前值 / 细箭头。点进去只显示这一项。
-///
-/// 和上一版的区别（用户明确要求「简洁一点、美观一点」）：
-///  - 去掉每行的图标方块与卡片底色，只留一根发丝线；
-///  - 去掉分组小标题，两组之间用留白 + 一条线分开；
-///  - 子页不再有「完成」，只有返回和居中标题；
-///  - 选中不整行染色，只把文字变粉、右侧打勾。
+/// 计划书映射：章节挪到工具栏目录；阅读器/方向/页间距 → 阅读组；
+/// 裁白边/上色/画面 → 图像组；亮度/蓝光 → 显示组。
+/// 每组只有两三项，当前值用 #B6BBC8，点行进子页调原保存逻辑。
 struct OnlineSettingsPanel: View {
     @Binding var prefs: ReaderPrefs
-    let chapters: [(String, String)]
-    let chapterIndex: Int
-    let onPickChapter: (Int) -> Void
     let onClose: () -> Void
 
+    @State private var tab = 0
     @State private var page = ""
     @State private var contentH: CGFloat = 0
     @ObservedObject private var colorizeStore = ColorizeModelStore.shared
+
+    private let tabs = ["阅读", "图像", "显示"]
 
     private var layoutLabel: String {
         ReaderLayout.allCases.first { $0 == prefs.onlineLayout }?.label ?? "Webtoon"
@@ -179,15 +219,8 @@ struct OnlineSettingsPanel: View {
         return on.isEmpty ? "正常" : on.joined(separator: " · ")
     }
 
-    private var chapterLabel: String {
-        chapters.count > 1
-            ? "第 \(chapterIndex + 1) 话 · 共 \(chapters.count) 话"
-            : "共 \(max(chapters.count, 1)) 话"
-    }
-
     private var title: String {
         switch page {
-        case "chapter": return "目录"
         case "layout": return "阅读器"
         case "dir": return "阅读方向"
         case "gap": return "页间距"
@@ -209,36 +242,37 @@ struct OnlineSettingsPanel: View {
                 .padding(.bottom, 4)
 
             if page.isEmpty {
-                head(back: nil, done: true)
+                head
+                tabsRow
                 ScrollView(showsIndicators: false) {
                     VStack(spacing: 0) {
-                        row("章节", chapterLabel) { page = "chapter" }
-                        row("阅读器", layoutLabel) { page = "layout" }
-                        row("阅读方向", prefs.rightToLeft ? "右到左" : "左到右") { page = "dir" }
-
-                        groupGap
-
-                        row("页间距", prefs.pageGapPercent == 0 ? "无缝" : "\(prefs.pageGapPercent)%") {
-                            page = "gap"
+                        switch tab {
+                        case 0:
+                            row("阅读器", layoutLabel) { page = "layout" }
+                            row("阅读方向", prefs.rightToLeft ? "右到左" : "左到右") { page = "dir" }
+                            row("页间距", prefs.pageGapPercent == 0 ? "无缝" : "\(prefs.pageGapPercent)%", last: true) {
+                                page = "gap"
+                            }
+                        case 1:
+                            row("自动裁白边", cropLabel) { page = "crop" }
+                            row("黑白上色", colorizeLabel) { page = "colorize" }
+                            row("画面", filterLabel, last: true) { page = "filter" }
+                        default:
+                            row("亮度", prefs.autoBrightness ? "跟随系统" : "\(Int(prefs.brightness))%") {
+                                page = "bright"
+                            }
+                            row("蓝光过滤", prefs.blueLight == 0 ? "关" : "\(prefs.blueLight)", last: true) {
+                                page = "blue"
+                            }
                         }
-                        row("自动裁白边", cropLabel) { page = "crop" }
-                        row("黑白上色", colorizeLabel) { page = "colorize" }
-                        row("亮度",
-                            prefs.autoBrightness ? "跟随系统" : "\(Int(prefs.brightness))%") {
-                            page = "bright"
-                        }
-                        row("蓝光过滤", prefs.blueLight == 0 ? "关" : "\(prefs.blueLight)") {
-                            page = "blue"
-                        }
-                        row("画面", filterLabel, last: true) { page = "filter" }
                     }
                     .padding(.horizontal, 18)
-                    .padding(.bottom, 22)
+                    .padding(.bottom, 20)
                     .background(measure)
                 }
                 .frame(height: sheetHeight)
             } else {
-                head(back: { page = "" }, done: false)
+                subHead
                 ScrollView(showsIndicators: false) {
                     subBody
                         .padding(.horizontal, 18)
@@ -266,52 +300,85 @@ struct OnlineSettingsPanel: View {
         }
     }
 
-    /// 内容多高就多高，最多到屏幕 72%（再多就滚动）
+    /// 计划书：设置默认约占屏 38%–45%
     private var sheetHeight: CGFloat {
-        let maxH = UIScreen.main.bounds.height * 0.72 - 68
+        let maxH = UIScreen.main.bounds.height * 0.45 - 68
         return min(max(contentH, 120), maxH)
     }
 
-    // MARK: 头部
+    // MARK: 头部（标题 + 完成）
 
-    private func head(back: (() -> Void)?, done: Bool) -> some View {
+    private var head: some View {
         HStack(spacing: 0) {
-            if let back {
-                Button(action: back) {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundColor(.white)
-                        .frame(width: 44, height: 44)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            } else {
-                Color.clear.frame(width: 44, height: 44)
-            }
-
-            Text(page.isEmpty ? "阅读设置" : title)
-                .font(.system(size: 14, weight: .semibold))
+            Color.clear.frame(width: 44, height: 44)
+            Text("阅读设置")
+                .font(.system(size: 15, weight: .semibold))
                 .foregroundColor(OnlineSkin.fg)
                 .frame(maxWidth: .infinity)
-
-            if done {
-                Button(action: onClose) {
-                    Text("完成")
-                        .font(.system(size: 13.5, weight: .medium))
-                        .foregroundColor(OnlineSkin.accent)
-                        .frame(width: 44, height: 44)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            } else {
-                Color.clear.frame(width: 44, height: 44)
+            Button(action: onClose) {
+                Text("完成")
+                    .font(.system(size: 13.5, weight: .medium))
+                    .foregroundColor(OnlineSkin.accent)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
         }
         .frame(height: 48)
         .padding(.horizontal, 4)
     }
 
-    // MARK: 第一层：一行入口
+    private var subHead: some View {
+        HStack(spacing: 0) {
+            Button {
+                withAnimation(.easeOut(duration: 0.15)) { page = "" }
+            } label: {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(.white)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            Text(title)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundColor(OnlineSkin.fg)
+                .frame(maxWidth: .infinity)
+
+            Color.clear.frame(width: 44, height: 44)
+        }
+        .frame(height: 48)
+        .padding(.horizontal, 4)
+    }
+
+    /// 三组 tab：当前组白字浅底，其余当前值灰
+    private var tabsRow: some View {
+        HStack(spacing: 6) {
+            ForEach(tabs.indices, id: \.self) { i in
+                Button {
+                    withAnimation(.easeOut(duration: 0.15)) { tab = i }
+                } label: {
+                    Text(tabs[i])
+                        .font(.system(size: 13, weight: tab == i ? .semibold : .regular))
+                        .foregroundColor(tab == i ? OnlineSkin.fg : OnlineSkin.value)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 34)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(tab == i ? Color.white.opacity(0.07) : Color.white.opacity(0.02))
+                        )
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.top, 2)
+        .padding(.bottom, 6)
+    }
+
+    // MARK: 组内一行入口
 
     private func row(
         _ name: String,
@@ -327,7 +394,7 @@ struct OnlineSettingsPanel: View {
                 Spacer(minLength: 8)
                 Text(value)
                     .font(.system(size: 12.5))
-                    .foregroundColor(OnlineSkin.dim)
+                    .foregroundColor(OnlineSkin.value)
                     .lineLimit(1)
                 Image(systemName: "chevron.right")
                     .font(.system(size: 9.5, weight: .semibold))
@@ -347,49 +414,11 @@ struct OnlineSettingsPanel: View {
         .buttonStyle(.plain)
     }
 
-    private var groupGap: some View {
-        VStack(spacing: 0) {
-            Rectangle().fill(OnlineSkin.hair).frame(height: 0.5)
-            Color.clear.frame(height: 16)
-        }
-    }
-
-    // MARK: 第二层：只有这一项
+    // MARK: 子页：只有这一项
 
     @ViewBuilder
     private var subBody: some View {
         switch page {
-        case "chapter":
-            VStack(spacing: 0) {
-                ForEach(Array(chapters.indices), id: \.self) { i in
-                    Button {
-                        if i != chapterIndex { onPickChapter(i) }
-                        onClose()
-                    } label: {
-                        HStack(spacing: 10) {
-                            Text(chapters[i].1.isEmpty ? "第 \(i + 1) 话" : chapters[i].1)
-                                .font(.system(size: 13.5))
-                                .foregroundColor(i == chapterIndex ? OnlineSkin.accent : OnlineSkin.fg)
-                                .lineLimit(1)
-                            Spacer(minLength: 8)
-                            if i == chapterIndex {
-                                Text("当前")
-                                    .font(.system(size: 10.5))
-                                    .foregroundColor(OnlineSkin.accent)
-                            }
-                        }
-                        .padding(.vertical, 13)
-                        .contentShape(Rectangle())
-                        .overlay(alignment: .bottom) {
-                            if i != chapters.count - 1 {
-                                Rectangle().fill(OnlineSkin.hair).frame(height: 0.5)
-                            }
-                        }
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-
         case "layout":
             VStack(spacing: 0) {
                 ForEach(ReaderLayout.allCases) { layout in
@@ -450,7 +479,7 @@ struct OnlineSettingsPanel: View {
                     HStack(spacing: 10) {
                         ProgressView(value: colorizeStore.progress)
                             .progressViewStyle(.linear)
-                            .tint(Color(red: 1, green: 0.43, blue: 0.61))
+                            .tint(OnlineSkin.accent)
                         Text("\(Int(colorizeStore.progress * 100))%")
                             .font(.system(size: 11))
                             .foregroundColor(.white.opacity(0.6))
@@ -464,7 +493,7 @@ struct OnlineSettingsPanel: View {
                     } label: {
                         Text("下载上色模型（约 117MB，仅一次）")
                             .font(.system(size: 13, weight: .medium))
-                            .foregroundColor(Color(red: 1, green: 0.43, blue: 0.61))
+                            .foregroundColor(OnlineSkin.accent)
                     }
                     .buttonStyle(.plain)
                     note("模型来自 manga-colorization-v2（开源 MIT，专为黑白漫画训练）。"
@@ -475,7 +504,7 @@ struct OnlineSettingsPanel: View {
                     } label: {
                         Text("下载失败，点这里重试")
                             .font(.system(size: 13, weight: .medium))
-                            .foregroundColor(Color(red: 1, green: 0.45, blue: 0.42))
+                            .foregroundColor(Color(hex: 0xE0736B))
                     }
                     .buttonStyle(.plain)
                     note(msg)
@@ -584,7 +613,7 @@ struct OnlineSettingsPanel: View {
                 Spacer(minLength: 0)
                 Text(text)
                     .font(.system(size: 12.5))
-                    .foregroundColor(enabled ? OnlineSkin.dim : OnlineSkin.dim2)
+                    .foregroundColor(enabled ? OnlineSkin.value : OnlineSkin.dim2)
                     .monospacedDigit()
             }
             Slider(value: value, in: range)
@@ -613,5 +642,93 @@ struct OnlineSettingsPanel: View {
             .lineSpacing(3)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.top, 14)
+    }
+}
+
+// MARK: - 目录（工具栏「目录」键呼出）
+
+/// 独立章节面板：打开时定位当前话（滚动到屏幕中央），点行切章并关闭。
+struct OnlineChapterPanel: View {
+    let chapters: [(String, String)]
+    let chapterIndex: Int
+    let onPick: (Int) -> Void
+    let onClose: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Capsule()
+                .fill(Color.white.opacity(0.16))
+                .frame(width: 34, height: 3.5)
+                .padding(.top, 8)
+                .padding(.bottom, 2)
+
+            HStack(spacing: 0) {
+                Color.clear.frame(width: 44, height: 44)
+                Text("目录")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(OnlineSkin.fg)
+                    .frame(maxWidth: .infinity)
+                Button(action: onClose) {
+                    Text("完成")
+                        .font(.system(size: 13.5, weight: .medium))
+                        .foregroundColor(OnlineSkin.accent)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+            .frame(height: 48)
+            .padding(.horizontal, 4)
+
+            ScrollViewReader { proxy in
+                ScrollView(showsIndicators: false) {
+                    LazyVStack(spacing: 0, pinnedViews: []) {
+                        ForEach(Array(chapters.indices), id: \.self) { i in
+                            chapterRow(i).id(i)
+                        }
+                    }
+                    .padding(.horizontal, 18)
+                    .padding(.bottom, 24)
+                }
+                .onAppear {
+                    proxy.scrollTo(chapterIndex, anchor: .center)
+                }
+            }
+        }
+        .frame(height: UIScreen.main.bounds.height * 0.58)
+        .frame(maxWidth: .infinity)
+        .background(OnlineSkin.sheet)
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(Color.white.opacity(0.06), lineWidth: 0.5)
+        )
+    }
+
+    private func chapterRow(_ i: Int) -> some View {
+        Button {
+            onPick(i)
+        } label: {
+            HStack(spacing: 10) {
+                Text(chapters[i].1.isEmpty ? "第 \(i + 1) 话" : chapters[i].1)
+                    .font(.system(size: 13.5, weight: i == chapterIndex ? .semibold : .regular))
+                    .foregroundColor(i == chapterIndex ? OnlineSkin.accent : OnlineSkin.fg)
+                    .lineLimit(1)
+                Spacer(minLength: 8)
+                if i == chapterIndex {
+                    Text("当前")
+                        .font(.system(size: 10.5))
+                        .foregroundColor(OnlineSkin.accent)
+                }
+            }
+            .padding(.vertical, 13)
+            .contentShape(Rectangle())
+            .overlay(alignment: .bottom) {
+                if i != chapters.count - 1 {
+                    Rectangle().fill(OnlineSkin.hair).frame(height: 0.5)
+                }
+            }
+        }
+        .buttonStyle(.plain)
     }
 }

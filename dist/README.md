@@ -1,27 +1,30 @@
 # 画质漫画 · 安装包
 
-版本：iOS 当前 **`1.9.80 (91)`**（安卓源码同步至同号，包按需出）。
+版本：iOS 当前 **`1.9.81 (92)`**（安卓源码同步至同号，包按需出）。
 
 ## 下载
 
 | 平台 | 位置 | 大小 |
 |---|---|---|
-| iOS | 本目录 `EnhanceComic-iOS-v1.9.80.ipa`（未签名，需 Sideloadly / AltStore 签名）；也可到 [Release 页 → v1.9.80](https://github.com/xieanranya/yidumanhua-gerenchuangjianban/releases) | 9.9 MB |
+| iOS | 本目录 `EnhanceComic-iOS-v1.9.81.ipa`（未签名，需 Sideloadly / AltStore 签名）；也可到 [Release 页 → v1.9.81](https://github.com/xieanranya/yidumanhua-gerenchuangjianban/releases) | 9.9 MB |
 
-## v1.9.80（iOS）：排行榜「显示不出来」根因修复
+## v1.9.81（双端）：阅读器常驻可拖拽进度条
 
-首页排行榜从 v1.9.71 起一直显示空态的根因：引擎任务返回是 `{ok, data:{...}}` 包装结构，漫画列表在 `data.comics`，iOS 解析却读了顶层 `comics`（永远是 nil）→ 空数组还被当作「已拉过」缓存，切周期/切源也全空。
+在线阅读器新增**贴底常驻进度条**：
 
-- 修复解析层级；node 实测引擎数据正常（禁漫總排行 80 本、拷贝日榜 50 本）
-- 上一版（1.9.79）已修的竖长页解码（韩漫模糊）一并包含
+- **实时进度**：2.5pt 淡紫细线（贴底、透明衬底），随当前页实时更新，阅读时始终可见——不用呼出工具栏
+- **拖拽跳页**：点住细线即进入拖拽态（放大为 4pt + 拇指圆点 + 「12 / 36」页码气泡跟随），松手跳到目标页；**五种布局都支持**——翻页（paged/双页）直接翻、条漫/自由/横滑（webtoon/free/slide）滚动定位（之前这些模式只能一页页翻）
+- **不遮挡**：细线只有 2.5pt 高，触控区仅线附近 ±11pt，不挡漫画底部的翻页点击；工具栏展开时自动收起（工具栏底部已有带章节信息的完整进度行，避免重复）
+- 样式与 v7 阅读器一致：画布 #101217 衬底、淡紫 #CDBBFF 强调、页码气泡深墨色
 
 ### 校验
 
 | 检查项 | 结果 |
 |---|---|
-| iOS CFBundleShortVersionString / CFBundleVersion | `1.9.80` / `91` |
-| CI | success |
+| iOS CFBundleShortVersionString / CFBundleVersion | `1.9.81` / `92` |
+| Android versionName / versionCode（源码同步） | `1.9.81` / `92` |
+| CI（iOS）| success · gradle（安卓）| BUILD SUCCESSFUL |
 
 ## 之前版本
 
-### v1.9.79：竖长页解码修复 · v1.9.78：v7 阅读器重构 · v1.9.77：海报修复 · v1.9.76：v6 杂志封面 · v1.9.75：排行进首屏 · v1.9.74：v5 极简网格首页 · v1.9.71：排行接源真实通道
+### v1.9.80：排行榜解析修复 · v1.9.79：竖长页解码修复 · v1.9.78：v7 阅读器重构 · v1.9.77：海报修复 · v1.9.76：v6 杂志封面 · v1.9.75：排行进首屏 · v1.9.71：排行接源真实通道

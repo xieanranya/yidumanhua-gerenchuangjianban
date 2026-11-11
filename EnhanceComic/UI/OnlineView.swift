@@ -1020,8 +1020,8 @@ struct OnlineReader: View {
 
     @State private var savedBrightness: CGFloat = UIScreen.main.brightness
     @State private var hideTask: Task<Void, Never>?
-    /// 进度条拖拽跳页（滚动类布局）：(目标页, 自增序号)——序号让重复跳同一页也能触发
-    @State private var scrollJump: (Int, Int)?
+    /// 进度条拖拽跳页（滚动类布局）："目标页|自增号"——序号让重复跳同一页也能触发
+    @State private var scrollJump: String?
     @State private var scrollTick = 0
 
     init(payload: ReadingPayload) {
@@ -1215,7 +1215,8 @@ struct OnlineReader: View {
             // 进度条拖拽跳页：滚到目标页顶部（Lazy 容器对未渲染页用占位高度估算，
             // 落点误差由 onAppear 的 current 修正兜底）
             .onChange(of: scrollJump) { jump in
-                guard let (i, _) = jump, i >= 0, i < total else { return }
+                guard let jump, let i = jump.split(separator: "|").first.flatMap({ Int($0) }),
+                      i >= 0, i < total else { return }
                 proxy.scrollTo(i, anchor: .top)
             }
         }
@@ -1236,7 +1237,8 @@ struct OnlineReader: View {
                     }
                 }
                 .onChange(of: scrollJump) { jump in
-                    guard let (i, _) = jump, i >= 0, i < total else { return }
+                    guard let jump, let i = jump.split(separator: "|").first.flatMap({ Int($0) }),
+                          i >= 0, i < total else { return }
                     proxy.scrollTo(i, anchor: .center)
                 }
             }
@@ -1400,7 +1402,7 @@ struct OnlineReader: View {
         } else {
             current = t
             scrollTick += 1
-            scrollJump = (t, scrollTick)
+            scrollJump = "\(t)|\(scrollTick)"
         }
     }
 

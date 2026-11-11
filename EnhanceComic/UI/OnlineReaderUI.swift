@@ -704,7 +704,7 @@ struct OnlineProgressRail: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 // 触控区只在线附近 ±11pt：不挡漫画底部的翻页点击
-                .contentShape(Rectangle().inset(by: EdgeInsets(top: -11, leading: 0, bottom: -11, trailing: 0)))
+                .contentShape(Rectangle().inset(by: -11))
                 .gesture(
                     DragGesture(minimumDistance: 0)
                         .onChanged { value in

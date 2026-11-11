@@ -377,9 +377,12 @@ struct HomeScreen: View {
         }
     }
 
-    /// rank 返回的 comics → ComicRow（引擎已解析成 {id,title,cover,subTitle}）
+    /// rank 返回的 comics → ComicRow（引擎已解析成 {id,title,cover,subTitle}）。
+    /// 注意引擎任务事件是 {id, ok, data:{...}} 包装——漫画列表在 data.comics，
+    /// 之前直接读顶层 comics 永远是 nil，排行榜因此一直是空态（v1.9.71 起的老 bug）。
     private func parseRankComics(_ r: [String: Any], sourceKey: String, sourceName: String) -> [ComicRow] {
-        guard ok(r), let arr = r["comics"] as? [[String: Any]] else { return [] }
+        guard ok(r), let d = r["data"] as? [String: Any],
+              let arr = d["comics"] as? [[String: Any]] else { return [] }
         return arr.compactMap { o -> ComicRow? in
             guard let id = o["id"] as? String, !id.isEmpty else { return nil }
             return ComicRow(

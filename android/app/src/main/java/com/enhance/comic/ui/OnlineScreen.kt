@@ -1882,6 +1882,9 @@ private fun OnlineLazyReader(
                 onPrefs = onPrefs,
                 onEnhance = onEnhance,
                 onDismiss = { showSettings = false },
+                chapters = nav.chapters,
+                chapterIndex = nav.index,
+                onPickChapter = onPickChapter,
             )
         }
         if (showChapters) {

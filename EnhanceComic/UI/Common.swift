@@ -76,7 +76,8 @@ final class RemoteImageLoader {
 
     private init() {
         cache.countLimit = 240
-        cache.totalCostLimit = 96 << 20
+        // 竖长页现在按全分辨率解码（一张 720x3008 约 8.7MB），96MB 存不下几页
+        cache.totalCostLimit = 256 << 20
     }
 
     func cached(
@@ -316,11 +317,22 @@ final class RemoteImageLoader {
     private static func downsample(_ data: Data, maxPixel: CGFloat) -> UIImage? {
         let srcOpts = [kCGImageSourceShouldCache: false] as CFDictionary
         guard let src = CGImageSourceCreateWithData(data as CFData, srcOpts) else { return nil }
+        // ThumbnailMaxPixelSize 限制的是「最长边」。阅读页按宽度铺满，对竖长页
+        // （禁漫韩漫一页 720x3008 这种）拿它当宽度上限用，会把宽度压到一两百像素，
+        // 渲染时再放大几倍 —— 这就是「有的漫画特别模糊」的根源。
+        // 竖图改成按「目标宽度」反算最长边，长边封顶 6400 防超大内存。
+        var maxSize = maxPixel
+        if let props = CGImageSourceCopyPropertiesAtIndex(src, 0, srcOpts) as? [CFString: Any],
+           let w0 = props[kCGImagePropertyPixelWidth] as? CGFloat,
+           let h0 = props[kCGImagePropertyPixelHeight] as? CGFloat,
+           w0 > 0, h0 > w0 {
+            maxSize = min(maxPixel * h0 / w0, 6400)
+        }
         let thumb: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
             kCGImageSourceShouldCacheImmediately: true,
-            kCGImageSourceThumbnailMaxPixelSize: max(64, maxPixel),
+            kCGImageSourceThumbnailMaxPixelSize: max(64, maxSize),
         ]
         guard let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, thumb as CFDictionary) else {
             return nil

@@ -645,6 +645,87 @@ struct OnlineSettingsPanel: View {
     }
 }
 
+// MARK: - 常驻进度条（贴底细线，可拖拽跳页）
+
+/// 常驻在屏幕底部的一条细进度线：随当前页实时更新，点住可拖拽预览、
+/// 松手跳到目标页。触控区只有细线附近 ±11pt，不挡漫画底部的翻页点击；
+/// 拖拽时放大成 4pt + 拇指圆点 + 页码气泡。淡紫 = v7 强调色。
+struct OnlineProgressRail: View {
+    let current: Int
+    let total: Int
+    let onSeek: (Int) -> Void
+
+    @State private var dragging = false
+    @State private var dragValue = 0
+
+    private var shown: Int {
+        min(max(dragging ? dragValue : current, 0), max(total - 1, 0))
+    }
+
+    private var ratio: CGFloat {
+        guard total > 1 else { return 1 }
+        return CGFloat(shown + 1) / CGFloat(total)
+    }
+
+    var body: some View {
+        GeometryReader { geo in
+            let w = max(geo.size.width, 1)
+            let thumbX = w * ratio
+            VStack(spacing: 0) {
+                if dragging {
+                    Text("\(shown + 1) / \(total)")
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .foregroundColor(OnlineSkin.fg)
+                        .monospacedDigit()
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .background(Capsule().fill(OnlineSkin.sheet.opacity(0.97)))
+                        .overlay(Capsule().stroke(Color.white.opacity(0.08), lineWidth: 0.5))
+                        .offset(
+                            x: min(max(thumbX, 44), w - 44),
+                            y: dragging ? -2 : 0
+                        )
+                }
+                Spacer(minLength: 0)
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(Color.white.opacity(0.15))
+                        .frame(height: dragging ? 4 : 2.5)
+                    Capsule()
+                        .fill(OnlineSkin.accent)
+                        .frame(width: max(3, w * ratio), height: dragging ? 4 : 2.5)
+                    if dragging {
+                        Circle()
+                            .fill(OnlineSkin.accent)
+                            .frame(width: 14, height: 14)
+                            .shadow(color: .black.opacity(0.4), radius: 4, x: 0, y: 1)
+                            .offset(x: min(max(thumbX - 7, 0), w - 14))
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                // 触控区只在线附近 ±11pt：不挡漫画底部的翻页点击
+                .contentShape(Rectangle().inset(by: EdgeInsets(top: -11, leading: 0, bottom: -11, trailing: 0)))
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { value in
+                            if !dragging { dragging = true }
+                            let r = min(max(value.location.x / w, 0), 1)
+                            dragValue = Int((r * CGFloat(max(total - 1, 1))).rounded())
+                        }
+                        .onEnded { value in
+                            let r = min(max(value.location.x / w, 0), 1)
+                            let target = Int((r * CGFloat(max(total - 1, 1))).rounded())
+                            dragging = false
+                            onSeek(target)
+                        }
+                )
+            }
+        }
+        .frame(height: 24)
+        .animation(.easeOut(duration: 0.14), value: dragging)
+    }
+}
+
 // MARK: - 目录（工具栏「目录」键呼出）
 
 /// 独立章节面板：打开时定位当前话（滚动到屏幕中央），点行切章并关闭。

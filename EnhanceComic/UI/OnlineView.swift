@@ -1020,6 +1020,9 @@ struct OnlineReader: View {
 
     @State private var savedBrightness: CGFloat = UIScreen.main.brightness
     @State private var hideTask: Task<Void, Never>?
+    /// 进度条拖拽跳页（滚动类布局）：(目标页, 自增序号)——序号让重复跳同一页也能触发
+    @State private var scrollJump: (Int, Int)?
+    @State private var scrollTick = 0
 
     init(payload: ReadingPayload) {
         self.payload = payload
@@ -1139,6 +1142,14 @@ struct OnlineReader: View {
                 .transition(.move(edge: .bottom))
             }
 
+            // 常驻进度条：贴底细线，随页实时更新，可拖拽跳页；
+            // 触控区只有线附近 ±11pt，不挡漫画底部的翻页点击，也不随工具栏隐藏。
+            // 工具栏展开时收起——工具栏底部有带章节信息的完整进度行，避免重复
+            if total > 0, !showBar {
+                OnlineProgressRail(current: current, total: total) { seekTo($0) }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+            }
+
             if switching {
                 Color.black.opacity(0.4).ignoresSafeArea()
                 ProgressView().tint(.white)
@@ -1186,18 +1197,26 @@ struct OnlineReader: View {
     }
 
     private func verticalScroll(zoomable: Bool) -> some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            LazyVStack(spacing: gap) {
-                ForEach(Array(0..<total), id: \.self) { i in
-                    let cellView = cell(i, fit: false)
-                        .frame(maxWidth: .infinity)
-                    if zoomable {
-                        ZoomablePage { cellView }
-                            .onAppear { current = i }
-                    } else {
-                        cellView.onAppear { current = i }
+        ScrollViewReader { proxy in
+            ScrollView(.vertical, showsIndicators: false) {
+                LazyVStack(spacing: gap) {
+                    ForEach(Array(0..<total), id: \.self) { i in
+                        let cellView = cell(i, fit: false)
+                            .frame(maxWidth: .infinity)
+                        if zoomable {
+                            ZoomablePage { cellView }
+                                .onAppear { current = i }
+                        } else {
+                            cellView.onAppear { current = i }
+                        }
                     }
                 }
+            }
+            // 进度条拖拽跳页：滚到目标页顶部（Lazy 容器对未渲染页用占位高度估算，
+            // 落点误差由 onAppear 的 current 修正兜底）
+            .onChange(of: scrollJump) { jump in
+                guard let (i, _) = jump, i >= 0, i < total else { return }
+                proxy.scrollTo(i, anchor: .top)
             }
         }
         .ignoresSafeArea()
@@ -1206,13 +1225,19 @@ struct OnlineReader: View {
 
     private var slideScroll: some View {
         GeometryReader { geo in
-            ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(spacing: gap) {
-                    ForEach(Array(0..<total), id: \.self) { i in
-                        cell(i, fit: true)
-                            .frame(width: geo.size.width, height: geo.size.height)
-                            .onAppear { current = i }
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    LazyHStack(spacing: gap) {
+                        ForEach(Array(0..<total), id: \.self) { i in
+                            cell(i, fit: true)
+                                .frame(width: geo.size.width, height: geo.size.height)
+                                .onAppear { current = i }
+                        }
                     }
+                }
+                .onChange(of: scrollJump) { jump in
+                    guard let (i, _) = jump, i >= 0, i < total else { return }
+                    proxy.scrollTo(i, anchor: .center)
                 }
             }
         }
@@ -1362,6 +1387,21 @@ struct OnlineReader: View {
 
     private func seek(to target: Int) {
         current = min(max(target, 0), max(total - 1, 0))
+    }
+
+    /// 进度条跳页：翻页类布局直接改 current（TabView selection 绑定自动翻过去）；
+    /// 滚动类布局（条漫/自由/横滑）经 scrollJump 触发 ScrollViewReader 滚动。
+    private func seekTo(_ target: Int) {
+        let t = min(max(target, 0), max(total - 1, 0))
+        if layout == .double {
+            current = (t / 2) * 2     // 对齐左页
+        } else if layout == .paged {
+            current = t
+        } else {
+            current = t
+            scrollTick += 1
+            scrollJump = (t, scrollTick)
+        }
     }
 
     // MARK: - 亮度 / 常亮

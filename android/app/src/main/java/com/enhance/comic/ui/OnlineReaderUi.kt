@@ -8,6 +8,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
@@ -18,6 +19,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -25,6 +27,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Slider
@@ -38,6 +41,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
@@ -49,6 +53,7 @@ import androidx.compose.ui.unit.sp
 import kotlin.math.max
 import kotlin.math.min
 import androidx.compose.runtime.collectAsState
+import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.material3.LinearProgressIndicator
@@ -942,3 +947,96 @@ private fun Modifier.pointerSeek(total: Int, onSeek: (Int) -> Unit): Modifier =
                 onSeek(((change.position.x / size.width) * total).toInt().coerceIn(0, total - 1))
             }
         }
+
+// ==================================================================== 常驻进度条
+
+/**
+ * 贴底常驻进度条：随当前页实时更新，点住拖拽预览（拇指圆点 + 页码气泡），
+ * 松手跳到目标页。触控区只有细线附近的 22dp 高条，不挡漫画底部的点击，
+ * 也不随工具栏隐藏。淡紫 = v7 强调色。
+ */
+@Composable
+internal fun OnlineProgressRail(current: Int, total: Int, onSeek: (Int) -> Unit) {
+    if (total <= 0) return
+    var dragging by remember { mutableStateOf(false) }
+    var dragValue by remember { mutableStateOf(0) }
+    val shown = (if (dragging) dragValue else current).coerceIn(0, max(total - 1, 0))
+    val ratio = if (total > 1) ((shown + 1f) / total).coerceIn(0f, 1f) else 1f
+
+    fun pageAt(x: Float, w: Float): Int =
+        (((x.coerceIn(0f, w) / max(w, 1f)) * max(total - 1, 1)).roundToInt()).coerceIn(0, total - 1)
+
+    BoxWithConstraints(Modifier.fillMaxWidth().height(if (dragging) 56.dp else 22.dp)) {
+        val w = maxWidth
+        if (dragging) {
+            val thumbX = w * ratio
+            Box(
+                Modifier
+                    .align(Alignment.TopStart)
+                    .offset(x = (thumbX - 34.dp).coerceIn(0.dp, (w - 68.dp).coerceAtLeast(0.dp)))
+                    .background(OnlineSheetBg.copy(alpha = 0.97f), RoundedCornerShape(50))
+                    .border(0.5.dp, Color(0x14FFFFFF), RoundedCornerShape(50))
+                    .padding(horizontal = 10.dp, vertical = 4.dp),
+            ) {
+                Text(
+                    "${shown + 1} / $total",
+                    color = OnlineFg,
+                    fontSize = 10.5.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                )
+            }
+        }
+        Box(
+            Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .height(22.dp)
+                .pointerInput(total) {
+                    detectTapGestures { o -> onSeek(pageAt(o.x, size.width.toFloat())) }
+                }
+                .pointerInput(total) {
+                    detectDragGestures(
+                        onDragStart = { o ->
+                            dragging = true
+                            dragValue = pageAt(o.x, size.width.toFloat())
+                        },
+                        onDrag = { change, _ ->
+                            change.consume()
+                            dragValue = pageAt(change.position.x, size.width.toFloat())
+                        },
+                        onDragEnd = {
+                            dragging = false
+                            onSeek(dragValue)
+                        },
+                        onDragCancel = { dragging = false },
+                    )
+                },
+        ) {
+            Box(
+                Modifier
+                    .align(Alignment.CenterStart)
+                    .fillMaxWidth()
+                    .height(2.5.dp)
+                    .background(Color(0x26FFFFFF)),
+            )
+            Box(
+                Modifier
+                    .align(Alignment.CenterStart)
+                    .fillMaxWidth(ratio)
+                    .height(2.5.dp)
+                    .background(OnlineAccent),
+            )
+            if (dragging) {
+                Box(
+                    Modifier
+                        .align(Alignment.CenterStart)
+                        .offset(x = w * ratio - 7.dp)
+                        .size(14.dp)
+                        .shadow(4.dp, CircleShape)
+                        .background(OnlineAccent, CircleShape),
+                )
+            }
+        }
+    }
+}

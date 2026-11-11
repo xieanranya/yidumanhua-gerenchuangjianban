@@ -1748,6 +1748,21 @@ private fun OnlineReader(
                 )
             }
         }
+        // 常驻进度条（独立翻页阅读器，无章节信息）
+        if (!showBar) {
+            Box(Modifier.align(Alignment.BottomCenter)) {
+                OnlineProgressRail(current = current, total = urls.size) { target ->
+                    scope.launch {
+                        when (prefs.onlineLayout) {
+                            ReaderLayout.DOUBLE -> pager.scrollToPage(target / 2)
+                            ReaderLayout.SLIDE, ReaderLayout.WEBTOON, ReaderLayout.FREE ->
+                                list.scrollToItem(target)
+                            else -> pager.scrollToPage(target)
+                        }
+                    }
+                }
+            }
+        }
         if (showSettings) {
             OnlineSettingsSheet(
                 prefs = prefs,
@@ -1896,6 +1911,20 @@ private fun OnlineLazyReader(
                     onSettings = { showSettings = true },
                     onNext = { if (nav.index < nav.chapters.size - 1) onPickChapter(nav.index + 1) },
                 )
+            }
+        }
+        // 常驻进度条：工具栏展开时收起（工具栏底部有带章节信息的完整进度行，避免重复）
+        if (!showBar) {
+            Box(Modifier.align(Alignment.BottomCenter)) {
+                OnlineProgressRail(current = current, total = nav.count) { target ->
+                    scope.launch {
+                        when (prefs.onlineLayout) {
+                            ReaderLayout.PAGED -> pager.scrollToPage(target)
+                            ReaderLayout.DOUBLE -> pager.scrollToPage(target / 2)
+                            else -> list.scrollToItem(target)
+                        }
+                    }
+                }
             }
         }
         if (showSettings) {

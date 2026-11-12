@@ -78,7 +78,7 @@ private val inflight = java.util.concurrent.ConcurrentHashMap<String, kotlinx.co
 /** 上色/后处理算法版本：改了合成逻辑就 +1，旧的上色缓存自动失效（否则用户测的还是老结果） */
 private const val COLORIZE_PIPE_VER = "4"
 
-private fun cacheKey(url: String, descramble: Int, targetWidth: Int, crop: Int = 0, colorize: String = "0"): String {
+private fun cacheKey(url: String, descramble: Int, targetWidth: Int, crop: Int = 0, colorize: String = "0", sr: Int = 0): String {
     val bucket = if (targetWidth <= 0) 0 else ((targetWidth + 159) / 160) * 160
     // crop / colorize 进 key：裁没裁、上没上色是两张不同的图，混用会让开关看起来没反应
     val cz = if (colorize == "0") "0" else "$colorize.$COLORIZE_PIPE_VER"
@@ -227,9 +227,11 @@ suspend fun loadRemoteBitmap(
     crop: Int = 0,
     /** "0" = 原图；"anime"/"realistic" = 黑白 AI 上色风格 */
     colorize: String = "0",
+    /** 画质增强（超分）：0 关 / 1 自动（仅低清页） / 2 全页 */
+    sr: Int = 0,
 ): Bitmap? {
     if (url.isBlank()) return null
-    val key = cacheKey(url, descramble, targetWidth, crop, colorize)
+    val key = cacheKey(url, descramble, targetWidth, crop, colorize, sr)
     RemoteImageCache.get(key)?.let { return it }
 
     // 已经在下的直接等同一个任务，别重复开连接
@@ -238,7 +240,7 @@ suspend fun loadRemoteBitmap(
         imageGate.withPermit {
             RemoteImageCache.get(key)?.let { return@withPermit it }
             withContext(Dispatchers.IO) {
-                downloadAndDecode(url, headers, descramble, targetWidth, key, crop, colorize)
+                downloadAndDecode(url, headers, descramble, targetWidth, key, crop, colorize, sr)
             }
         }
     }
@@ -260,10 +262,11 @@ private suspend fun downloadAndDecode(
     key: String,
     crop: Int = 0,
     colorize: String = "0",
+    sr: Int = 0,
 ): Bitmap? {
     PageProgress.set(url, 0.03f)
     return try {
-        runCatching { downloadAndDecodeInner(url, headers, descramble, targetWidth, key, crop, colorize) }
+        runCatching { downloadAndDecodeInner(url, headers, descramble, targetWidth, key, crop, colorize, sr) }
             .getOrNull()
     } finally {
         PageProgress.done(url)
@@ -278,6 +281,7 @@ private suspend fun downloadAndDecodeInner(
     key: String,
     crop: Int = 0,
     colorize: String = "0",
+    sr: Int = 0,
 ): Bitmap? = runCatching {
     val conn = URL(url).openConnection() as HttpURLConnection
     conn.connectTimeout = 12_000
@@ -347,15 +351,24 @@ private suspend fun downloadAndDecodeInner(
     // 裁白边放在最后：先把分块还原成整图，再按真实画面找边界
     val fixed = if (crop > 0) cropWhiteEdges(straight, crop - 1) else straight
     PageProgress.set(url, 0.84f)
-    // 黑白上色在裁白边之后：模型吃的是「干净的画面」；失败回原图
+    // 画质增强（超分）：sr 2=全页；1=自动（仅解码宽低于显示宽 60% 的低清页）
+    PageProgress.set(url, 0.86f)
+    var enhanced = fixed
+    if (sr > 0 && fixed.width > 64 && targetWidth > 0) {
+        val isLowRes = fixed.width < targetWidth * 0.6f
+        if (sr == 2 || (sr == 1 && isLowRes)) {
+            com.enhance.comic.data.SuperRes.enhance(fixed, targetWidth)?.let { enhanced = it }
+        }
+    }
+    // 黑白上色在画质增强之后：模型吃的是「干净的画面」；失败回原图
     val out = if (colorize != "0") {
         PageProgress.set(url, 0.88f)
         // 上色失败就回原图
         com.enhance.comic.data.ColorizeEngine.colorize(
-            fixed, com.enhance.comic.data.ColorizeEngine.Model.byId(colorize),
-        ) ?: fixed
+            enhanced, com.enhance.comic.data.ColorizeEngine.Model.byId(colorize),
+        ) ?: enhanced
     } else {
-        fixed
+        enhanced
     }
     RemoteImageCache.put(key, out)
     out
@@ -414,16 +427,17 @@ fun RemotePageImage(
     val targetPx = with(density) { cfg.screenWidthDp.dp.roundToPx() }
     val crop = if (prefs?.autoCropOnline == true) prefs.cropLevel + 1 else 0
     val colorize = if (prefs?.colorizeOnline == true) (prefs?.colorizeStyle ?: "anime") else "0"
-    val key = cacheKey(url, descramble, targetPx, crop, colorize)
+    val sr = prefs?.srMode ?: 0
+    val key = cacheKey(url, descramble, targetPx, crop, colorize, sr)
 
-    var bmp by remember(url, descramble, crop, colorize) { mutableStateOf(RemoteImageCache.get(key)) }
-    var failed by remember(url, descramble, crop, colorize) { mutableStateOf(false) }
+    var bmp by remember(url, descramble, crop, colorize, sr) { mutableStateOf(RemoteImageCache.get(key)) }
+    var failed by remember(url, descramble, crop, colorize, sr) { mutableStateOf(false) }
     var attempt by remember(url) { mutableStateOf(0) }
 
-    LaunchedEffect(url, descramble, crop, colorize, attempt) {
+    LaunchedEffect(url, descramble, crop, colorize, sr, attempt) {
         if (bmp != null) return@LaunchedEffect
         failed = false
-        val got = loadRemoteBitmap(url, headers, descramble, targetPx, crop, colorize)
+        val got = loadRemoteBitmap(url, headers, descramble, targetPx, crop, colorize, sr)
         if (got != null) bmp = got else failed = true
     }
 

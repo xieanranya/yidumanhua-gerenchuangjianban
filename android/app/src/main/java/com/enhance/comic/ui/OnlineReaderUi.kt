@@ -270,6 +270,7 @@ private const val PAGE_COLORIZE = "colorize"
 private const val PAGE_BRIGHT = "bright"
 private const val PAGE_BLUE = "blue"
 private const val PAGE_FILTER = "filter"
+private const val PAGE_SR = "sr"
 
 /**
  * 底部设置面板（v7）：「阅读 / 图像 / 显示」三组 tab，每次只显示两三项。
@@ -375,6 +376,21 @@ internal fun OnlineSettingsSheet(
                         Spacer(Modifier.weight(1f))
                         Text("20%", color = OnlineHint, fontSize = 10.5.sp)
                     }
+                }
+
+                PAGE_SR -> SheetScreen("画质增强", { page = PAGE_HOME }, onDismiss) {
+                    SheetOption("关", "不做画质增强", prefs.srMode == 0) {
+                        onPrefs(prefs.copy(srMode = 0))
+                    }
+                    SheetOption("自动 · 仅低清页", "源图比屏幕窄一半以上时才增强（推荐）", prefs.srMode == 1) {
+                        onPrefs(prefs.copy(srMode = 1))
+                    }
+                    SheetOption("全页", "每一页都增强（更清晰，但每页要多等几秒）", prefs.srMode == 2) {
+                        onPrefs(prefs.copy(srMode = 2))
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    SheetNote("把低清源页放大重建：轮廓线更锐、压缩块纹和噪点减少（内置模型 2.4MB，" +
+                        "无需下载）。增强在后台进行，先显示原图、算完自动替换；对白文字保持原样不被重画。")
                 }
 
                 PAGE_CROP -> SheetScreen("自动裁白边", { page = PAGE_HOME }, onDismiss) {
@@ -597,6 +613,8 @@ private fun SettingsHome(
                     ) { onOpen(PAGE_GAP) }
                 }
                 1 -> {
+                    val srLabel = listOf("关", "自动 · 仅低清页", "全页")[prefs.srMode.coerceIn(0, 2)]
+                    RowEntry("画质增强", srLabel) { onOpen(PAGE_SR) }
                     RowEntry("自动裁白边",
                         if (prefs.autoCropOnline) {
                             "开 · " + listOf("保守", "中", "激进")[prefs.cropLevel.coerceIn(0, 2)]

@@ -12,6 +12,7 @@ import android.graphics.ColorMatrixColorFilter
 import android.graphics.Paint
 import kotlinx.coroutines.Dispatchers
 import kotlin.math.max
+import kotlin.math.roundToInt
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.sync.Mutex
@@ -72,9 +73,10 @@ object ColorizeEngine {
 
     fun init(context: Context) {
         if (!::appContext.isInitialized) appContext = context.applicationContext
+        SuperRes.init(appContext)
     }
 
-    private lateinit var appContext: Context
+    internal lateinit var appContext: Context
     private val env: OrtEnvironment by lazy { OrtEnvironment.getEnvironment() }
     private val sessions = HashMap<String, OrtSession>()
     private val runMutex = Mutex()
@@ -578,5 +580,177 @@ object ColorizeEngine {
                     .format(java.util.Date()) + " =====\n" + msg + "\n"
             )
         } catch (_: Throwable) { }
+    }
+}
+
+// ==================================================================== 画质增强（超分）
+
+/**
+ * realesr-animevideov3 超分（ONNX fp32 2.4MB **随包内置** assets/models/，
+ * 选自 Tomoali/realesr-animevideov3-onnx，BSD-3-Clause，上游 xinntao/Real-ESRGAN）。
+ *
+ * 固定输入 [1,3,256,256]（RGB 0..1 NCHW）→ 输出 [1,3,1024,1024]（4x）。
+ * 策略：处理尺寸长边 ≤1024、pad 到 256 倍数、分块推理（重叠 8px）、
+ * 拼接后裁 pad、缩回目标显示宽度，最后 line-mix（暗部用原图，防文字/网点被 GAN 重画）。
+ * 任何失败返回 null，调用方回退原图，绝不挡阅读。
+ */
+object SuperRes {
+    internal lateinit var appContext: Context
+    internal fun init(context: Context) {
+        if (!::appContext.isInitialized) appContext = context.applicationContext
+    }
+    private val env: OrtEnvironment by lazy { OrtEnvironment.getEnvironment() }
+    private val mutex = Mutex()
+
+    private const val SR_ASSET = "models/animevideov3_256.onnx"
+    private const val SR_BYTES = 2_494_775L
+    private const val TILE = 256
+    private const val OVERLAP = 8
+    private const val MAX_SIDE = 1024f
+
+    private var session: OrtSession? = null
+
+    private fun srFile(): File = File(File(appContext.filesDir, "models").apply { mkdirs() }, "animevideov3_256.onnx")
+
+    private fun srReady(): Boolean = ::appContext.isInitialized && srFile().length() == SR_BYTES
+
+    private fun acquire(): OrtSession {
+        session?.let { return it }
+        if (!srReady()) {
+            val f = srFile()
+            appContext.assets.open(SR_ASSET).use { input ->
+                f.outputStream().use { input.copyTo(it) }
+            }
+        }
+        val s = env.createSession(srFile().path)
+        session = s
+        return s
+    }
+
+    /** 增强（srMode 2=全页；1=自动——调用方判定低清后调用）。返回 null 表示失败回退。 */
+    suspend fun enhance(input: Bitmap, targetWidth: Int): Bitmap? = withContext(Dispatchers.Default) {
+        try {
+            if (input.width <= 64 || input.height <= 64) return@withContext null
+            val s = acquire()
+            mutex.withLock { runCore(input, s, targetWidth) }
+        } catch (e: Throwable) {
+            android.util.Log.e("SuperRes", "superResolve failed: " + android.util.Log.getStackTraceString(e))
+            null
+        }
+    }
+
+    private fun runCore(input: Bitmap, s: OrtSession, targetWidth: Int): Bitmap? {
+        val w0 = input.width
+        val h0 = input.height
+        var pw = w0
+        var ph = h0
+        val long = maxOf(w0, h0)
+        if (long > MAX_SIDE) {
+            val k = MAX_SIDE / long
+            pw = (w0 * k).roundToInt().coerceAtLeast(1)
+            ph = (h0 * k).roundToInt().coerceAtLeast(1)
+        }
+        val tw = ((pw + TILE - 1) / TILE) * TILE
+        val th = ((ph + TILE - 1) / TILE) * TILE
+
+        // 处理尺寸画布（pad 区黑，最后裁掉）
+        val full = Bitmap.createBitmap(tw, th, Bitmap.Config.ARGB_8888)
+        val fc = Canvas(full)
+        val paint = Paint(Paint.FILTER_BITMAP_FLAG)
+        fc.drawBitmap(Bitmap.createScaledBitmap(input, pw, ph, true), 0f, 0f, paint)
+
+        val cols = tw / TILE
+        val rows = th / TILE
+        val outTile = TILE * 4
+        val outOverlap = OVERLAP * 4
+        val big = Bitmap.createBitmap(tw * 4, th * 4, Bitmap.Config.ARGB_8888)
+        val bc = Canvas(big)
+
+        for (r in 0 until rows) {
+            for (c in 0 until cols) {
+                val tileBmp = Bitmap.createBitmap(full, c * TILE, r * TILE, TILE, TILE)
+                val out = runTile(tileBmp, s) ?: continue
+                val cutX = if (c == 0) 0 else outOverlap
+                val cutY = if (r == 0) 0 else outOverlap
+                val srcW = outTile - cutX - if (c == cols - 1) 0 else outOverlap
+                val srcH = outTile - cutY - if (r == rows - 1) 0 else outOverlap
+                val piece = Bitmap.createBitmap(out, cutX, cutY, srcW, srcH)
+                bc.drawBitmap(piece, (c * TILE * 4 + cutX).toFloat(), (r * TILE * 4 + cutY).toFloat(), paint)
+            }
+        }
+
+        // 裁掉 pad（内容区在左上），缩回目标显示宽度
+        val outW = (pw * 4f).roundToInt()
+        val outH = (ph * 4f).roundToInt()
+        val croppedB = Bitmap.createBitmap(big, 0, 0, outW, outH)
+        val targetH = max(1, (outH.toFloat() / outW * targetWidth).roundToInt())
+        val sized = Bitmap.createScaledBitmap(croppedB, targetWidth, targetH, true)
+
+        // line-mix：暗部（原线稿 Y<0.45）用原图放大（保文字/网点），其余用模型
+        val origScaled = Bitmap.createScaledBitmap(input, sized.width, sized.height, true)
+        val result = Bitmap.createBitmap(sized.width, sized.height, Bitmap.Config.ARGB_8888)
+        val ePx = IntArray(sized.width * sized.height)
+        val oPx = IntArray(ePx.size)
+        sized.getPixels(ePx, 0, sized.width, 0, 0, sized.width, sized.height)
+        origScaled.getPixels(oPx, 0, sized.width, 0, 0, sized.width, sized.height)
+        // 先整块铺模型输出，再只重画暗部（暗部占比小，避免逐像素 setPixel 的 JNI 开销）
+        result.setPixels(ePx, 0, sized.width, 0, 0, sized.width, sized.height)
+        val w = sized.width
+        for (i in ePx.indices) {
+            val r0 = (oPx[i] shr 16) and 0xFF
+            val g0 = (oPx[i] shr 8) and 0xFF
+            val b0 = oPx[i] and 0xFF
+            val ys = 0.299f * r0 + 0.587f * g0 + 0.114f * b0
+            val mask = ((0.45f - ys) / 0.22f).coerceIn(0f, 1f)
+            if (mask > 0f) {
+                val er = (ePx[i] shr 16) and 0xFF
+                val eg = (ePx[i] shr 8) and 0xFF
+                val eb = ePx[i] and 0xFF
+                val rr = (oPx[i] and 0xFF000000.toInt()) or
+                    ((r0 * mask + er * (1 - mask)).roundToInt() shl 16) or
+                    ((g0 * mask + eg * (1 - mask)).roundToInt() shl 8) or
+                    (b0 * mask + eb * (1 - mask)).roundToInt()
+                result.setPixel(i % w, i / w, rr)
+            }
+        }
+        return result
+    }
+
+    private fun o0r(y: Int, e: Int, mask: Float): Int = (y * mask + e * (1 - mask)).roundToInt().coerceIn(0, 255)
+    private fun o0g(y: Int, e: Int, mask: Float): Int = (y * mask + e * (1 - mask)).roundToInt().coerceIn(0, 255)
+    private fun o0b(y: Int, e: Int, mask: Float): Int = (y * mask + e * (1 - mask)).roundToInt().coerceIn(0, 255)
+
+    private fun runTile(tileBmp: Bitmap, s: OrtSession): Bitmap? {
+        val plane = TILE * TILE
+        val inp = FloatArray(3 * plane)
+        val px = IntArray(plane)
+        tileBmp.getPixels(px, 0, TILE, 0, 0, TILE, TILE)
+        for (i in 0 until plane) {
+            inp[i] = ((px[i] shr 16) and 0xFF) / 255f
+            inp[plane + i] = ((px[i] shr 8) and 0xFF) / 255f
+            inp[2 * plane + i] = (px[i] and 0xFF) / 255f
+        }
+        val inName = s.inputNames.firstOrNull() ?: return null
+        val outName = s.outputNames.firstOrNull() ?: return null
+        OnnxTensor.createTensor(env, java.nio.FloatBuffer.wrap(inp), longArrayOf(1, 3, TILE.toLong(), TILE.toLong())).use { t ->
+            s.run(mapOf(inName to t)).use { out ->
+                @Suppress("UNCHECKED_CAST")
+                val tensor = out[outName] as? OnnxTensor ?: return null
+                val fb = tensor.floatBuffer
+                val outT = TILE * 4
+                val outPlane = outT * outT
+                if (fb.remaining() < outPlane * 3) return null
+                val bmp = Bitmap.createBitmap(outT, outT, Bitmap.Config.ARGB_8888)
+                val opx = IntArray(outPlane)
+                for (i in 0 until outPlane) {
+                    val r = (fb[i] * 255f).coerceIn(0f, 255f).toInt()
+                    val g = (fb[outPlane + i] * 255f).coerceIn(0f, 255f).toInt()
+                    val b = (fb[2 * outPlane + i] * 255f).coerceIn(0f, 255f).toInt()
+                    opx[i] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+                }
+                bmp.setPixels(opx, 0, outT, 0, 0, outT, outT)
+                return bmp
+            }
+        }
     }
 }

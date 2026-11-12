@@ -187,6 +187,8 @@ data class ReaderPrefs(
     val cropLevel: Int = 1,
     /** 在线黑白漫画 AI 上色（模型约 59MB 首次使用时下载） */
     val colorizeOnline: Boolean = false,
+    /** 在线页画质增强（超分，模型 2.4MB 随包内置）：0 关 / 1 自动（仅低清页） / 2 全页 */
+    val srMode: Int = 0,
     /** 上色风格：anime 动漫（manga-colorization-v2）/ realistic 写实（DDColor） */
     val colorizeStyle: String = "anime",
     val rightToLeft: Boolean = true,
@@ -236,6 +238,7 @@ data class ReaderPrefs(
         put("autoCropOnline", autoCropOnline)
         put("cropLevel", cropLevel)
         put("colorizeOnline", colorizeOnline)
+        put("srMode", srMode)
         put("colorizeStyle", colorizeStyle)
         put("grayscale", grayscale)
         put("autoContrast", autoContrast)
@@ -264,6 +267,7 @@ data class ReaderPrefs(
             autoCropOnline = o.optBoolean("autoCropOnline"),
             cropLevel = o.optInt("cropLevel", 1).coerceIn(0, 2),
             colorizeOnline = o.optBoolean("colorizeOnline"),
+            srMode = o.optInt("srMode"),
             colorizeStyle = o.optString("colorizeStyle", "anime"),
             rightToLeft = o.optBoolean("rightToLeft", true),
             splitWidePages = o.optBoolean("splitWidePages", true),

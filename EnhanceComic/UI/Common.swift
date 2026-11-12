@@ -82,14 +82,15 @@ final class RemoteImageLoader {
 
     func cached(
         _ url: String, maxPixel: CGFloat, headers: [String: String]? = nil, num: Int = 0, crop: Int = 0,
-        colorize: Int = 0
+        colorize: Int = 0, sr: Int = 0
     ) -> UIImage? {
-        cache.object(forKey: Self.cacheKey(url, maxPixel, headers, num, crop, colorize) as NSString)
+        cache.object(forKey: Self.cacheKey(url, maxPixel, headers, num, crop, colorize, sr) as NSString)
     }
 
     /// maxPixel 是物理像素上限：图再大也只解到这个尺寸（省内存也省 CPU）
     /// - headers: 源在 onImageLoad 里给的请求头（Referer 等），不给会被防盗链拒
     /// - num: 禁漫的分块乱序段数，>1 时按段倒序还原（不还原整页是错位横条）
+    /// - sr: 画质增强（超分）：0 关 / 1 自动（仅低清页） / 2 全页
     func image(
         _ url: String,
         referer: String? = nil,
@@ -97,10 +98,11 @@ final class RemoteImageLoader {
         num: Int = 0,
         maxPixel: CGFloat = 1200,
         crop: Int = 0,
-        colorize: Int = 0
+        colorize: Int = 0,
+        sr: Int = 0
     ) async -> UIImage? {
         guard !url.isEmpty else { return nil }
-        let key = Self.cacheKey(url, maxPixel, headers, num, crop, colorize)
+        let key = Self.cacheKey(url, maxPixel, headers, num, crop, colorize, sr)
         if let hit = cache.object(forKey: key as NSString) { return hit }
 
         lock.lock()
@@ -117,6 +119,7 @@ final class RemoteImageLoader {
                 maxPixel: maxPixel,
                 crop: crop,
                 colorize: colorize,
+                sr: sr,
                 session: RemoteImageLoader.session
             )
         }
@@ -140,7 +143,7 @@ final class RemoteImageLoader {
 
     private static func cacheKey(
         _ url: String, _ maxPixel: CGFloat, _ headers: [String: String]? = nil, _ num: Int = 0,
-        _ crop: Int = 0, _ colorize: Int = 0
+        _ crop: Int = 0, _ colorize: Int = 0, _ sr: Int = 0
     ) -> String {
         let bucket = Int(max(320, maxPixel) / 320)
         // 请求头会改变拿到的图（Referer 不同可能一个是 403），必须进 key，否则会串图
@@ -148,10 +151,10 @@ final class RemoteImageLoader {
         if let headers, !headers.isEmpty {
             for k in headers.keys.sorted() { h = h &* 31 &+ k.hashValue &+ (headers[k]?.hashValue ?? 0) }
         }
-        // crop / colorize 都进 key：裁没裁、上没上色是不同的图，混用会让开关看起来没反应
-        // 上色结果 key 带管线版本：改了合成逻辑就 bump，旧缓存自动失效
+        // crop / colorize / sr 都进 key：裁没裁、上没上色、增没增强是不同的图，
+        // 混用会让开关看起来没反应。上色结果 key 带管线版本：改了合成逻辑就 bump
         let cz = colorize == 0 ? "0" : "\(colorize).\(COLORIZE_PIPE_VER)"
-        return "\(bucket)|\(num)|\(crop)|\(cz)|\(h)|\(url)"
+        return "\(bucket)|\(num)|\(crop)|\(cz)|\(sr)|\(h)|\(url)"
     }
 
     private static func cost(_ image: UIImage) -> Int {
@@ -167,6 +170,7 @@ final class RemoteImageLoader {
         maxPixel: CGFloat,
         crop: Int,
         colorize: Int,
+        sr: Int,
         session: URLSession
     ) async -> UIImage? {
         guard let u = URL(string: url) else { return nil }
@@ -205,10 +209,21 @@ final class RemoteImageLoader {
             // 裁白边放在最后：先还原分块，再按真实画面找边界
             PageProgress.set(url, 0.84)
             let cropped = crop > 0 ? cropWhite(straight, level: crop - 1) : straight
-            // 黑白上色在裁白边之后：模型吃的是「干净的画面」
-            guard colorize > 0 else { return cropped }
+            // 画质增强（超分）：sr 2=全页；1=自动（仅解码宽低于显示宽 60% 的低清页）
+            PageProgress.set(url, 0.86)
+            var enhanced = cropped
+            if sr > 0, cropped.size.width > 64 {
+                let isLowRes = cropped.size.width < maxPixel * 0.6
+                if sr == 2 || (sr == 1 && isLowRes) {
+                    if let better = await SuperResEngine.enhance(cropped, targetWidth: maxPixel) {
+                        enhanced = better
+                    }
+                }
+            }
+            // 黑白上色在画质增强之后：模型吃的是「干净的画面」
+            guard colorize > 0 else { return enhanced }
             PageProgress.set(url, 0.88)
-            let out = await ColorizeEngine.colorize(cropped)
+            let out = await ColorizeEngine.colorize(enhanced)
             PageProgress.done(url)
             return out
         } catch {
@@ -397,8 +412,10 @@ struct OnlinePageImage: View {
     var fit: Bool = false
     /// 0 = 不裁白边；1/2/3 = 裁（等级 + 1）
     var crop: Int = 0
-    /// 0 = 原图；1 = 黑白上色
+    /// 0 = 黑白上色
     var colorize: Int = 0
+    /// 画质增强（超分）：0 关 / 1 自动（仅低清页） / 2 全页
+    var sr: Int = 0
 
     @Environment(\.displayScale) private var scale
     @State private var image: UIImage?
@@ -445,7 +462,7 @@ struct OnlinePageImage: View {
             }
         }
         .frame(maxWidth: .infinity)
-        .task(id: "\(url)|\(descramble)|\(crop)|\(colorize)|\(attempt)") { await load() }
+        .task(id: "\(url)|\(descramble)|\(crop)|\(colorize)|\(sr)|\(attempt)") { await load() }
     }
 
     /// 页面加载进度条：下载/解码各阶段 + AI 上色提示（对齐安卓 1.9.48）
@@ -478,7 +495,7 @@ struct OnlinePageImage: View {
     private func load() async {
         let width = UIScreen.main.bounds.width * max(scale, 2)
         if let hit = RemoteImageLoader.shared.cached(
-            url, maxPixel: width, headers: headers, num: descramble, crop: crop, colorize: colorize
+            url, maxPixel: width, headers: headers, num: descramble, crop: crop, colorize: colorize, sr: sr
         ) {
             image = hit
             failed = false
@@ -486,7 +503,7 @@ struct OnlinePageImage: View {
         }
         let got = await RemoteImageLoader.shared.image(
             url, referer: referer, headers: headers, num: descramble, maxPixel: width, crop: crop,
-            colorize: colorize
+            colorize: colorize, sr: sr
         )
         if Task.isCancelled { return }
         image = got

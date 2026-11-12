@@ -212,6 +212,10 @@ struct OnlineSettingsPanel: View {
         prefs.colorizeOnline ? "开" : "关"
     }
 
+    private var srLabel: String {
+        ["关", "自动 · 仅低清页", "全页"][min(max(prefs.superResOnline, 0), 2)]
+    }
+
     private var filterLabel: String {
         var on: [String] = []
         if prefs.grayscale { on.append("灰度") }
@@ -225,6 +229,7 @@ struct OnlineSettingsPanel: View {
         case "dir": return "阅读方向"
         case "gap": return "页间距"
         case "crop": return "自动裁白边"
+        case "sr": return "画质增强"
         case "colorize": return "黑白上色"
         case "bright": return "亮度"
         case "blue": return "蓝光过滤"
@@ -255,6 +260,7 @@ struct OnlineSettingsPanel: View {
                             }
                         case 1:
                             row("自动裁白边", cropLabel) { page = "crop" }
+                            row("画质增强", srLabel) { page = "sr" }
                             row("黑白上色", colorizeLabel) { page = "colorize" }
                             row("画面", filterLabel, last: true) { page = "filter" }
                         default:
@@ -467,6 +473,19 @@ struct OnlineSettingsPanel: View {
             }
             note("只裁「整行或整列都是白」的边，画面里的白色气泡和白底对白框不会被切。"
                  + "裁掉超过一半会判定误判，宁可不裁。")
+
+        case "sr":
+            option("关", "不做画质增强", prefs.superResOnline == 0, last: false) {
+                prefs.superResOnline = 0
+            }
+            option("自动 · 仅低清页", "源图比屏幕窄一半以上时才增强（推荐）", prefs.superResOnline == 1, last: false) {
+                prefs.superResOnline = 1
+            }
+            option("全页", "每一页都增强（更清晰，但每页要多等几秒）", prefs.superResOnline == 2, last: true) {
+                prefs.superResOnline = 2
+            }
+            note("把低清源页放大重建：轮廓线更锐、压缩块纹和噪点减少（内置模型 2.4MB，"
+                 + "无需下载）。增强在后台进行，先显示原图、算完自动替换；对白文字保持原样不被重画。")
 
         case "colorize":
             toggleRow("开启", prefs.colorizeOnline) { prefs.colorizeOnline = $0 }

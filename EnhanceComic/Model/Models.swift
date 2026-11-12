@@ -289,6 +289,8 @@ struct ReaderPrefs: Codable, Equatable, Hashable {
     var cropLevel = 1
     /// 在线黑白漫画 AI 上色（manga-colorization-v2，模型约 59MB 首次使用时下载）
     var colorizeOnline = false
+    /// 在线页画质增强（超分 realesr-animevideov3，模型 2.4MB 随包内置）：0 关 / 1 自动（仅低清页） / 2 全页
+    var superResOnline = 0
     var rightToLeft = true
     var splitWidePages = true
     var autoCropWhiteBorders = false
@@ -323,7 +325,7 @@ struct ReaderPrefs: Codable, Equatable, Hashable {
     init() {}
 
     enum CodingKeys: String, CodingKey {
-        case readingMode, onlineLayout, autoCropOnline, cropLevel, colorizeOnline
+        case readingMode, onlineLayout, autoCropOnline, cropLevel, colorizeOnline, superResOnline
         case rightToLeft, splitWidePages, autoCropWhiteBorders
         case doublePage, forceSpread
         case pageGapPercent, grayscale, autoContrast, invert, blueLight
@@ -338,6 +340,7 @@ struct ReaderPrefs: Codable, Equatable, Hashable {
         autoCropOnline = (try? c.decode(Bool.self, forKey: .autoCropOnline)) ?? false
         cropLevel = min(max((try? c.decode(Int.self, forKey: .cropLevel)) ?? 1, 0), 2)
         colorizeOnline = (try? c.decode(Bool.self, forKey: .colorizeOnline)) ?? false
+        superResOnline = min(max((try? c.decode(Int.self, forKey: .superResOnline)) ?? 0, 0), 2)
         rightToLeft = (try? c.decode(Bool.self, forKey: .rightToLeft)) ?? true
         splitWidePages = (try? c.decode(Bool.self, forKey: .splitWidePages)) ?? true
         autoCropWhiteBorders = (try? c.decode(Bool.self, forKey: .autoCropWhiteBorders)) ?? false

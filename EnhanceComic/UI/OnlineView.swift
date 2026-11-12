@@ -1055,6 +1055,11 @@ struct OnlineReader: View {
         store.prefs.autoCropOnline ? store.prefs.cropLevel + 1 : 0
     }
 
+    /// 画质增强（超分）模式：0 关 / 1 自动 / 2 全页
+    private var srMode: Int {
+        store.prefs.superResOnline
+    }
+
     /// 黑白上色；0 = 关
     private var colorizeLevel: Int {
         store.prefs.colorizeOnline ? 1 : 0
@@ -1312,7 +1317,8 @@ struct OnlineReader: View {
                 descramble: p.num,
                 fit: fit,
                 crop: cropLevel,
-                colorize: colorizeLevel
+                colorize: colorizeLevel,
+                sr: srMode
             )
             .task(id: p.url) { prefetch(i) }
         } else if let f = fails[i] {
@@ -1505,11 +1511,11 @@ struct OnlineReader: View {
             Task { @MainActor in
                 await ensure(next)
                 guard let p = pages[next] else { return }
-                let width = UIScreen.main.bounds.width * 3
-                _ = await RemoteImageLoader.shared.image(
-                    p.url, headers: p.headers, num: p.num, maxPixel: width, crop: cropLevel,
-                    colorize: colorizeLevel
-                )
+                    let width = UIScreen.main.bounds.width * 3
+                    _ = await RemoteImageLoader.shared.image(
+                        p.url, headers: p.headers, num: p.num, maxPixel: width, crop: cropLevel,
+                        colorize: colorizeLevel, sr: srMode
+                    )
             }
         }
     }

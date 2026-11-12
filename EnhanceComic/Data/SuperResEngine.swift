@@ -63,7 +63,7 @@ enum SuperResEngine {
         // ---- 处理尺寸：长边 ≤ maxSide，宽高 pad 到 tile 倍数 ----
         var pw = w0, ph = h0
         let long = max(w0, h0)
-        if long > maxSide {
+        if CGFloat(long) > maxSide {
             let k = maxSide / CGFloat(long)
             pw = Int((CGFloat(w0) * k).rounded())
             ph = Int((CGFloat(h0) * k).rounded())
@@ -166,7 +166,7 @@ enum SuperResEngine {
                 }
                 return px
             }
-            return image(fromRGBA: rgba, width: outTile, height: outTile)
+            return image(fromRGBA: rgba, width: outTile, height: outTile)?.cgImage
         } catch {
             return nil
         }
@@ -186,11 +186,11 @@ enum SuperResEngine {
             ) else { return false }
             ctx.interpolationQuality = .high
             // CGContext 原点左下：内容放高 y 区（= 图像顶部），pad 落在图像底部
-            ctx.draw(cg, in: CGRect(x: 0, y: CGFloat(th - ph), width: pw, height: ph))
+            ctx.draw(cg, in: CGRect(x: 0, y: CGFloat(th - ph), width: CGFloat(pw), height: CGFloat(ph)))
             return true
         }
         guard ok else { return nil }
-        return buf.withUnsafeBytes { ptr in
+        return buf.withUnsafeMutableBytes { ptr in
             CGContext(
                 data: ptr.baseAddress, width: tw, height: th, bitsPerComponent: 8,
                 bytesPerRow: tw * 4, space: CGColorSpaceCreateDeviceRGB(),
@@ -213,7 +213,7 @@ enum SuperResEngine {
             return true
         }
         guard ok else { return nil }
-        return buf.withUnsafeBytes { ptr in
+        return buf.withUnsafeMutableBytes { ptr in
             CGContext(
                 data: ptr.baseAddress, width: w, height: h, bitsPerComponent: 8,
                 bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
@@ -254,7 +254,7 @@ enum SuperResEngine {
             if mask > 0 {
                 for k in 0..<3 {
                     let e = CGFloat(eBuf[i + k]), o = CGFloat(oBuf[i + k])
-                    out[i + k] = clampByte(o * mask + e * (1 - mask))
+                    out[i + k] = clampByte(Float(o * mask + e * (1 - mask)))
                 }
             } else {
                 out[i] = eBuf[i]; out[i + 1] = eBuf[i + 1]; out[i + 2] = eBuf[i + 2]

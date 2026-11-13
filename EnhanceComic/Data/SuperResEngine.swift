@@ -9,8 +9,12 @@ import OnnxRuntimeBindings
 /// 输出 [1,3,1024,1024]（0..1）—— 固定 4 倍。纯卷积 → 分块推理无缝可行。
 ///
 /// 策略（与选型报告一致）：
-///   - 处理尺寸：长边 ≤1024（内存/耗时控制），不足的维度用边缘色 pad 到 256 倍数；
-///   - 分块：256×256 tile、重叠 8px（输出裁 32px），消除卷积边缘伪影；
+///   - 处理尺寸：长边 ≤1024（内存/耗时控制）；
+///   - 真重叠分块：步进 240、tile 256（每块带 8px 真实上下文），输出四边各裁 32px
+///     上下文环后有效区 960，与邻块**恰好无缝衔接**——旧版「源 tile 零重叠却裁输出」
+///     会在每 1024 输出行处留下 64px 纯黑横带（1.9.82 真机事故）；
+///   - 兜底底图：拼合画布先整幅铺「画布 4x 放大」，任何 tile 推理失败都回退到放大
+///     原图，绝不露黑块；
 ///   - line-mix：暗部（原线稿 Y<0.45）保持「原图放大」的亮度与色度（防文字/网点被
 ///     GAN 重画），其余用模型输出——与上色引擎同一套混合思路；
 ///   - 输出缩回目标显示宽度（调用方传），绝不把 4x 大图直接塞进缓存。
@@ -60,7 +64,7 @@ enum SuperResEngine {
     private static func runCore(_ cg: CGImage, session: ORTSession, targetWidth: CGFloat) -> UIImage? {
         let w0 = cg.width, h0 = cg.height
 
-        // ---- 处理尺寸：长边 ≤ maxSide，宽高 pad 到 tile 倍数 ----
+        // ---- 处理尺寸：长边 ≤ maxSide ----
         var pw = w0, ph = h0
         let long = max(w0, h0)
         if CGFloat(long) > maxSide {
@@ -68,49 +72,49 @@ enum SuperResEngine {
             pw = Int((CGFloat(w0) * k).rounded())
             ph = Int((CGFloat(h0) * k).rounded())
         }
-        let tw = ((pw + tile - 1) / tile) * tile
-        let th = ((ph + tile - 1) / tile) * tile
 
-        // ---- 处理尺寸的 RGBA 位图（pad 区域用边缘像素色填充，避免 pad 黑边被模型增强）----
-        guard let full = makePaddedBitmap(cg, pw: pw, ph: ph, tw: tw, th: th) else { return nil }
+        // ---- 真重叠分块：步进 240（有效格）、tile 256（两侧各 8px 上下文） ----
+        let stride = tile - 2 * overlap          // 240
+        let cols = (pw + stride - 1) / stride
+        let rows = (ph + stride - 1) / stride
+        let cw = max(pw + 2 * overlap, (cols - 1) * stride + tile)   // 画布宽：含 8px 边距，不足处黑 pad
+        let ch = max(ph + 2 * overlap, (rows - 1) * stride + tile)
 
-        // ---- 分块推理 ----
-        let outTile = tile * 4
-        let outOverlap = overlap * 4
-        let bigW = tw * 4, bigH = th * 4
+        guard let full = makePaddedBitmap(cg, pw: pw, ph: ph, cw: cw, ch: ch) else { return nil }
+
+        // ---- 拼合画布：先整幅铺画布 4x 放大作兜底底图（tile 失败回退放大原图，不露黑）----
+        let outCtx = overlap * 4                 // 32：输出上下文环
+        let outValid = stride * 4                // 960：块有效区
+        let bigW = cw * 4, bigH = ch * 4
         guard let bigCtx = CGContext(
             data: nil, width: bigW, height: bigH, bitsPerComponent: 8, bytesPerRow: 0,
             space: CGColorSpaceCreateDeviceRGB(),
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
         ) else { return nil }
+        bigCtx.interpolationQuality = .high
+        bigCtx.draw(full, in: CGRect(x: 0, y: 0, width: CGFloat(bigW), height: CGFloat(bigH)))
 
-        let cols = tw / tile
-        let rows = th / tile
         for r in 0..<rows {
             for c in 0..<cols {
-                let sx = c * tile, sy = r * tile
+                let sx = c * stride, sy = r * stride
                 autoreleasepool {
                     guard let tileImg = full.cropping(to: CGRect(x: sx, y: sy, width: tile, height: tile)) else { return }
-                    guard let out = infer(tileImg, session: session) else { return }
-                    // 裁掉重叠边缘（边缘受卷积 padding 影响）
-                    let cutX = (c == 0 ? 0 : outOverlap)
-                    let cutY = (r == 0 ? 0 : outOverlap)
-                    let srcX = cutX, srcY = cutY
-                    let srcW = outTile - cutX - (c == cols - 1 ? 0 : outOverlap)
-                    let srcH = outTile - cutY - (r == rows - 1 ? 0 : outOverlap)
-                    if let piece = out.cropping(to: CGRect(x: srcX, y: srcY, width: srcW, height: srcH)) {
-                        // CGContext 原点在左下：输出的行方向要翻转
-                        let dy = bigH - (r * tile * 4) - srcH - cutY
-                        bigCtx.draw(piece, in: CGRect(x: CGFloat(c * tile * 4 + cutX), y: CGFloat(dy), width: CGFloat(srcW), height: CGFloat(srcH)))
-                    }
+                    guard let out = infer(tileImg, session: session) else { return }   // 失败 → 保留底图
+                    // 裁掉四边上下文环（各 32px），有效区 960×960
+                    guard let piece = out.cropping(to: CGRect(x: outCtx, y: outCtx, width: outValid, height: outValid)) else { return }
+                    // 有效区左上角（top-down）= (c*960+32, r*960+32)，与邻块恰好无缝衔接；
+                    // CGContext 原点左下，需换算绘制 y
+                    let bx = c * outValid + outCtx
+                    let byTop = r * outValid + outCtx
+                    bigCtx.draw(piece, in: CGRect(x: CGFloat(bx), y: CGFloat(bigH - byTop - outValid), width: CGFloat(outValid), height: CGFloat(outValid)))
                 }
             }
         }
         guard let big = bigCtx.makeImage() else { return nil }
 
-        // ---- 裁掉 pad、缩回目标宽度 ----
-        let outW = Int((CGFloat(pw) * 4).rounded()), outH = Int((CGFloat(ph) * 4).rounded())
-        guard let unpadded = big.cropping(to: CGRect(x: 0, y: bigH - outH, width: outW, height: outH)) else { return nil }
+        // ---- 裁出内容区（输出坐标从 +32 起，尺寸 pw*4 × ph*4）、缩回目标显示宽度 ----
+        let outW = pw * 4, outH = ph * 4
+        guard let unpadded = big.cropping(to: CGRect(x: outCtx, y: outCtx, width: outW, height: outH)) else { return nil }
         let targetH = max(1, Int((CGFloat(outH) / CGFloat(outW) * targetWidth).rounded()))
         guard let sized = scaleTo(unpadded, w: Int(targetWidth), h: targetH) else { return nil }
 
@@ -174,26 +178,26 @@ enum SuperResEngine {
 
     // MARK: - 图像工具
 
-    /// 处理尺寸画布：原图画在画布顶部（内容区），底部/右侧 pad 区保持黑色——
-    /// 这些区域会被模型推理，但最终 unpadded 裁剪时全部裁掉
-    private static func makePaddedBitmap(_ cg: CGImage, pw: Int, ph: Int, tw: Int, th: Int) -> CGImage? {
-        var buf = [UInt8](repeating: 0, count: tw * th * 4)
+    /// 处理尺寸画布：四周 8px 黑边距（模型上下文环，输出对应边缘 32px 全部裁掉），
+    /// 内容画在 (overlap, overlap) 起、缩放到 pw×ph，其余黑 pad 在最后裁内容区时全部裁掉。
+    /// CGContext 原点左下：内容画高 y 区（= 图像顶部，top-down 行 [overlap, overlap+ph)）
+    private static func makePaddedBitmap(_ cg: CGImage, pw: Int, ph: Int, cw: Int, ch: Int) -> CGImage? {
+        var buf = [UInt8](repeating: 0, count: cw * ch * 4)
         let ok = buf.withUnsafeMutableBytes { ptr -> Bool in
             guard let ctx = CGContext(
-                data: ptr.baseAddress, width: tw, height: th, bitsPerComponent: 8,
-                bytesPerRow: tw * 4, space: CGColorSpaceCreateDeviceRGB(),
+                data: ptr.baseAddress, width: cw, height: ch, bitsPerComponent: 8,
+                bytesPerRow: cw * 4, space: CGColorSpaceCreateDeviceRGB(),
                 bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
             ) else { return false }
             ctx.interpolationQuality = .high
-            // CGContext 原点左下：内容放高 y 区（= 图像顶部），pad 落在图像底部
-            ctx.draw(cg, in: CGRect(x: 0, y: CGFloat(th - ph), width: CGFloat(pw), height: CGFloat(ph)))
+            ctx.draw(cg, in: CGRect(x: CGFloat(overlap), y: CGFloat(ch - overlap - ph), width: CGFloat(pw), height: CGFloat(ph)))
             return true
         }
         guard ok else { return nil }
         return buf.withUnsafeMutableBytes { ptr in
             CGContext(
-                data: ptr.baseAddress, width: tw, height: th, bitsPerComponent: 8,
-                bytesPerRow: tw * 4, space: CGColorSpaceCreateDeviceRGB(),
+                data: ptr.baseAddress, width: cw, height: ch, bitsPerComponent: 8,
+                bytesPerRow: cw * 4, space: CGColorSpaceCreateDeviceRGB(),
                 bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
             )?.makeImage()
         }

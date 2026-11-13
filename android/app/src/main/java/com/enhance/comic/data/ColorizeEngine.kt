@@ -590,8 +590,11 @@ object ColorizeEngine {
  * 选自 Tomoali/realesr-animevideov3-onnx，BSD-3-Clause，上游 xinntao/Real-ESRGAN）。
  *
  * 固定输入 [1,3,256,256]（RGB 0..1 NCHW）→ 输出 [1,3,1024,1024]（4x）。
- * 策略：处理尺寸长边 ≤1024、pad 到 256 倍数、分块推理（重叠 8px）、
- * 拼接后裁 pad、缩回目标显示宽度，最后 line-mix（暗部用原图，防文字/网点被 GAN 重画）。
+ * 策略：处理尺寸长边 ≤1024；真重叠分块——步进 240、tile 256（每块带 8px 真实上下文），
+ * 输出四边各裁 32px 上下文环后有效区 960，与邻块恰好无缝衔接
+ * （旧版「源 tile 零重叠却裁输出」每 1024 输出行留 64px 黑带，1.9.82 真机事故）；
+ * 拼合画布先整幅铺画布 4x 放大作兜底底图，任何 tile 推理失败回退放大原图；
+ * 最后裁内容区、缩回目标显示宽度、line-mix（暗部用原图，防文字/网点被 GAN 重画）。
  * 任何失败返回 null，调用方回退原图，绝不挡阅读。
  */
 object SuperRes {
@@ -650,39 +653,41 @@ object SuperRes {
             pw = (w0 * k).roundToInt().coerceAtLeast(1)
             ph = (h0 * k).roundToInt().coerceAtLeast(1)
         }
-        val tw = ((pw + TILE - 1) / TILE) * TILE
-        val th = ((ph + TILE - 1) / TILE) * TILE
 
-        // 处理尺寸画布（pad 区黑，最后裁掉）
-        val full = Bitmap.createBitmap(tw, th, Bitmap.Config.ARGB_8888)
+        // 真重叠分块：步进 240（有效格）、tile 256（两侧各 8px 上下文）
+        val stride = TILE - 2 * OVERLAP              // 240
+        val cols = (pw + stride - 1) / stride
+        val rows = (ph + stride - 1) / stride
+        val cw = maxOf(pw + 2 * OVERLAP, (cols - 1) * stride + TILE)  // 画布宽：含 8px 边距，不足处黑 pad
+        val ch = maxOf(ph + 2 * OVERLAP, (rows - 1) * stride + TILE)
+
+        // 处理尺寸画布：四周 8px 黑边距（上下文环），内容画在 (OVERLAP, OVERLAP) 起（左上原点）
+        val full = Bitmap.createBitmap(cw, ch, Bitmap.Config.ARGB_8888)
         val fc = Canvas(full)
         val paint = Paint(Paint.FILTER_BITMAP_FLAG)
-        fc.drawBitmap(Bitmap.createScaledBitmap(input, pw, ph, true), 0f, 0f, paint)
+        fc.drawBitmap(Bitmap.createScaledBitmap(input, pw, ph, true), OVERLAP.toFloat(), OVERLAP.toFloat(), paint)
 
-        val cols = tw / TILE
-        val rows = th / TILE
-        val outTile = TILE * 4
-        val outOverlap = OVERLAP * 4
-        val big = Bitmap.createBitmap(tw * 4, th * 4, Bitmap.Config.ARGB_8888)
+        val outCtx = OVERLAP * 4         // 32：输出上下文环
+        val outValid = stride * 4        // 960：块有效区
+        val big = Bitmap.createBitmap(cw * 4, ch * 4, Bitmap.Config.ARGB_8888)
         val bc = Canvas(big)
+        // 兜底底图：整幅画布 4x 放大（tile 失败回退放大原图，绝不露黑块）
+        bc.drawBitmap(full, null, android.graphics.Rect(0, 0, big.width, big.height), paint)
 
         for (r in 0 until rows) {
             for (c in 0 until cols) {
-                val tileBmp = Bitmap.createBitmap(full, c * TILE, r * TILE, TILE, TILE)
-                val out = runTile(tileBmp, s) ?: continue
-                val cutX = if (c == 0) 0 else outOverlap
-                val cutY = if (r == 0) 0 else outOverlap
-                val srcW = outTile - cutX - if (c == cols - 1) 0 else outOverlap
-                val srcH = outTile - cutY - if (r == rows - 1) 0 else outOverlap
-                val piece = Bitmap.createBitmap(out, cutX, cutY, srcW, srcH)
-                bc.drawBitmap(piece, (c * TILE * 4 + cutX).toFloat(), (r * TILE * 4 + cutY).toFloat(), paint)
+                val tileBmp = Bitmap.createBitmap(full, c * stride, r * stride, TILE, TILE)
+                val out = runTile(tileBmp, s) ?: continue    // 失败 → 保留底图
+                // 裁掉四边上下文环（各 32px），有效区 960×960，与邻块恰好无缝衔接
+                val piece = Bitmap.createBitmap(out, outCtx, outCtx, outValid, outValid)
+                bc.drawBitmap(piece, (c * outValid + outCtx).toFloat(), (r * outValid + outCtx).toFloat(), paint)
             }
         }
 
-        // 裁掉 pad（内容区在左上），缩回目标显示宽度
+        // 裁出内容区（输出坐标从 +32 起），缩回目标显示宽度
         val outW = (pw * 4f).roundToInt()
         val outH = (ph * 4f).roundToInt()
-        val croppedB = Bitmap.createBitmap(big, 0, 0, outW, outH)
+        val croppedB = Bitmap.createBitmap(big, outCtx, outCtx, outW, outH)
         val targetH = max(1, (outH.toFloat() / outW * targetWidth).roundToInt())
         val sized = Bitmap.createScaledBitmap(croppedB, targetWidth, targetH, true)
 

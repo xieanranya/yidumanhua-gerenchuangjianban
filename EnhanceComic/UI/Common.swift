@@ -209,15 +209,15 @@ final class RemoteImageLoader {
             // 裁白边放在最后：先还原分块，再按真实画面找边界
             PageProgress.set(url, 0.84)
             let cropped = crop > 0 ? cropWhite(straight, level: crop - 1) : straight
-            // 画质增强（超分）：sr 2=全页；1=自动（仅解码宽低于显示宽 60% 的低清页）
+            // 画质增强（超分）：sr 2=全页；1=自动（仅低清页）。
+            // shouldEnhance 里还有两道硬闸：源宽已达显示宽（显示端不放大）→ 跳过；
+            // 长边超处理上限 2 倍（预处理要缩掉一半以上细节）→ 跳过，避免 GAN 臆造。
             PageProgress.set(url, 0.86)
             var enhanced = cropped
-            if sr > 0, cropped.size.width > 64 {
-                let isLowRes = cropped.size.width < maxPixel * 0.6
-                if sr == 2 || (sr == 1 && isLowRes) {
-                    if let better = await SuperResEngine.enhance(cropped, targetWidth: maxPixel) {
-                        enhanced = better
-                    }
+            if SuperResEngine.shouldEnhance(srcW: Int(cropped.size.width), srcH: Int(cropped.size.height),
+                                            targetWidth: maxPixel, mode: sr) {
+                if let better = await SuperResEngine.enhance(cropped, targetWidth: maxPixel) {
+                    enhanced = better
                 }
             }
             // 黑白上色在画质增强之后：模型吃的是「干净的画面」

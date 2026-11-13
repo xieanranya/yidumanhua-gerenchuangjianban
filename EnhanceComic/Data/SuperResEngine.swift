@@ -9,14 +9,19 @@ import OnnxRuntimeBindings
 /// 输出 [1,3,1024,1024]（0..1）—— 固定 4 倍。纯卷积 → 分块推理无缝可行。
 ///
 /// 策略（与选型报告一致）：
-///   - 处理尺寸：长边 ≤1024（内存/耗时控制）；
+///   - 该跳过就跳过（shouldEnhance）：源宽已达显示宽 → 显示端不放大，无信息缺口
+///     可补，GAN 只会引入重绘怪纹理；长边超过处理上限 2 倍 → 预处理要缩掉一半以上
+///     细节，输出=臆造；auto 模式仅低清页；
+///   - 处理尺寸：长边 ≤1536（1.9.84 从 1024 提到 1536——先压到 1024 会丢 30~45% 原生
+///     细节，模型拿到的是「残图」，重绘出的纹理发怪；1536 对常见 720~1280 宽页≈原生）；
 ///   - 真重叠分块：步进 240、tile 256（每块带 8px 真实上下文），输出四边各裁 32px
 ///     上下文环后有效区 960，与邻块**恰好无缝衔接**——旧版「源 tile 零重叠却裁输出」
 ///     会在每 1024 输出行处留下 64px 纯黑横带（1.9.82 真机事故）；
 ///   - 兜底底图：拼合画布先整幅铺「画布 4x 放大」，任何 tile 推理失败都回退到放大
 ///     原图，绝不露黑块；
-///   - line-mix：暗部（原线稿 Y<0.45）保持「原图放大」的亮度与色度（防文字/网点被
-///     GAN 重画），其余用模型输出——与上色引擎同一套混合思路；
+///   - line-mix：暗部/线条（原线稿 Y<0.60，1.9.84 放宽以覆盖笔画反锯齿边缘）混合
+///     「原图放大 + 轻度 unsharp 锐化」（文字/网点不被 GAN 重画，且比纯放大更脆），
+///     其余用模型输出；
 ///   - 输出缩回目标显示宽度（调用方传），绝不把 4x 大图直接塞进缓存。
 /// 任何失败返回 nil，调用方回退原图，绝不挡阅读。
 enum SuperResEngine {
@@ -24,7 +29,7 @@ enum SuperResEngine {
     static let modelResource = "animevideov3_256"
     static let tile = 256
     static let overlap = 8            // 输入重叠像素（输出对应裁 overlap*4）
-    private static let maxSide: CGFloat = 1024
+    private static let maxSide: CGFloat = 1536
 
     private static let runQueue = DispatchQueue(label: "superres.run", qos: .userInitiated)
     nonisolated(unsafe) private static var session: ORTSession?
@@ -41,6 +46,18 @@ enum SuperResEngine {
         env = e
         session = s
         return s
+    }
+
+    /// 是否值得增强（false → 调用方直接用原图，不进推理）。
+    /// - 源宽已达显示宽：显示端不会放大，没有信息缺口可补，GAN 只会引入重绘怪纹理；
+    /// - 长边 > 处理上限 2 倍：预处理必须缩掉一半以上原生细节，模型输出基本=臆造；
+    /// - mode 1（自动）：仅源宽 < 显示宽 60% 的低清页。
+    static func shouldEnhance(srcW: Int, srcH: Int, targetWidth: CGFloat, mode: Int) -> Bool {
+        guard mode > 0, srcW > 64, srcH > 64, targetWidth > 0 else { return false }
+        guard CGFloat(srcW) < targetWidth else { return false }
+        guard CGFloat(max(srcW, srcH)) <= maxSide * 2 else { return false }
+        if mode == 1 { return CGFloat(srcW) < targetWidth * 0.6 }
+        return true
     }
 
     /// 增强一页。
@@ -226,8 +243,8 @@ enum SuperResEngine {
         }
     }
 
-    /// line-mix：暗部（原线稿 Y<0.45）用「原图 Lanczos 放大」的亮度+色度（文字/网点不被
-    /// GAN 重画），其余用模型输出。掩码思路与上色引擎一致。
+    /// line-mix：暗部/线条（原线稿 Y<0.60）用「原图放大 + 轻度 unsharp」（文字/网点不被
+    /// GAN 重画，反锯齿边缘也被掩码覆盖，且锐化弥补低清源放大的发虚），其余用模型输出。
     private static func lineMix(original cg: CGImage, enhanced: CGImage) -> UIImage? {
         let w = enhanced.width, h = enhanced.height
         // 原图缩放到输出尺寸
@@ -250,15 +267,23 @@ enum SuperResEngine {
         _ = draw(enhanced, into: &eBuf)
         _ = draw(origScaled, into: &oBuf)
 
+        // 原图侧轻度 unsharp（半径 2 分离盒模糊，量 0.6）：掩码区内文字/线稿边缘更脆
+        let bBuf = boxBlur(oBuf, w: w, h: h, radius: 2)
+        let amount: Float = 0.6
+
         var out = [UInt8](repeating: 255, count: w * h * 4)
         for i in stride(from: 0, to: w * h * 4, by: 4) {
             let r0 = CGFloat(oBuf[i]) / 255, g0 = CGFloat(oBuf[i + 1]) / 255, b0 = CGFloat(oBuf[i + 2]) / 255
             let ys = 0.299 * r0 + 0.587 * g0 + 0.114 * b0
-            let mask = max(0.0, min(1.0, (0.45 - ys) / 0.22))   // 1 = 暗部
+            let mask = max(0.0, min(1.0, (0.60 - ys) / 0.30))   // 1 = 暗部/线条（覆盖笔画 AA 边缘）
             if mask > 0 {
                 for k in 0..<3 {
-                    let e = CGFloat(eBuf[i + k]), o = CGFloat(oBuf[i + k])
-                    out[i + k] = clampByte(Float(o * mask + e * (1 - mask)))
+                    let e = Float(eBuf[i + k])
+                    let o = Float(oBuf[i + k])
+                    let b = Float(bBuf[i + k])
+                    let sharp = min(255, max(0, o + amount * (o - b)))
+                    let v = Float(sharp) * mask + e * (1 - mask)
+                    out[i + k] = clampByte(v)
                 }
             } else {
                 out[i] = eBuf[i]; out[i + 1] = eBuf[i + 1]; out[i + 2] = eBuf[i + 2]
@@ -267,6 +292,55 @@ enum SuperResEngine {
         }
         guard let img = image(fromRGBA: out, width: w, height: h) else { return UIImage(cgImage: enhanced) }
         return img
+    }
+
+    /// 分离盒模糊（横向+纵向各一遍，半径 r）——unsharp 的模糊基准
+    private static func boxBlur(_ src: [UInt8], w: Int, h: Int, radius: Int) -> [UInt8] {
+        var tmp = [UInt8](repeating: 0, count: w * h * 4)
+        var dst = [UInt8](repeating: 0, count: w * h * 4)
+        let win = 2 * radius + 1
+        // 横向
+        for y in 0..<h {
+            let row = y * w * 4
+            var sr = 0, sg = 0, sb = 0
+            for k in -radius...radius {
+                let xx = min(w - 1, max(0, k)); let i = row + xx * 4
+                sr += Int(src[i]); sg += Int(src[i + 1]); sb += Int(src[i + 2])
+            }
+            for x in 0..<w {
+                let i = row + x * 4
+                tmp[i] = UInt8(min(255, sr / win))
+                tmp[i + 1] = UInt8(min(255, sg / win))
+                tmp[i + 2] = UInt8(min(255, sb / win))
+                tmp[i + 3] = 255
+                let xo = row + max(0, x - radius) * 4
+                let xi = row + min(w - 1, x + radius + 1) * 4
+                sr += Int(src[xi]) - Int(src[xo])
+                sg += Int(src[xi + 1]) - Int(src[xo + 1])
+                sb += Int(src[xi + 2]) - Int(src[xo + 2])
+            }
+        }
+        // 纵向
+        for x in 0..<w {
+            var sr = 0, sg = 0, sb = 0
+            for k in -radius...radius {
+                let yy = min(h - 1, max(0, k)); let i = (yy * w + x) * 4
+                sr += Int(tmp[i]); sg += Int(tmp[i + 1]); sb += Int(tmp[i + 2])
+            }
+            for y in 0..<h {
+                let i = (y * w + x) * 4
+                dst[i] = UInt8(min(255, sr / win))
+                dst[i + 1] = UInt8(min(255, sg / win))
+                dst[i + 2] = UInt8(min(255, sb / win))
+                dst[i + 3] = 255
+                let yo = max(0, y - radius) * w * 4 + x * 4
+                let yi = min(h - 1, y + radius + 1) * w * 4 + x * 4
+                sr += Int(tmp[yi]) - Int(tmp[yo])
+                sg += Int(tmp[yi + 1]) - Int(tmp[yo + 1])
+                sb += Int(tmp[yi + 2]) - Int(tmp[yo + 2])
+            }
+        }
+        return dst
     }
 
     private static func clampByte(_ v: Float) -> UInt8 {

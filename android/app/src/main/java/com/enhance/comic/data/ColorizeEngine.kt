@@ -590,11 +590,15 @@ object ColorizeEngine {
  * 选自 Tomoali/realesr-animevideov3-onnx，BSD-3-Clause，上游 xinntao/Real-ESRGAN）。
  *
  * 固定输入 [1,3,256,256]（RGB 0..1 NCHW）→ 输出 [1,3,1024,1024]（4x）。
- * 策略：处理尺寸长边 ≤1024；真重叠分块——步进 240、tile 256（每块带 8px 真实上下文），
+ * 策略：该跳过就跳过（shouldEnhance）——源宽已达显示宽、或长边超处理上限 2 倍的页
+ * 直接回原图（GAN 只会引入重绘怪纹理/臆造）；
+ * 处理尺寸长边 ≤1536（先压到 1024 会丢 30~45% 原生细节，重绘发怪）；
+ * 真重叠分块——步进 240、tile 256（每块带 8px 真实上下文），
  * 输出四边各裁 32px 上下文环后有效区 960，与邻块恰好无缝衔接
  * （旧版「源 tile 零重叠却裁输出」每 1024 输出行留 64px 黑带，1.9.82 真机事故）；
  * 拼合画布先整幅铺画布 4x 放大作兜底底图，任何 tile 推理失败回退放大原图；
- * 最后裁内容区、缩回目标显示宽度、line-mix（暗部用原图，防文字/网点被 GAN 重画）。
+ * 最后裁内容区、缩回目标显示宽度、line-mix（暗部/线条 Y<0.60 混合
+ * 「原图放大+轻度 unsharp」，其余用模型）。
  * 任何失败返回 null，调用方回退原图，绝不挡阅读。
  */
 object SuperRes {
@@ -609,7 +613,7 @@ object SuperRes {
     private const val SR_BYTES = 2_494_775L
     private const val TILE = 256
     private const val OVERLAP = 8
-    private const val MAX_SIDE = 1024f
+    private const val MAX_SIDE = 1536f
 
     private var session: OrtSession? = null
 
@@ -628,6 +632,17 @@ object SuperRes {
         val s = env.createSession(srFile().path)
         session = s
         return s
+    }
+
+    /** 是否值得增强（false → 调用方直接用原图，不进推理）。
+     *  源宽已达显示宽 → 显示端不放大，无信息缺口；长边 > 上限 2 倍 → 预处理要缩掉一半
+     *  以上细节，输出=臆造；mode 1（自动）仅源宽 < 显示宽 60% 的低清页。 */
+    fun shouldEnhance(srcW: Int, srcH: Int, targetWidth: Int, mode: Int): Boolean {
+        if (mode <= 0 || srcW <= 64 || srcH <= 64 || targetWidth <= 0) return false
+        if (srcW >= targetWidth) return false
+        if (maxOf(srcW, srcH) > MAX_SIDE * 2) return false
+        if (mode == 1) return srcW < targetWidth * 0.6f
+        return true
     }
 
     /** 增强（srMode 2=全页；1=自动——调用方判定低清后调用）。返回 null 表示失败回退。 */
@@ -691,13 +706,16 @@ object SuperRes {
         val targetH = max(1, (outH.toFloat() / outW * targetWidth).roundToInt())
         val sized = Bitmap.createScaledBitmap(croppedB, targetWidth, targetH, true)
 
-        // line-mix：暗部（原线稿 Y<0.45）用原图放大（保文字/网点），其余用模型
+        // line-mix：暗部/线条（原线稿 Y<0.60）用「原图放大 + 轻度 unsharp」——
+        // 文字/网点不被 GAN 重画，AA 边缘被掩码覆盖，锐化弥补低清源放大的发虚
         val origScaled = Bitmap.createScaledBitmap(input, sized.width, sized.height, true)
         val result = Bitmap.createBitmap(sized.width, sized.height, Bitmap.Config.ARGB_8888)
         val ePx = IntArray(sized.width * sized.height)
         val oPx = IntArray(ePx.size)
         sized.getPixels(ePx, 0, sized.width, 0, 0, sized.width, sized.height)
         origScaled.getPixels(oPx, 0, sized.width, 0, 0, sized.width, sized.height)
+        val bPx = boxBlur(oPx, sized.width, sized.height, 2)
+        val amount = 0.6f
         // 先整块铺模型输出，再只重画暗部（暗部占比小，避免逐像素 setPixel 的 JNI 开销）
         result.setPixels(ePx, 0, sized.width, 0, 0, sized.width, sized.height)
         val w = sized.width
@@ -706,24 +724,65 @@ object SuperRes {
             val g0 = (oPx[i] shr 8) and 0xFF
             val b0 = oPx[i] and 0xFF
             val ys = 0.299f * r0 + 0.587f * g0 + 0.114f * b0
-            val mask = ((0.45f - ys) / 0.22f).coerceIn(0f, 1f)
+            val mask = ((0.60f - ys) / 0.30f).coerceIn(0f, 1f)
             if (mask > 0f) {
+                val br = (bPx[i] shr 16) and 0xFF
+                val bg = (bPx[i] shr 8) and 0xFF
+                val bb = bPx[i] and 0xFF
+                val sr2 = (r0 + amount * (r0 - br)).roundToInt().coerceIn(0, 255)
+                val sg2 = (g0 + amount * (g0 - bg)).roundToInt().coerceIn(0, 255)
+                val sb2 = (b0 + amount * (b0 - bb)).roundToInt().coerceIn(0, 255)
                 val er = (ePx[i] shr 16) and 0xFF
                 val eg = (ePx[i] shr 8) and 0xFF
                 val eb = ePx[i] and 0xFF
-                val rr = (oPx[i] and 0xFF000000.toInt()) or
-                    ((r0 * mask + er * (1 - mask)).roundToInt() shl 16) or
-                    ((g0 * mask + eg * (1 - mask)).roundToInt() shl 8) or
-                    (b0 * mask + eb * (1 - mask)).roundToInt()
+                val rr = 0xFF000000.toInt() or
+                    ((sr2 * mask + er * (1 - mask)).roundToInt() shl 16) or
+                    ((sg2 * mask + eg * (1 - mask)).roundToInt() shl 8) or
+                    ((sb2 * mask + eb * (1 - mask)).roundToInt())
                 result.setPixel(i % w, i / w, rr)
             }
         }
         return result
     }
 
-    private fun o0r(y: Int, e: Int, mask: Float): Int = (y * mask + e * (1 - mask)).roundToInt().coerceIn(0, 255)
-    private fun o0g(y: Int, e: Int, mask: Float): Int = (y * mask + e * (1 - mask)).roundToInt().coerceIn(0, 255)
-    private fun o0b(y: Int, e: Int, mask: Float): Int = (y * mask + e * (1 - mask)).roundToInt().coerceIn(0, 255)
+    /** 分离盒模糊（横向+纵向各一遍，半径 r）——unsharp 的模糊基准 */
+    private fun boxBlur(src: IntArray, w: Int, h: Int, radius: Int): IntArray {
+        val tmp = IntArray(src.size)
+        val dst = IntArray(src.size)
+        val win = 2 * radius + 1
+        for (y in 0 until h) {
+            val row = y * w
+            var sr = 0; var sg = 0; var sb = 0
+            for (k in -radius..radius) {
+                val p = src[row + k.coerceIn(0, w - 1)]
+                sr += (p shr 16) and 0xFF; sg += (p shr 8) and 0xFF; sb += p and 0xFF
+            }
+            for (x in 0 until w) {
+                tmp[row + x] = (0xFF shl 24) or ((sr / win) shl 16) or ((sg / win) shl 8) or (sb / win)
+                val po = src[row + (x - radius).coerceIn(0, w - 1)]
+                val pi = src[row + (x + radius + 1).coerceIn(0, w - 1)]
+                sr += ((pi shr 16) and 0xFF) - ((po shr 16) and 0xFF)
+                sg += ((pi shr 8) and 0xFF) - ((po shr 8) and 0xFF)
+                sb += (pi and 0xFF) - (po and 0xFF)
+            }
+        }
+        for (x in 0 until w) {
+            var sr = 0; var sg = 0; var sb = 0
+            for (k in -radius..radius) {
+                val p = tmp[k.coerceIn(0, h - 1) * w + x]
+                sr += (p shr 16) and 0xFF; sg += (p shr 8) and 0xFF; sb += p and 0xFF
+            }
+            for (y in 0 until h) {
+                dst[y * w + x] = (0xFF shl 24) or ((sr / win) shl 16) or ((sg / win) shl 8) or (sb / win)
+                val po = tmp[(y - radius).coerceIn(0, h - 1) * w + x]
+                val pi = tmp[(y + radius + 1).coerceIn(0, h - 1) * w + x]
+                sr += ((pi shr 16) and 0xFF) - ((po shr 16) and 0xFF)
+                sg += ((pi shr 8) and 0xFF) - ((po shr 8) and 0xFF)
+                sb += (pi and 0xFF) - (po and 0xFF)
+            }
+        }
+        return dst
+    }
 
     private fun runTile(tileBmp: Bitmap, s: OrtSession): Bitmap? {
         val plane = TILE * TILE

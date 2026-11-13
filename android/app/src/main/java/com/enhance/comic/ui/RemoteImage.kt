@@ -351,14 +351,13 @@ private suspend fun downloadAndDecodeInner(
     // 裁白边放在最后：先把分块还原成整图，再按真实画面找边界
     val fixed = if (crop > 0) cropWhiteEdges(straight, crop - 1) else straight
     PageProgress.set(url, 0.84f)
-    // 画质增强（超分）：sr 2=全页；1=自动（仅解码宽低于显示宽 60% 的低清页）
+    // 画质增强（超分）：sr 2=全页；1=自动（仅低清页）。
+    // shouldEnhance 内含两道硬闸：源宽已达显示宽（显示端不放大，无信息缺口）→ 跳过；
+    // 长边超处理上限 2 倍（预处理要缩掉一半以上细节）→ 跳过，避免 GAN 臆造纹理。
     PageProgress.set(url, 0.86f)
     var enhanced = fixed
-    if (sr > 0 && fixed.width > 64 && targetWidth > 0) {
-        val isLowRes = fixed.width < targetWidth * 0.6f
-        if (sr == 2 || (sr == 1 && isLowRes)) {
-            com.enhance.comic.data.SuperRes.enhance(fixed, targetWidth)?.let { enhanced = it }
-        }
+    if (com.enhance.comic.data.SuperRes.shouldEnhance(fixed.width, fixed.height, targetWidth, sr)) {
+        com.enhance.comic.data.SuperRes.enhance(fixed, targetWidth)?.let { enhanced = it }
     }
     // 黑白上色在画质增强之后：模型吃的是「干净的画面」；失败回原图
     val out = if (colorize != "0") {

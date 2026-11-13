@@ -273,16 +273,21 @@ enum SuperResEngine {
 
         var out = [UInt8](repeating: 255, count: w * h * 4)
         for i in stride(from: 0, to: w * h * 4, by: 4) {
-            let r0 = CGFloat(oBuf[i]) / 255, g0 = CGFloat(oBuf[i + 1]) / 255, b0 = CGFloat(oBuf[i + 2]) / 255
-            let ys = 0.299 * r0 + 0.587 * g0 + 0.114 * b0
-            let mask = max(0.0, min(1.0, (0.60 - ys) / 0.30))   // 1 = 暗部/线条（覆盖笔画 AA 边缘）
+            // 全程显式 Float（Float/CGFloat 混用会让类型检查器超时）
+            let r0: Float = Float(oBuf[i])
+            let g0: Float = Float(oBuf[i + 1])
+            let b0: Float = Float(oBuf[i + 2])
+            let ys: Float = 0.299 * r0 + 0.587 * g0 + 0.114 * b0
+            let mask: Float = max(0, min(1, (0.60 - ys) / 0.30))   // 1 = 暗部/线条（覆盖笔画 AA 边缘）
             if mask > 0 {
                 for k in 0..<3 {
-                    let e = Float(eBuf[i + k])
-                    let o = Float(oBuf[i + k])
-                    let b = Float(bBuf[i + k])
-                    let sharp = min(255, max(0, o + amount * (o - b)))
-                    let v = Float(sharp) * mask + e * (1 - mask)
+                    let e: Float = Float(eBuf[i + k])
+                    let o: Float = Float(oBuf[i + k])
+                    let bl: Float = Float(bBuf[i + k])
+                    var sharp: Float = o + amount * (o - bl)
+                    if sharp < 0 { sharp = 0 }
+                    if sharp > 255 { sharp = 255 }
+                    let v: Float = sharp * mask + e * (1 - mask)
                     out[i + k] = clampByte(v)
                 }
             } else {

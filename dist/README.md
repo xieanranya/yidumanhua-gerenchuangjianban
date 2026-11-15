@@ -6,7 +6,8 @@
 
 | 平台 | 位置 | 大小 |
 |---|---|---|
-| iOS | 本目录 `EnhanceComic-iOS-v1.9.84.ipa`（未签名，需 Sideloadly / AltStore 签名）；也可到 [Release 页 → v1.9.84](https://github.com/xieanranya/yidumanhua-gerenchuangjianban/releases) | 12.3 MB |
+| iOS | 本目录 `EnhanceComic-iOS-v1.9.84.ipa`（未签名，需 Sideloadly / AltStore 签名）；也可到 [Release 页 → v1.9.84](https://github.com/xieanranya/yidumanhua-gerenchuangjianban/releases) | 11.7 MB |
+| Android | [Release 页 → v1.9.84](https://github.com/xieanranya/yidumanhua-gerenchuangjianban/releases) 资产 `EnhanceComic-Android-v1.9.84.apk`（固定签名，直接覆盖安装） | 49.5 MB |
 
 ## v1.9.84：画质增强效果修复（文字发虚 / 纹理怪）
 
@@ -41,7 +42,7 @@
 |---|---|
 | iOS CFBundleShortVersionString / CFBundleVersion | `1.9.84` / `95` |
 | 内置超分模型 | `animevideov3_256.onnx` 2.38MB ✓ |
-| Android versionName / versionCode（源码同步） | `1.9.84` / `95` |
+| Android versionName / versionCode（源码同步） | `1.9.84` / `95`（APK 已出，签名指纹 d5084caf… 不变） |
 | 分块仿真（无缝/兜底） | 全部 PASS |
 | CI（iOS）| success · gradle compileReleaseKotlin（安卓）| EXIT 0 |
 

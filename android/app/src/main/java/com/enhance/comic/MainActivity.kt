@@ -26,6 +26,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import com.enhance.comic.data.BookStore
+import com.enhance.comic.data.DownloadManager
 import com.enhance.comic.data.OnlineRecord
 import com.enhance.comic.data.SourceEngine
 import com.enhance.comic.data.UiStore
@@ -169,6 +170,12 @@ private fun Root() {
 
     // Books imported before covers existed get one rendered on first launch.
     LaunchedEffect(Unit) {
+        // 下载管理器：启动续传（上次退出时在跑的任务重新排队）
+        DownloadManager.attach(context.applicationContext, store, engine)
+        // 下载过程中有新书注册进书库 → 立即重载书架
+        launch {
+            DownloadManager.bookTick.collect { books = store.loadBooks() }
+        }
         val current = books
         if (current.isEmpty() || current.all { it.coverPath.isNotEmpty() }) return@LaunchedEffect
         val fixed = withContext(Dispatchers.IO) { store.backfillCovers(current) }

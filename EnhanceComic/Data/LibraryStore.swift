@@ -538,6 +538,12 @@ final class LibraryStore: ObservableObject {
 
     // MARK: - Mutations
 
+    /// 新增一本（下载器注册用；import 走自己的批量管线）。
+    func insert(_ book: Book) {
+        books.append(book)
+        save()
+    }
+
     func update(_ book: Book) {
         guard let index = books.firstIndex(where: { $0.id == book.id }) else { return }
         books[index] = book

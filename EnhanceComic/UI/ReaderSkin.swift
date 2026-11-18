@@ -67,6 +67,7 @@ enum Glyph {
     case back, more, check, left, right, sun, crop, spark
     // 底部四个 Tab 与搜索框用的图标，跟上面一套同样的细线风格
     case home, discover, shelf, user, search
+    case down           // 下载（详情页下载按钮 / 书架下载段）
 }
 
 private struct GlyphInk {
@@ -107,6 +108,15 @@ private func glyphInk(_ glyph: Glyph, _ k: CGFloat) -> [GlyphInk] {
             p.addLine(to: point(14.1, 11.2))
             p.move(to: point(9.9, 12.8)); p.addLine(to: point(12, 14.9))
             p.addLine(to: point(14.1, 12.8))
+        }
+
+    case .down:
+        stroke { p in
+            p.move(to: point(12, 4.2)); p.addLine(to: point(12, 14.6))
+            p.move(to: point(7.6, 10.4)); p.addLine(to: point(12, 14.9))
+            p.addLine(to: point(16.4, 10.4))
+            p.move(to: point(4.6, 16.6)); p.addLine(to: point(4.6, 19.4))
+            p.addLine(to: point(19.4, 19.4)); p.addLine(to: point(19.4, 16.6))
         }
 
     case .filter:

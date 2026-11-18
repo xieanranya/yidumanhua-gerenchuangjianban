@@ -222,6 +222,7 @@ struct DetailView: View {
     @EnvironmentObject private var ui: UiStore
     @EnvironmentObject private var store: LibraryStore
     @Environment(\.appColors) private var c
+    @ObservedObject private var dm = DownloadManager.shared
 
     @State private var entryIndex = 0
     @State private var info: [String: Any] = [:]
@@ -340,6 +341,7 @@ struct DetailView: View {
                         }
                         sourceSwitch
                         continueButton
+                        downloadButton
                         chapterGrid
                     }
                 }
@@ -411,6 +413,64 @@ struct DetailView: View {
             .buttonStyle(.plain)
             .padding(.horizontal, 18)
             .padding(.top, 14)
+        }
+    }
+
+    /// 下载全本：状态化按钮（排队/下载中/暂停/完成/部分失败），已存在任务时点击 = 暂停⇄继续
+    @ViewBuilder
+    private var downloadButton: some View {
+        if !chapters.isEmpty {
+            let key = DownloadManager.folderKey(sourceKey: entry.sourceKey, comicId: entry.comicId)
+            let task = dm.tasks.first { $0.id == key }
+            Button {
+                if let t = task {
+                    if t.status != 3 { dm.toggle(t.id) }
+                } else {
+                    dm.start(
+                        sourceKey: entry.sourceKey, sourceName: entry.sourceName,
+                        comicId: entry.comicId, title: title, cover: cover,
+                        chapters: chapters.map { ($0.id, $0.title) }
+                    )
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    GlyphView(glyph: .down, tint: task == nil ? c.accent : c.fg2, size: 13, strokeWidth: 2.2)
+                    Text(downloadLabel(task))
+                        .font(.system(size: 13.5, weight: .semibold))
+                        .lineLimit(1)
+                    if let t = task, (t.status == 0 || t.status == 1), t.totalPages > 0 {
+                        Spacer(minLength: 0)
+                        Text("\(t.donePages)/\(t.totalPages) 页")
+                            .font(.system(size: 10.5))
+                            .foregroundColor(c.fg3)
+                    }
+                }
+                .foregroundColor(task == nil ? c.accent : c.fg)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 12)
+                .background(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(task == nil ? c.accent.opacity(0.10) : c.card)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(task == nil ? c.accent.opacity(0.55) : c.border, lineWidth: 1)
+                )
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 18)
+            .padding(.top, 10)
+        }
+    }
+
+    private func downloadLabel(_ task: DownloadManager.DownloadTask?) -> String {
+        guard let t = task else { return "下载全本（限速由网络决定 · 最多同时 5 本）" }
+        switch t.status {
+        case 0: return "排队中 · \(t.doneChapters)/\(t.chapters.count) 话"
+        case 1: return "下载中 · \(t.doneChapters)/\(t.chapters.count) 话 · \(Int(t.progress * 100))%（点击暂停）"
+        case 2: return "已暂停 · \(Int(t.progress * 100))%（点击继续）"
+        case 3: return "已下载 · \(t.chapters.count) 话全本"
+        default: return "部分章节失败 · 点击重试"
         }
     }
 

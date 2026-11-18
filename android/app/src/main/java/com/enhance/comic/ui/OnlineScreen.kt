@@ -58,6 +58,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -84,6 +85,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.enhance.comic.data.DownloadManager
 import com.enhance.comic.data.OnlineRecord
 import com.enhance.comic.data.SourceEngine
 import com.enhance.comic.data.UiStore
@@ -939,6 +941,52 @@ private fun DetailScreen(
                                 .clickable { onAccount(sourceName) },
                             contentAlignment = Alignment.Center,
                         ) { GlyphView(Glyph.USER, c.fg2, 18.dp) }
+                    }
+                }
+
+                // 下载全本（队列最多同时 5 本，页并行 3 路，速度由网络决定）
+                item {
+                    val dlKey = DownloadManager.folderKey(key, id)
+                    val dl = DownloadManager.tasks.collectAsState().value.firstOrNull { it.id == dlKey }
+                    val dlLabel = when {
+                        dl == null -> "下载全本 · 同时最多 5 本"
+                        dl.status == 0 -> "排队中 · ${dl.doneChapters}/${dl.chapters.size} 话"
+                        dl.status == 1 -> "下载中 · ${dl.doneChapters}/${dl.chapters.size} 话 · ${(dl.progress * 100).toInt()}%（点击暂停）"
+                        dl.status == 2 -> "已暂停 · ${(dl.progress * 100).toInt()}%（点击继续）"
+                        dl.status == 3 -> "已下载全本 · ${dl.chapters.size} 话 · 书架可见"
+                        else -> "部分章节失败 · 点击重试"
+                    }
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 18.dp, vertical = 8.dp)
+                            .height(36.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(if (dl == null) c.accent.copy(alpha = 0.10f) else c.chip)
+                            .clickable {
+                                if (dl == null) {
+                                    DownloadManager.start(
+                                        sourceKey = key,
+                                        sourceName = sourceName,
+                                        comicId = id,
+                                        title = d?.optString("title").orEmpty().ifBlank { title },
+                                        cover = d?.optString("cover").orEmpty(),
+                                        chapters = chapters.map { it.id to it.title },
+                                    )
+                                } else if (dl.status != 3) {
+                                    DownloadManager.toggle(dl.id)
+                                }
+                            },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            dlLabel,
+                            color = if (dl == null) c.accent else c.fg2,
+                            fontSize = 12.5.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
                     }
                 }
 

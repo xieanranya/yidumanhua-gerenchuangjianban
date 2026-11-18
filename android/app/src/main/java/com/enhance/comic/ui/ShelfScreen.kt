@@ -1,6 +1,7 @@
 package com.enhance.comic.ui
 
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
@@ -14,6 +15,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -25,6 +27,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -33,10 +36,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.enhance.comic.data.DownloadManager
 import com.enhance.comic.model.Book
 import com.enhance.comic.model.BookType
 
@@ -75,8 +81,10 @@ fun ShelfScreen(
     val shown = when (filter) {
         1 -> books.filter { it.lastPage > 0 }
         2 -> books.filter { it.lastPage == 0 }
+        3 -> emptyList()
         else -> books
     }
+    val dlTasks = DownloadManager.tasks.collectAsState().value
 
     LazyVerticalGrid(
         columns = GridCells.Fixed(if (c.dark) 3 else 2),
@@ -120,6 +128,7 @@ fun ShelfScreen(
                             .padding(horizontal = 9.dp, vertical = 5.dp),
                     )
                     Spacer(Modifier.width(7.dp))
+                    MiniButton("导入文件夹", onImportFolder)
                     MiniButton("＋ 导入", onImportFiles, accent = true)
                 }
                 Spacer(Modifier.height(12.dp))
@@ -131,8 +140,7 @@ fun ShelfScreen(
                     Chip("全部 ${books.size}", filter == 0) { filter = 0 }
                     Chip("在读 ${books.count { it.lastPage > 0 }}", filter == 1) { filter = 1 }
                     Chip("未读 ${books.count { it.lastPage == 0 }}", filter == 2) { filter = 2 }
-                    Spacer(Modifier.weight(1f))
-                    MiniButton("导入文件夹", onImportFolder)
+                    Chip("下载 ${dlTasks.size}", filter == 3) { filter = 3 }
                 }
             }
         }
@@ -153,7 +161,9 @@ fun ShelfScreen(
             }
         }
 
-        if (reading != null && filter != 2) {
+        if (filter == 3) {
+            item(span = { GridItemSpan(maxLineSpan) }) { DownloadQueueList(books, onOpen) }
+        } else if (reading != null && filter != 2) {
             item(span = { GridItemSpan(maxLineSpan) }) {
                 SectionHeader("继续阅读", inset = false)
             }
@@ -216,6 +226,110 @@ fun ShelfScreen(
                 TextButton(onClick = { pendingDelete = null }) { Text("取消") }
             },
         )
+    }
+}
+
+/** 下载段：队列任务（进度 / 暂停继续 / 删除）；已注册成书库的可以直接点开阅读。 */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun DownloadQueueList(books: List<Book>, onOpen: (Book) -> Unit) {
+    val c = LocalColors.current
+    val tasks = DownloadManager.tasks.collectAsState().value
+    if (tasks.isEmpty()) {
+        EmptyHint(
+            title = "还没有下载任务",
+            message = "在在线漫画的详情页点「下载全本」。\n同时最多 5 本，章内页图并行 3 路，速度由网络决定。",
+            icon = Glyph.SHELF,
+        )
+        return
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
+        tasks.forEach { task ->
+            val path = DownloadManager.bookPath(task.id)
+            val book = books.firstOrNull { it.type == BookType.FOLDER && it.path == path }
+            val status = when (task.status) {
+                0 -> "排队中 · ${task.doneChapters}/${task.chapters.size} 话"
+                1 -> {
+                    val ch = task.chapters.firstOrNull { it.status == 1 }
+                    "下载中 ${(task.progress * 100).toInt()}% · ${task.donePages}/${task.totalPages} 页" +
+                        (ch?.let { " · ${it.title}" } ?: "")
+                }
+                2 -> "已暂停 · ${task.doneChapters}/${task.chapters.size} 话"
+                3 -> "已下载 · ${task.chapters.size} 话 · ${task.totalPages} 页"
+                else -> "部分章节失败 · 点「继续」重试"
+            }
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(androidx.compose.foundation.shape.RoundedCornerShape(11.dp))
+                    .background(c.card2)
+                    .combinedClickable(onClick = { book?.let(onOpen) })
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        Modifier
+                            .width(44.dp)
+                            .height(60.dp)
+                            .clip(androidx.compose.foundation.shape.RoundedCornerShape(7.dp))
+                            .background(c.chip),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        val coverBitmap = book?.coverPath?.let { rememberFileCover(it) }
+                        if (coverBitmap != null) {
+                            Image(
+                                bitmap = coverBitmap,
+                                contentDescription = null,
+                                modifier = Modifier.fillMaxWidth().height(60.dp),
+                                contentScale = ContentScale.Crop,
+                            )
+                        } else {
+                            Text(
+                                task.title.take(1),
+                                color = c.fg3,
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Bold,
+                            )
+                        }
+                    }
+                    Spacer(Modifier.width(10.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            task.title,
+                            color = c.fg,
+                            fontSize = 12.5.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            "${task.sourceName} · $status",
+                            color = c.fg3,
+                            fontSize = 10.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        if (task.status == 0 || task.status == 1 || task.status == 2) {
+                            Spacer(Modifier.height(5.dp))
+                            LinearProgressIndicator(
+                                progress = { task.progress.toFloat() },
+                                modifier = Modifier.fillMaxWidth().height(3.dp)
+                                    .clip(androidx.compose.foundation.shape.RoundedCornerShape(2.dp)),
+                                color = c.accent,
+                                trackColor = c.chip,
+                            )
+                        }
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    if (book != null) MiniButton("阅读", { onOpen(book) }, accent = true)
+                    when (task.status) {
+                        0, 1 -> MiniButton("暂停", { DownloadManager.toggle(task.id) })
+                        2, 4 -> MiniButton("继续", { DownloadManager.toggle(task.id) })
+                    }
+                    MiniButton("删除", { DownloadManager.remove(task.id) })
+                }
+            }
+        }
     }
 }
 

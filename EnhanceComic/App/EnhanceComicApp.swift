@@ -12,6 +12,7 @@ struct EnhanceComicApp: App {
             AppRootView()
                 .environmentObject(store)
                 .environmentObject(ui)
+                .onAppear { DownloadManager.shared.attach(store) }
         }
     }
 }

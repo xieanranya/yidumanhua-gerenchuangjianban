@@ -9,6 +9,7 @@ struct ShelfScreen: View {
     @EnvironmentObject private var ui: UiStore
     @Environment(\.appColors) private var c
     @Environment(\.scenePhase) private var scenePhase
+    @ObservedObject private var dm = DownloadManager.shared
 
     @State private var shelfTab = 0
     @State private var historyTarget: OnlineRecord?
@@ -62,10 +63,11 @@ struct ShelfScreen: View {
                     trailing: AnyView(GlassCircleButton(glyph: .search) { picker = .files })
                 )
 
-                // 收藏（本地书） / 历史（在线记录）分段切换
+                // 收藏（本地书） / 历史（在线记录） / 下载 分段切换
                 HStack(spacing: 8) {
                     segBtn("收藏 · 本地", on: shelfTab == 0) { shelfTab = 0 }
                     segBtn("历史 · 在线", on: shelfTab == 1) { shelfTab = 1 }
+                    segBtn("下载", on: shelfTab == 2) { shelfTab = 2 }
                 }
                 .padding(.horizontal, 18)
                 .padding(.bottom, 6)
@@ -80,7 +82,9 @@ struct ShelfScreen: View {
                         .padding(.top, 10)
                 }
 
-                if shelfTab == 1 {
+                if shelfTab == 2 {
+                    downloadList
+                } else if shelfTab == 1 {
                     // 历史：在线阅读记录（两列封面 + 来源与章节）
                     if ui.history.isEmpty {
                         emptyState
@@ -390,6 +394,127 @@ struct ShelfScreen: View {
         .contentShape(Rectangle())
         .onTapGesture { openBook = book }
         .onLongPressGesture { pendingDelete = book }
+    }
+
+    // MARK: - 下载段（在线书离线队列）
+
+    private func downloadedBook(_ task: DownloadManager.DownloadTask) -> Book? {
+        store.books.first { $0.type == .folder && $0.relativePath == DownloadManager.relativePath(task.id) }
+    }
+
+    private func dlStatusText(_ t: DownloadManager.DownloadTask) -> String {
+        let ch = t.chapters.first { $0.status == 1 }
+        let tail = ch.map { " · \($0.title)" } ?? ""
+        switch t.status {
+        case 0: return "排队中 · \(t.doneChapters)/\(t.chapters.count) 话\(tail)"
+        case 1: return "下载中 \(Int(t.progress * 100))% · \(t.donePages)/\(t.totalPages) 页\(tail)"
+        case 2: return "已暂停 · \(t.doneChapters)/\(t.chapters.count) 话"
+        case 3: return "已下载 · \(t.chapters.count) 话 · \(t.totalPages) 页"
+        default: return "部分章节失败 · 点击继续可重试"
+        }
+    }
+
+    @ViewBuilder
+    private var downloadList: some View {
+        if dm.tasks.isEmpty {
+            emptyState
+        } else {
+            LazyVStack(alignment: .leading, spacing: 10) {
+                ForEach(dm.tasks) { task in
+                    let book = downloadedBook(task)
+                    Button {
+                        if let book { openBook = book }
+                    } label: {
+                        HStack(spacing: 12) {
+                            ZStack {
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .fill(coverGradient(seed: task.title.hashValue, dark: c.dark))
+                                if let book, let cover = CoverCache.image(at: store.coverURL(for: book)) {
+                                    Image(uiImage: cover).resizable().scaledToFill()
+                                } else {
+                                    RemoteCover(url: task.cover, title: task.title, seed: task.comicId.hashValue)
+                                }
+                            }
+                            .frame(width: 52, height: 70)
+                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .stroke(c.border, lineWidth: 0.5)
+                            )
+
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(task.title)
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundColor(c.fg)
+                                    .lineLimit(1)
+                                Text("\(task.sourceName) · \(dlStatusText(task))")
+                                    .font(.system(size: 10))
+                                    .foregroundColor(c.fg3)
+                                    .lineLimit(1)
+                                if task.status == 0 || task.status == 1 || task.status == 2 {
+                                    GeometryReader { geo in
+                                        ZStack(alignment: .leading) {
+                                            Rectangle().fill(c.border)
+                                            Rectangle()
+                                                .fill(c.accent)
+                                                .frame(width: geo.size.width * CGFloat(max(0.02, task.progress)))
+                                        }
+                                    }
+                                    .frame(height: 3)
+                                    .clipShape(Capsule())
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+
+                            if book != nil {
+                                Text("阅读")
+                                    .font(.system(size: 10.5, weight: .semibold))
+                                    .foregroundColor(c.accent)
+                            }
+                            Button {
+                                dm.toggle(task.id)
+                            } label: {
+                                Text(task.status == 1 || task.status == 0 ? "暂停" : (task.status == 2 || task.status == 4 ? "继续" : ""))
+                                    .font(.system(size: 10.5, weight: .semibold))
+                                    .foregroundColor(c.fg2)
+                                    .padding(.horizontal, 9)
+                                    .padding(.vertical, 5)
+                                    .background(c.card)
+                                    .clipShape(Capsule())
+                                    .overlay(Capsule().stroke(c.border, lineWidth: 0.5))
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(task.status == 3)
+                            Button {
+                                dm.remove(task.id)
+                            } label: {
+                                Text("删除")
+                                    .font(.system(size: 10.5, weight: .semibold))
+                                    .foregroundColor(c.fg3)
+                                    .padding(.horizontal, 9)
+                                    .padding(.vertical, 5)
+                                    .background(c.card)
+                                    .clipShape(Capsule())
+                                    .overlay(Capsule().stroke(c.border, lineWidth: 0.5))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .background(c.card)
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .stroke(c.border, lineWidth: 0.5)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 18)
+            .padding(.top, 8)
+            .padding(.bottom, 26)
+        }
     }
 
     private func runImport(_ urls: [URL]) {

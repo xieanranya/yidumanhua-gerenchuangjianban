@@ -302,7 +302,8 @@ final class RemoteImageLoader {
 
     /// 禁漫把一页按高度切成 num 段再倒序拼回去。还原 = 第 num-1 段放最上、第 0 段放最下。
     /// 段划分与源里 modifyImage 的算法一致（最后一段吃掉余数）。
-    private static func descramble(_ image: UIImage, num: Int) -> UIImage? {
+    /// JM 乱序还原（按高度切 num 段倒序重拼）。下载器（DownloadManager）也用它。
+    static func descramble(_ image: UIImage, num: Int) -> UIImage? {
         guard num > 1, let cg = image.cgImage else { return image }
         let w = cg.width
         let h = cg.height

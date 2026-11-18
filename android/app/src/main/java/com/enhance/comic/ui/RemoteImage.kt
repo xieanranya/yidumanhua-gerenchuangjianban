@@ -190,8 +190,9 @@ private fun sampleSizeFor(w: Int, h: Int, targetW: Int): Int {
 /**
  * 禁漫把一页按高度切成 num 段再倒序拼回去，还原就是第 num-1 段放最上、第 0 段放最下。
  * 段划分与源里 modifyImage 的算法一致（最后一段吃掉余数）。
+ * 下载器（DownloadManager）也用它。
  */
-private fun descramble(src: Bitmap, num: Int): Bitmap {
+internal fun descramble(src: Bitmap, num: Int): Bitmap {
     if (num <= 1) return src
     val w = src.width
     val h = src.height

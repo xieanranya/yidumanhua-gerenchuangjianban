@@ -103,17 +103,38 @@ final class BookSession: @unchecked Sendable {
             resolvedChapters = [Chapter(title: "", start: 0, count: count)]
 
         case .folder:
-            let contents = (try? FileManager.default.contentsOfDirectory(
-                at: fileURL,
-                includingPropertiesForKeys: nil
-            )) ?? []
-            let pages = contents
-                .filter { PageFiles.isImage($0.lastPathComponent) }
-                .sorted { PageFiles.naturalLess($0.lastPathComponent, $1.lastPathComponent) }
-            guard !pages.isEmpty else { return nil }
-            self.imageURLs = pages
-            count = pages.count
-            resolvedChapters = [Chapter(title: "", start: 0, count: count)]
+            // 递归收集图片：子目录 = 章节（目录名即章节名），在线下载的离线书就是这个结构。
+            // 顶层 cover.jpg / cover-page.jpg 是书库封面，不算页。
+            let fm = FileManager.default
+            var found: [URL] = []
+            func walk(_ dir: URL) {
+                let items = (try? fm.contentsOfDirectory(
+                    at: dir,
+                    includingPropertiesForKeys: [.isDirectoryKey]
+                )) ?? []
+                for item in items {
+                    let name = item.lastPathComponent
+                    if name == "cover.jpg" || name == "cover-page.jpg" { continue }
+                    let isDir = (try? item.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
+                    if isDir {
+                        walk(item)
+                    } else if PageFiles.isImage(name) {
+                        found.append(item)
+                    }
+                }
+            }
+            walk(fileURL)
+            // 先按所在子目录自然序、再按文件名自然序 —— 同目录连续段即章节
+            found.sort { a, b in
+                let da = a.deletingLastPathComponent().path
+                let db = b.deletingLastPathComponent().path
+                if da != db { return PageFiles.naturalLess(da, db) }
+                return PageFiles.naturalLess(a.lastPathComponent, b.lastPathComponent)
+            }
+            guard !found.isEmpty else { return nil }
+            self.imageURLs = found
+            count = found.count
+            resolvedChapters = Chapter.build(from: found.map { $0.path })
         }
 
         self.chapters = resolvedChapters

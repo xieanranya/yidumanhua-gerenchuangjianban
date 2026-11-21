@@ -1,7 +1,7 @@
 import Foundation
 import UIKit
 import ImageIO
-import AVFoundation
+import SwiftUI
 
 /// 离线导出工具：整本 CBZ（STORE 方式 zip）+ 单张页图（JPG / PNG / WebP）。
 ///
@@ -120,12 +120,12 @@ enum ExportKit {
         }
     }
 
-    /// iOS 14+ 的 ImageIO 支持 WebP 编码；失败由调用方回退 JPEG。
+    /// ImageIO 的 WebP 编码（iOS 14+）；不支持时由调用方回退 JPEG。
     private static func webpData(_ image: UIImage) -> Data? {
         guard let cg = image.cgImage else { return nil }
         let out = NSMutableData()
         guard let dest = CGImageDestinationCreateWithData(
-            out, AVFileType.webP.rawValue as CFString, 1, nil
+            out, "public.webp" as CFString, 1, nil
         ) else { return nil }
         CGImageDestinationAddImage(dest, cg, nil)
         guard CGImageDestinationFinalize(dest) else { return nil }

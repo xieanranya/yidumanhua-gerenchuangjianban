@@ -35,6 +35,7 @@ import com.enhance.comic.ui.AppFrame
 import com.enhance.comic.ui.AppTab
 import com.enhance.comic.ui.DiscoverScreen
 import com.enhance.comic.ui.DiscoverState
+import com.enhance.comic.ui.DownloadCenterScreen
 import com.enhance.comic.ui.ExploreCache
 import com.enhance.comic.ui.HistoryScreen
 import com.enhance.comic.ui.HomeScreen
@@ -125,6 +126,8 @@ private sealed class Overlay {
         val alts: List<WorkEntry> = emptyList(),
     ) : Overlay()
     object History : Overlay()
+    /** 下载中心：集中管理下载任务 + 导出 */
+    object DownloadCenter : Overlay()
 }
 
 @Composable
@@ -281,6 +284,12 @@ private fun Root() {
                         },
                     )
 
+                    over is Overlay.DownloadCenter -> DownloadCenterScreen(
+                        books = books,
+                        onBack = { overlay = null },
+                        onOpenBook = { openBook = it },
+                    )
+
                     over is Overlay.Online -> OnlineSourceScreen(
                         startKey = over.key,
                         startComicId = over.comicId,
@@ -371,6 +380,7 @@ private fun Root() {
                                 },
                                 onSourceManager = { overlay = Overlay.Online(null, null, "") },
                                 onHistory = { overlay = Overlay.History },
+                                onDownloads = { overlay = Overlay.DownloadCenter },
                                 onShelf = { switchTab(AppTab.SHELF) },
                             )
                         }

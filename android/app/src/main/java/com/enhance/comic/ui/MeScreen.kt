@@ -23,6 +23,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -34,6 +35,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.enhance.comic.data.DownloadManager
 import com.enhance.comic.data.OnlineRecord
 import com.enhance.comic.data.SourceEngine
 import com.enhance.comic.data.UiStore
@@ -52,12 +54,20 @@ fun MeScreen(
     onTheme: (ThemeMode) -> Unit,
     onSourceManager: () -> Unit,
     onHistory: () -> Unit,
+    onDownloads: () -> Unit,
     onShelf: () -> Unit,
 ) {
     val c = LocalColors.current
     var rows by remember { mutableStateOf<List<SourceRow>>(emptyList()) }
     var pickTheme by remember { mutableStateOf(false) }
     var about by remember { mutableStateOf(false) }
+    val dlTasks = DownloadManager.tasks.collectAsState().value
+    val downloadDesc = when {
+        dlTasks.isEmpty() -> "离线下载 · 导出 CBZ / 图片"
+        dlTasks.any { it.status == 0 || it.status == 1 } ->
+            "${dlTasks.count { it.status == 0 || it.status == 1 }} 个下载中 · ${dlTasks.count { it.status == 3 }} 个已完成"
+        else -> "${dlTasks.size} 个任务 · ${dlTasks.count { it.status == 3 }} 个已完成"
+    }
 
     LaunchedEffect(sourceRev) {
         runCatching {
@@ -130,6 +140,14 @@ fun MeScreen(
                     desc = if (recordCount == 0) "还没有在线记录" else "在线 · 最近 $recordCount 条",
                     value = null,
                     onClick = onHistory,
+                )
+                HLine()
+                SettingRow(
+                    glyph = Glyph.DOWN,
+                    title = "下载管理",
+                    desc = downloadDesc,
+                    value = null,
+                    onClick = onDownloads,
                 )
                 HLine()
                 SettingRow(

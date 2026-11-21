@@ -390,6 +390,13 @@ final class DownloadManager: ObservableObject {
         dir!.appendingPathComponent(task.id, isDirectory: true)
     }
 
+    /// 书目录（下载中心导出用）；目录不存在返回 nil。
+    func bookDirectory(_ id: String) -> URL? {
+        guard let dir else { return nil }
+        let d = dir.appendingPathComponent(id, isDirectory: true)
+        return FileManager.default.fileExists(atPath: d.path) ? d : nil
+    }
+
     static func relativePath(_ id: String) -> String { "Downloads/\(id)" }
 
     static func folderKey(sourceKey: String, comicId: String) -> String {

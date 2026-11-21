@@ -538,6 +538,13 @@ object DownloadManager {
 
     fun bookPath(id: String): String? = root?.let { File(it, id).absolutePath }
 
+    /** 书目录（下载中心导出用）；不存在返回 null。 */
+    fun bookDir(id: String): File? {
+        val r = root ?: return null
+        val d = File(r, id)
+        return if (d.exists()) d else null
+    }
+
     fun folderKey(sourceKey: String, comicId: String): String {
         val clean = comicId.map { if (it.isLetterOrDigit()) it else '_' }.joinToString("")
         var s = sourceKey + "_" + clean

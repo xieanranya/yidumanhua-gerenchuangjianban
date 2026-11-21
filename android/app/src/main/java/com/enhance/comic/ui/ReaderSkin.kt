@@ -116,6 +116,8 @@ internal enum class Glyph {
     BACK, MORE, CHECK, LEFT, RIGHT, SUN, CROP, SPARK,
     /** 底部四个 Tab 与通用图标 */
     HOME, DISCOVER, SHELF, USER, SEARCH,
+    /** 下载（下载管理 / 导出） */
+    DOWN,
 }
 
 /**
@@ -176,6 +178,15 @@ internal fun GlyphView(
                 line(12f, 9.2f, 12f, 14.8f)
                 path(9.9f, 11.2f, 12f, 9.1f, 14.1f, 11.2f)
                 path(9.9f, 12.8f, 12f, 14.9f, 14.1f, 12.8f)
+            }
+
+            Glyph.DOWN -> {
+                line(12f, 4.2f, 12f, 14.6f)
+                line(7.6f, 10.4f, 12f, 14.9f)
+                line(16.4f, 10.4f, 12f, 14.9f)
+                line(4.6f, 16.6f, 4.6f, 19.4f)
+                line(4.6f, 19.4f, 19.4f, 19.4f)
+                line(19.4f, 19.4f, 19.4f, 16.6f)
             }
 
             Glyph.FILTER -> {

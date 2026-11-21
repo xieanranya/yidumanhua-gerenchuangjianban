@@ -7,6 +7,7 @@ struct MeScreen: View {
     @EnvironmentObject private var ui: UiStore
     @Environment(\.appColors) private var c
     @ObservedObject private var hub = SourceHub.shared
+    @ObservedObject private var dm = DownloadManager.shared
 
     @State private var showTheme = false
     /// 面板用枚举驱动，别在同一个 View 上挂两个 .sheet —— 老系统上会互相顶掉
@@ -87,6 +88,17 @@ struct MeScreen: View {
                     .buttonStyle(.plain)
                     divider
                     NavigationLink {
+                        DownloadCenterView()
+                    } label: {
+                        row(
+                            glyph: .down,
+                            title: "下载管理",
+                            sub: downloadSub
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    divider
+                    NavigationLink {
                         LocalBooksView()
                     } label: {
                         row(glyph: .shelf, title: "本地漫画", sub: "\(store.books.count) 本")
@@ -145,6 +157,14 @@ struct MeScreen: View {
         if store.prefs.autoCropWhiteBorders { parts.append("裁白边") }
         if store.prefs.blueLight > 0 { parts.append("蓝光 \(store.prefs.blueLight)") }
         return parts.joined(separator: " · ")
+    }
+
+    private var downloadSub: String {
+        guard !dm.tasks.isEmpty else { return "离线下载 · 导出 CBZ / 图片" }
+        let running = dm.tasks.filter { $0.status == 0 || $0.status == 1 }.count
+        let done = dm.tasks.filter { $0.status == 3 }.count
+        if running > 0 { return "\(running) 个下载中 · \(done) 个已完成" }
+        return "\(dm.tasks.count) 个任务 · \(done) 个已完成"
     }
 
     private var divider: some View {

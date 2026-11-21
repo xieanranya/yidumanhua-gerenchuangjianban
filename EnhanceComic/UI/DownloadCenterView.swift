@@ -383,14 +383,18 @@ struct DownloadExportView: View {
         }
         busy = true
         note = nil
-        let entries: [(name: String, file: URL)] = task.chapters.flatMap { ch in
-            (0..<max(ch.total, 0)).compactMap { p in
+        var entries: [(name: String, file: URL)] = []
+        for ch in task.chapters {
+            let dirName = ch.dir
+            let total = max(ch.total, 0)
+            for p in 0..<total {
+                let fileName = DownloadManager.pageFileName(p)
                 let f = bookDir
-                    .appendingPathComponent(ch.dir, isDirectory: true)
-                    .appendingPathComponent(DownloadManager.pageFileName(p))
-                return FileManager.default.fileExists(atPath: f.path)
-                    ? (name: "\(ch.dir)/\(DownloadManager.pageFileName(p))", file: f)
-                    : nil
+                    .appendingPathComponent(dirName, isDirectory: true)
+                    .appendingPathComponent(fileName)
+                if FileManager.default.fileExists(atPath: f.path) {
+                    entries.append((name: dirName + "/" + fileName, file: f))
+                }
             }
         }
         let safe = sanitize(task.title)

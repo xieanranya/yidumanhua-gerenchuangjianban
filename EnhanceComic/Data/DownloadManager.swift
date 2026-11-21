@@ -417,11 +417,11 @@ final class DownloadManager: ObservableObject {
         return String(format: "%04d", index + 1) + " - " + name
     }
 
-    static func pageFileName(_ index: Int) -> String {
+    nonisolated static func pageFileName(_ index: Int) -> String {
         String(format: "%05d.jpg", index + 1)
     }
 
-    static func hasPage(_ chDir: URL, _ index: Int) -> Bool {
+    nonisolated static func hasPage(_ chDir: URL, _ index: Int) -> Bool {
         FileManager.default.fileExists(atPath: chDir.appendingPathComponent(pageFileName(index)).path)
     }
 }

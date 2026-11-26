@@ -1,13 +1,17 @@
 # 画质漫画 · 安装包
 
-版本：双端当前 **`1.9.85 (96)`**。
+版本：双端当前 **`1.9.87 (98)`**。
 
 ## 下载
 
 | 平台 | 位置 | 大小 |
 |---|---|---|
-| iOS | 本目录 `EnhanceComic-iOS-v1.9.85.ipa`（未签名，需 Sideloadly / AltStore 签名）；也可到 [Release 页 → v1.9.85](https://github.com/xieanranya/yidumanhua-gerenchuangjianban/releases) | 12.0 MB |
-| Android | [Release 页 → v1.9.85](https://github.com/xieanranya/yidumanhua-gerenchuangjianban/releases) 资产 `EnhanceComic-Android-v1.9.85.apk`（固定签名，直接覆盖安装） | ≈50 MB |
+| iOS | 本目录 `EnhanceComic-iOS-v1.9.87.ipa`（未签名，需 Sideloadly / AltStore 签名）；也可到 [Release 页 → v1.9.87](https://github.com/xieanranya/yidumanhua-gerenchuangjianban/releases) | 12.0 MB |
+| Android | [Release 页 → v1.9.87](https://github.com/xieanranya/yidumanhua-gerenchuangjianban/releases) 资产 `EnhanceComic-Android-v1.9.87.apk`（固定签名，直接覆盖安装） | ≈50 MB |
+
+## v1.9.87（双端）：排行榜升一级 Tab（首页/排行榜/书架/我的），发现降级为首页「分类浏览」入口
+
+## v1.9.86（双端）：下载中心进「我的」页 + 导出（整本 CBZ / 单张 JPG·PNG·WebP）
 
 ## v1.9.85（双端）：新增漫画下载（离线阅读）
 

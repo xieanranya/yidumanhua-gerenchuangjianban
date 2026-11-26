@@ -3,10 +3,10 @@ import SwiftUI
 // ==================================================================================== 四 Tab
 
 enum AppTab: String, CaseIterable, Identifiable {
-    // 用户要求的顺序：首页 / 书架 / 发现 / 我的
+    // 用户要求的顺序：首页 / 排行榜 / 书架 / 我的（发现降级为首页入口）
     case home
+    case rank
     case shelf
-    case discover
     case me
 
     var id: String { rawValue }
@@ -14,7 +14,7 @@ enum AppTab: String, CaseIterable, Identifiable {
     var label: String {
         switch self {
         case .home: return "首页"
-        case .discover: return "发现"
+        case .rank: return "排行榜"
         case .shelf: return "书架"
         case .me: return "我的"
         }
@@ -23,7 +23,7 @@ enum AppTab: String, CaseIterable, Identifiable {
     var glyph: Glyph {
         switch self {
         case .home: return .home
-        case .discover: return .discover
+        case .rank: return .rank
         case .shelf: return .shelf
         case .me: return .user
         }
@@ -130,16 +130,12 @@ struct AppRootView: View {
         switch tab {
         case .home:
             NavigationStack {
-                HomeScreen(
-                    onSearch: { tab = .discover },
-                    onShelf: { tab = .shelf },
-                    onSources: { tab = .me }
-                )
-                .toolbar(.hidden, for: .navigationBar)
+                HomeScreen()
+                    .toolbar(.hidden, for: .navigationBar)
             }
-        case .discover:
+        case .rank:
             NavigationStack {
-                DiscoverScreen()
+                RankView()
                     .toolbar(.hidden, for: .navigationBar)
             }
         case .shelf:

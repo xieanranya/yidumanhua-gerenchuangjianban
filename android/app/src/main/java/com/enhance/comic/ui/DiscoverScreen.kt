@@ -110,6 +110,8 @@ fun DiscoverScreen(
     initialQuery: String = "",
     onOpenWork: (Work) -> Unit,
     onSourceManager: () -> Unit,
+    /** 非 null = 作为「发现」二级页打开（首页入口），顶部带返回；null = 旧的一级 Tab 形态 */
+    onBack: (() -> Unit)? = null,
 ) {
     val c = LocalColors.current
 
@@ -183,29 +185,38 @@ fun DiscoverScreen(
         return
     }
 
+    val statusLine = when {
+        state.busy && state.progress.isNotBlank() -> state.progress
+        state.busy -> "正在取内容…"
+        // 内容已经在屏幕上了，后台还在补剩下的源
+        state.progress.isNotBlank() -> "${state.works.size} 部作品 · 后台更新中"
+        state.selected.isBlank() -> buildString {
+            append("${state.works.size} 部作品 · ${state.okCount} 个源")
+            val multi = state.works.count { it.entries.size > 1 }
+            if (multi > 0) append(" · $multi 部是跨源同一本")
+            if (state.failures > 0) append(" · ${state.failures} 个源没响应")
+            if (state.skipped > 0) {
+                append(
+                    if (state.vpn) " · ${state.skipped} 个源暂时跳过"
+                    else " · ${state.skipped} 个源要开代理"
+                )
+            }
+        }
+        else -> state.rows.firstOrNull { it.key == state.selected }?.name ?: "只看这个源"
+    }
+
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
-        BrandHeader(
-            title = "发现",
-            sub = when {
-                state.busy && state.progress.isNotBlank() -> state.progress
-                state.busy -> "正在取内容…"
-                // 内容已经在屏幕上了，后台还在补剩下的源
-                state.progress.isNotBlank() -> "${state.works.size} 部作品 · 后台更新中"
-                state.selected.isBlank() -> buildString {
-                    append("${state.works.size} 部作品 · ${state.okCount} 个源")
-                    val multi = state.works.count { it.entries.size > 1 }
-                    if (multi > 0) append(" · $multi 部是跨源同一本")
-                    if (state.failures > 0) append(" · ${state.failures} 个源没响应")
-                    if (state.skipped > 0) {
-                        append(
-                            if (state.vpn) " · ${state.skipped} 个源暂时跳过"
-                            else " · ${state.skipped} 个源要开代理"
-                        )
-                    }
-                }
-                else -> state.rows.firstOrNull { it.key == state.selected }?.name ?: "只看这个源"
-            },
-        )
+        if (onBack != null) {
+            SubTopBar("发现", onBack)
+            Text(
+                statusLine,
+                color = c.fg3,
+                fontSize = 10.5.sp,
+                modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp),
+            )
+        } else {
+            BrandHeader(title = "发现", sub = statusLine)
+        }
 
         SearchField(
             value = state.kw,

@@ -43,6 +43,8 @@ import com.enhance.comic.ui.HomeState
 import com.enhance.comic.ui.LocalColors
 import com.enhance.comic.ui.MeScreen
 import com.enhance.comic.ui.OnlineSourceScreen
+import com.enhance.comic.ui.RankScreen
+import com.enhance.comic.ui.RankState
 import com.enhance.comic.ui.WorkEntry
 import com.enhance.comic.ui.ReaderScreen
 import com.enhance.comic.ui.ShelfScreen
@@ -128,6 +130,8 @@ private sealed class Overlay {
     object History : Overlay()
     /** 下载中心：集中管理下载任务 + 导出 */
     object DownloadCenter : Overlay()
+    /** 发现（从首页入口进入的二级页） */
+    object Discover : Overlay()
 }
 
 @Composable
@@ -162,6 +166,7 @@ private fun Root() {
     // 一回来就变成「重新读源 + 重新拉 8 个源」。
     val discoverState = remember { DiscoverState() }
     val homeState = remember { HomeState() }
+    val rankState = remember { RankState() }
     // 源开关/顺序改一次就 +1，让首页、发现、我的知道该重新读源列表
     var sourceRev by remember { mutableStateOf(0) }
 
@@ -284,6 +289,24 @@ private fun Root() {
                         },
                     )
 
+                    over is Overlay.Discover -> DiscoverScreen(
+                        engine = engine,
+                        ui = ui,
+                        state = discoverState,
+                        sourceRev = sourceRev,
+                        initialQuery = discoverQuery,
+                        onOpenWork = { w ->
+                            overlay = Overlay.Online(
+                                w.primary.sourceKey,
+                                w.primary.comicId,
+                                w.primary.title,
+                                w.entries,
+                            )
+                        },
+                        onSourceManager = { overlay = Overlay.Online(null, null, "") },
+                        onBack = { overlay = null },
+                    )
+
                     over is Overlay.DownloadCenter -> DownloadCenterScreen(
                         books = books,
                         onBack = { overlay = null },
@@ -315,7 +338,7 @@ private fun Root() {
                                 state = homeState,
                                 sourceRev = sourceRev,
                                 onOpenBook = { openBook = it },
-                                onDiscover = { switchTab(AppTab.DISCOVER) },
+                                onDiscover = { overlay = Overlay.Discover },
                                 onOpenWork = { w ->
                                     overlay = Overlay.Online(
                                         w.primary.sourceKey,
@@ -326,12 +349,11 @@ private fun Root() {
                                 },
                             )
 
-                            AppTab.DISCOVER -> DiscoverScreen(
+                            AppTab.RANK -> RankScreen(
                                 engine = engine,
                                 ui = ui,
-                                state = discoverState,
+                                state = rankState,
                                 sourceRev = sourceRev,
-                                initialQuery = discoverQuery,
                                 onOpenWork = { w ->
                                     overlay = Overlay.Online(
                                         w.primary.sourceKey,
@@ -340,7 +362,6 @@ private fun Root() {
                                         w.entries,
                                     )
                                 },
-                                onSourceManager = { overlay = Overlay.Online(null, null, "") },
                             )
 
                             AppTab.SHELF -> ShelfScreen(

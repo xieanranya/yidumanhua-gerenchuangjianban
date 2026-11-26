@@ -118,6 +118,8 @@ internal enum class Glyph {
     HOME, DISCOVER, SHELF, USER, SEARCH,
     /** 下载（下载管理 / 导出） */
     DOWN,
+    /** 排行榜（底部 Tab） */
+    RANK,
 }
 
 /**
@@ -187,6 +189,18 @@ internal fun GlyphView(
                 line(4.6f, 16.6f, 4.6f, 19.4f)
                 line(4.6f, 19.4f, 19.4f, 19.4f)
                 line(19.4f, 19.4f, 19.4f, 16.6f)
+            }
+
+            // 排行榜：三根柱 + 顶上的小旗位（领奖台）
+            Glyph.RANK -> {
+                line(5.5f, 19.4f, 5.5f, 13.2f)
+                line(3.6f, 19.4f, 3.6f, 19.4f)
+                line(12f, 19.4f, 12f, 8.2f)
+                line(18.5f, 19.4f, 18.5f, 11.2f)
+                line(3.6f, 19.4f, 20.4f, 19.4f)
+                line(10.1f, 8.2f, 13.9f, 8.2f)
+                line(16.6f, 11.2f, 20.4f, 11.2f)
+                line(3.6f, 13.2f, 7.4f, 13.2f)
             }
 
             Glyph.FILTER -> {

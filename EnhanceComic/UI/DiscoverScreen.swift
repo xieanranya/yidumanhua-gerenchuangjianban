@@ -10,6 +10,7 @@ struct DiscoverScreen: View {
     @EnvironmentObject private var store: LibraryStore
     @EnvironmentObject private var ui: UiStore
     @Environment(\.appColors) private var c
+    @Environment(\.dismiss) private var dismiss
     @ObservedObject private var hub = SourceHub.shared
 
     @State private var keyword = ""
@@ -40,6 +41,13 @@ struct DiscoverScreen: View {
 
     var body: some View {
         discoverRoot
+            // 已从一级 Tab 降级为首页入口的二级页：隐藏系统栏 + 左上返回
+            .toolbar(.hidden, for: .navigationBar)
+            .overlay(alignment: .topLeading) {
+                GlassCircleButton(glyph: .back) { dismiss() }
+                    .padding(.leading, 16)
+                    .padding(.top, safeTop() + 8)
+            }
     }
 
     // ══════════════════════ 单页直显 ══════════════════════
